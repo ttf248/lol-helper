@@ -13,6 +13,11 @@ import {
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
+import { getCachedSgpMatch } from "@/lcu/aboutMatch";
+import {
+    GamesBySgp,
+    Participant as SgpParticipant,
+} from "@/lcu/types/queryMatchSgpGameTypes";
 
 export default class MatchDetails {
     private team100Kills = 0;
@@ -30,8 +35,27 @@ export default class MatchDetails {
         visionScore: true,
     };
 
-    public queryGameDetail = async (gameId: number, sumId: number) => {
+    public queryGameDetail = async (
+        gameId: number,
+        sumId: number,
+        sumPuuid?: string,
+    ) => {
         this.init();
+
+        // SGP SUMMARY 已经包含完整的十人数据。优先使用它，避免查询外部
+        // 召唤师时 LCU 只允许反查本地客户端历史而导致右侧详情为空。
+        const cachedSgpMatch = getCachedSgpMatch(gameId);
+        if (cachedSgpMatch !== null) {
+            const sgpResult = this.getSgpParticipantsDetails(
+                cachedSgpMatch,
+                sumId,
+                sumPuuid,
+            );
+            if (sgpResult !== null) {
+                return sgpResult;
+            }
+        }
+
         const response: GameDetailedInfo | null = await invokeLcu(
             "get",
             `/lol-match-history/v1/games/${gameId}`,
@@ -57,7 +81,116 @@ export default class MatchDetails {
             sumId,
             response.queueId,
             gameId,
+            sumPuuid,
         );
+    };
+
+    /** 将 SGP SUMMARY 的扁平 participant 转成现有详情组件使用的 LCU 结构。 */
+    private getSgpParticipantsDetails = (
+        game: GamesBySgp,
+        sumId: number,
+        sumPuuid?: string,
+    ): null | ParticipantsInfo => {
+        const sourceParticipants = game.participants
+            .filter(
+                (participant) =>
+                    participant &&
+                    typeof participant.participantId === "number" &&
+                    typeof participant.teamId === "number",
+            )
+            .slice()
+            .sort(
+                (left, right) =>
+                    left.teamId - right.teamId ||
+                    left.participantId - right.participantId,
+            );
+
+        if (sourceParticipants.length === 0) {
+            return null;
+        }
+
+        const participants = sourceParticipants.map((participant) =>
+            this.toLcuParticipant(participant),
+        );
+        const participantIdentities = sourceParticipants.map((participant) => ({
+            participantId: participant.participantId,
+            player: {
+                accountId: participant.summonerId,
+                currentAccountId: participant.summonerId,
+                currentPlatformId: game.platformId,
+                matchHistoryUri: "",
+                platformId: game.platformId,
+                profileIcon: participant.profileIcon,
+                summonerId: participant.summonerId,
+                summonerName: participant.summonerName,
+                gameName: participant.riotIdGameName || participant.summonerName,
+                puuid: participant.puuid,
+            },
+        }));
+        const response = {
+            gameCreation: game.gameCreation,
+            gameCreationDate: new Date(game.gameCreation).toISOString(),
+            gameDuration: game.gameDuration,
+            gameId: game.gameId,
+            gameMode: game.gameMode,
+            gameType: game.gameType,
+            gameVersion: game.gameVersion,
+            mapId: game.mapId,
+            participantIdentities,
+            participants,
+            platformId: game.platformId,
+            queueId: game.queueId,
+            seasonId: game.seasonId,
+            teams: [],
+        } as unknown as GameDetailedInfo;
+
+        if (game.queueId === 1700) {
+            return this.getFighterParticipantsDetails(
+                response,
+                participants,
+                participantIdentities,
+                game.gameId,
+                sumId,
+                game.queueId,
+            );
+        }
+
+        return this.getParticipantsDetails(
+            response,
+            participants,
+            participantIdentities,
+            sumId,
+            game.queueId,
+            game.gameId,
+            sumPuuid,
+        );
+    };
+
+    private toLcuParticipant = (participant: SgpParticipant): Participant => {
+        const runeIds =
+            participant.perks?.styles?.flatMap((style) =>
+                style.selections?.map((selection) => selection.perk) ?? [],
+            ) ?? [];
+        const stats = {
+            ...participant,
+            perk0: runeIds[0] ?? 0,
+            perk1: runeIds[1] ?? 0,
+            perk2: runeIds[2] ?? 0,
+            perk3: runeIds[3] ?? 0,
+            perk4: runeIds[4] ?? 0,
+            perk5: runeIds[5] ?? 0,
+        } as unknown as Stat;
+
+        return {
+            championId: participant.championId,
+            highestAchievedSeasonTier: "",
+            participantId: participant.participantId,
+            spell1Id: participant.spell1Id,
+            spell2Id: participant.spell2Id,
+            stats,
+            teamId: participant.teamId,
+            timeline: {} as Participant["timeline"],
+        };
     };
 
     private init() {
@@ -87,6 +220,7 @@ export default class MatchDetails {
         sumId: number,
         queId: number,
         gameId: number,
+        sumPuuid?: string,
     ): null | ParticipantsInfo => {
         if (participants?.length !== 10) {
             return null;
@@ -94,9 +228,11 @@ export default class MatchDetails {
 
         const isTeamOne = res.participantIdentities
             .slice(0, 5)
-            .find((value) => value.player.summonerId === sumId)
-            ? true
-            : false;
+            .some(
+                (value) =>
+                    value.player.summonerId === sumId ||
+                    (sumPuuid !== undefined && value.player.puuid === sumPuuid),
+            );
 
         const titleList = this.getDetailsTitle(
             res.gameCreation,

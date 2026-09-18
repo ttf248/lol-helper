@@ -14,6 +14,7 @@ export interface SgpRequestParams {
 export class SgpMatchHistoryService {
 	private _cachedToken: string | null = null;
 	private sgpBaseUrl: string | null = null;
+	private readonly matchCache = new Map<number, GamesBySgp>();
 	private readonly USER_AGENT = "LeagueClient/14.3.558.1234 (SGP)";
 	private readonly TIMEOUT = 10000;
 
@@ -21,6 +22,14 @@ export class SgpMatchHistoryService {
 	 * @param _tokenProvider 一个异步函数，调用你提到的“其他接口”来获取最新的 Token
 	 */
 	constructor(private _tokenProvider: () => Promise<string | null>) {}
+
+	/**
+	 * SUMMARY 返回的是完整对局数据。保留最近请求过的对局，供详情页在
+	 * LCU 无法反查外部召唤师对局时直接使用。
+	 */
+	getCachedMatch(gameId: number): GamesBySgp | null {
+		return this.matchCache.get(gameId) ?? null;
+	}
 
 	private getBaseUrl() {
 		const localSumInfo: sumInfoTypes | null = JSON.parse(
@@ -127,22 +136,34 @@ export class SgpMatchHistoryService {
 
 		// 解析数据
 		const data = await response.json();
+		if (!Array.isArray(data?.games)) {
+			throw new Error("SGP match history response has no games array");
+		}
 
-		const gamesList: GamesBySgp[] = data.games.map((item: any) => {
-			const games: GamesBySgp = item.json;
+		const gamesList: GamesBySgp[] = data.games.reduce(
+			(result: GamesBySgp[], item: any) => {
+				const games = item?.json as GamesBySgp | undefined;
+				if (
+					!games ||
+					typeof games.gameId !== "number" ||
+					!Array.isArray(games.participants)
+				) {
+					return result;
+				}
 
-			const participant = games.participants.find(
-				(participant: Participant) => participant.puuid === playerPuuid,
-			);
+				// 不修改 SUMMARY 原对象，否则详情页只能拿到一个 participant。
+				this.matchCache.set(games.gameId, games);
+				const participant = games.participants.find(
+					(participant: Participant) => participant.puuid === playerPuuid,
+				);
 
-			if (participant) {
-				games.participants = [participant];
-			} else {
-				games.participants = [];
-			}
-
-			return games;
-		});
+				if (participant) {
+					result.push({ ...games, participants: [participant] });
+				}
+				return result;
+			},
+			[],
+		);
 
 		return gamesList;
 	}

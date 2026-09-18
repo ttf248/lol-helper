@@ -23,12 +23,55 @@ const tokenFetcher = async (): Promise<string | null> => {
 
 const sgpService = new SgpMatchHistoryService(tokenFetcher);
 
+const isCurrentSummoner = (puuid: string): boolean => {
+	try {
+		const localSumInfo = JSON.parse(
+			localStorage.getItem("sumInfo") || "null",
+		) as { puuid?: string } | null;
+		return localSumInfo?.puuid === puuid;
+	} catch {
+		return false;
+	}
+};
+
+/**
+ * 当前玩家的历史记录使用 LCU 专用 endpoint。新客户端对该 endpoint
+ * 的可用性与返回范围都优于按 PUUID 反查的历史接口。
+ */
+const fetchCurrentSummonerMatchHistory = async (
+	begIndex: number,
+	count: number,
+): Promise<Games[] | null> => {
+	try {
+		const matchList = await invoke<LcuMatchList | null>("get_match_list", {
+			uri: "/lol-match-history/v1/products/lol/current-summoner/matches",
+		});
+		const games = matchList?.games?.games;
+		if (!Array.isArray(games)) {
+			return null;
+		}
+		return games.slice(begIndex, begIndex + count);
+	} catch {
+		return null;
+	}
+};
+
 // 辅助函数：处理单次请求
 const fetchMatchHistory = async (
 	puuid: string,
 	begIndex: number,
 	endIndex: number,
 ): Promise<GamesBySgp[] | Games[]> => {
+	if (isCurrentSummoner(puuid)) {
+		const currentGames = await fetchCurrentSummonerMatchHistory(
+			begIndex,
+			endIndex,
+		);
+		if (currentGames !== null) {
+			return currentGames;
+		}
+	}
+
 	// const uri = `/lol-match-history/v1/products/lol/${puuid}/matches`;
 	// const matchList = await invoke<LcuMatchList | null>("get_match_list", {
 	// 	uri,
@@ -42,7 +85,11 @@ const fetchMatchHistory = async (
 			count: endIndex,
 		});
 	} catch (err) {
-		const uri = `/lol-match-history/v1/products/lol/${puuid}/matches`;
+		const query = new URLSearchParams({
+			begIndex: String(begIndex),
+			endIndex: String(begIndex + endIndex),
+		});
+		const uri = `/lol-match-history/v1/products/lol/${puuid}/matches?${query.toString()}`;
 		const matchList = await invoke<LcuMatchList | null>("get_match_list", {
 			uri,
 		});
@@ -50,6 +97,10 @@ const fetchMatchHistory = async (
 		return matchList.games.games || [];
 	}
 };
+
+/** 返回最近一次 SGP SUMMARY 中缓存的完整对局，供详情展示复用。 */
+export const getCachedSgpMatch = (gameId: number): GamesBySgp | null =>
+	sgpService.getCachedMatch(gameId);
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -37,16 +37,21 @@ export default class BaseMatch {
             return null;
         }
 
-        return matchList.map((matchListElement) => {
-            return this.getSimpleMatch(matchListElement);
-        });
+        return matchList
+            .map((matchListElement) => this.getSimpleMatch(matchListElement))
+            .filter(
+                (match): match is SimpleMatchDetailsTypes => match !== null,
+            );
     };
 
     public getSimpleMatch = (
         match: Games | GamesBySgp,
-    ): SimpleMatchDetailsTypes => {
+    ): SimpleMatchDetailsTypes | null => {
         // 1. 确定参与者数据源
-        const participant = match.participants[0];
+        const participant = match.participants?.[0];
+        if (!participant || typeof match.gameId !== "number") {
+            return null;
+        }
         const stats =
             "stats" in participant ? (participant as any).stats : participant;
 
@@ -93,9 +98,11 @@ export default class BaseMatch {
             (matchList) => matchList.queueId === queueId,
         );
 
-        return specialList.map((matchListElement) => {
-            return this.getSimpleMatch(matchListElement);
-        });
+        return specialList
+            .map((matchListElement) => this.getSimpleMatch(matchListElement))
+            .filter(
+                (match): match is SimpleMatchDetailsTypes => match !== null,
+            );
     };
 
     public timestampToDate = (timestamp: number): [string, string] => {

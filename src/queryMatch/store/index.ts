@@ -26,31 +26,36 @@ const useMatchStore = defineStore("useMatchStore", {
 	},
 	actions: {
 		async init(summonerId?: number, locSumId?: number) {
-			const sumResult = await baseMatch.gerSummonerInfo(summonerId);
-			if (sumResult === null) {
-				return;
-			}
-			if (summonerId === undefined && locSumId === undefined) {
-				this.localSumId = sumResult.summonerInfo.currentId;
-			} else if (locSumId !== undefined) {
-				this.localSumId = locSumId as number;
-			}
-			this.sumInfo = { info: sumResult.summonerInfo, rank: sumResult.rankList };
-			this.summonerId = sumResult.summonerInfo.currentId;
-
 			this.matchLoading = true;
-
-			this.matchList = [];
-			this.recentMatchList20 = [];
-			this.analysisData = null;
-			// 获取最近二十场对局
-			this.fetchAndProcessMatches(this.sumInfo.info.puuid).then(() => {
-				if (this.matchLoading) {
-					setTimeout(() => {
-						this.matchLoading = false;
-					}, 500);
+			this.participantsInfo = null;
+			try {
+				const sumResult = await baseMatch.gerSummonerInfo(summonerId);
+				if (sumResult === null) {
+					this.matchList = null;
+					return;
 				}
-			});
+				if (summonerId === undefined && locSumId === undefined) {
+					this.localSumId = sumResult.summonerInfo.currentId;
+				} else if (locSumId !== undefined) {
+					this.localSumId = locSumId;
+				}
+				this.sumInfo = {
+					info: sumResult.summonerInfo,
+					rank: sumResult.rankList,
+				};
+				this.summonerId = sumResult.summonerInfo.currentId;
+				this.matchList = [];
+				this.recentMatchList20 = [];
+				this.analysisData = null;
+				await this.fetchAndProcessMatches(this.sumInfo.info.puuid);
+			} catch (error) {
+				console.error("Failed to initialize match history", error);
+				this.matchList = null;
+				this.recentMatchList20 = [];
+				this.analysisData = null;
+			} finally {
+				this.matchLoading = false;
+			}
 		},
 		async getMatchList(page = 1) {
 			if (this.sumInfo === null) {
@@ -59,31 +64,31 @@ const useMatchStore = defineStore("useMatchStore", {
 			if (page < 3 && this.recentMatchList20.length > 18) {
 				// 从缓存的20局中数据取值
 				this.matchList = this.recentMatchList20.slice((page - 1) * 9, page * 9);
-				this.getMatchDetail(this.matchList[0].gameId);
+				await this.getMatchDetail(this.matchList[0].gameId);
 				return true;
 			} else {
-				this.getMatchFromPage(page, this.sumInfo.info.puuid);
+				await this.getMatchFromPage(page, this.sumInfo.info.puuid);
 				return true;
 			}
 		},
 		async fetchAndProcessMatches(puuid: string) {
-            const matchResults = await baseMatch.dealMatchHistory(puuid, 0, 20);
-            console.log(matchResults)
+			const matchResults = await baseMatch.dealMatchHistory(puuid, 0, 20);
 			if (matchResults !== null) {
-				// 处理结果
-				for (let i = 0; i < matchResults.length; i++) {
-					const matchItems = matchResults[i];
-					if (matchItems !== null) {
-						if (i === 0) {
-							this.getMatchDetail(matchItems.gameId);
-						}
-						this.recentMatchList20.push(matchItems);
-					}
+				this.recentMatchList20 = matchResults;
+				this.matchList = this.recentMatchList20.slice(0, 9);
+				this.analysisData =
+					this.recentMatchList20.length === 0
+						? null
+						: findTopChamp(this.recentMatchList20 as any);
+
+				if (this.matchList.length !== 0) {
+					await this.getMatchDetail(this.matchList[0].gameId);
 				}
+				return;
 			}
-			// 更新 matchList 和 analysisData
-			this.matchList = this.recentMatchList20.slice(0, 9);
-			this.analysisData = findTopChamp(this.recentMatchList20 as any);
+			this.matchList = null;
+			this.recentMatchList20 = [];
+			this.analysisData = null;
 		},
 		async getMatchFromPage(page: number, puuid: string) {
 			const matchItems = await baseMatch.dealMatchHistory(
@@ -111,7 +116,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			}
 
 			this.matchList = matchItems.slice(0, 9);
-			this.getMatchDetail(this.matchList[0].gameId);
+			await this.getMatchDetail(this.matchList[0].gameId);
 		},
 		async getSpecialMatchList(queueId: number, puuid?: string) {
 			if (queueId === 0) {
@@ -132,13 +137,23 @@ const useMatchStore = defineStore("useMatchStore", {
 			}
 		},
 		async getMatchDetail(gameId: number) {
-			this.participantsInfo = await matchDetials.queryGameDetail(
-				gameId,
-				this.summonerId,
-			);
+			try {
+				this.participantsInfo = await matchDetials.queryGameDetail(
+					gameId,
+					this.summonerId,
+					this.sumInfo?.info.puuid,
+				);
+			} catch (error) {
+				console.error("Failed to load match details", error);
+				this.participantsInfo = null;
+			}
 		},
 		async queryMatchDetail(gameId: number, summonerId: number) {
-			return await matchDetials.queryGameDetail(gameId, summonerId);
+			return await matchDetials.queryGameDetail(
+				gameId,
+				summonerId,
+				this.sumInfo?.info.puuid,
+			);
 		},
 		fromSpecialToMatchList(page = 1) {
 			this.matchList = this.specialMatchList.slice(9 * (page - 1), 9 * page);
