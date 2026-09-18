@@ -36,7 +36,7 @@ League Client（LCU 服务）
 前端代码位于 `src/`，负责：
 
 - Vue 页面、组件、交互和状态管理；
-- 主界面、查询战绩、战绩分析和最近对局等窗口；
+- 主界面、查询战绩（包括本地搜索召唤师）、战绩分析和最近对局等窗口；
 - 通过 `invoke()` 调用 Rust 命令；
 - 通过 Tauri 事件接收客户端启动、游戏流程等状态变化；
 - 在隐藏的 `background` 页面中协调监听、快捷键和窗口创建。
@@ -108,6 +108,12 @@ Vue 页面
 
 Rust 侧使用 `#[tauri::command]` 暴露命令，并在 `src-tauri/src/lib.rs` 的 `generate_handler!` 中注册。Rust 侧还可以通过 `emit`/`emit_to` 向指定 WebView 页面发送事件。
 
+查询战绩时，`src/queryMatch/components/queryHeader.vue` 先通过 LCU 的
+`GET /lol-summoner/v1/summoners?name=...` 查找同一客户端大区内的召唤师，再用返回的
+`summonerId` 和 `puuid` 查询段位、对局列表及对局详情。查询参数会使用 URL 编码，输入可以是
+Riot ID（`GameName#TagLine`）或客户端仍兼容的旧召唤师名。该流程不依赖公共 Riot API Key，
+只在本机 League Client 已登录且 LCU 可用时工作。
+
 ## 6. 开发启动方式
 
 ### 推荐：同时启动前端和后端
@@ -145,7 +151,9 @@ pnpm run tauri build
 
 VS Code 本身不必管理员运行。`.vscode/tauri-msvc.cmd` 检测到当前终端未提升时，会通过 `.vscode/elevate-tauri.ps1` 请求一次 UAC，并在提升后的进程中启动 Tauri。这样前端 Vite 和 Rust/Tauri 后端仍由同一个 `tauri dev` 流程启动，但日志可能显示在 UAC 启动的新控制台窗口中。
 
-如果某个功能需要写入受保护目录，仍可能遇到额外的文件权限限制。
+如果某个功能需要写入受保护目录，仍可能遇到额外的文件权限限制。LCU 属于随 League
+客户端提供的本地接口，Riot 官方文档明确说明它不承诺完整文档、稳定性或变更通知；因此
+召唤师搜索和战绩查询应视为本地辅助功能，接口字段变化时需要同步调整 `src/lcu/`。
 
 ## 8. 维护约定
 

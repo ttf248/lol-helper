@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import {NButton, NSelect, NPagination,NAlert,NModal,NCard,
+import {NButton, NInput, NSelect, NPagination,
   useMessage, NIcon, NSpace, MessageReactive} from "naive-ui"
 import {ref, watch} from "vue";
 import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
-// import {querySummonerInfo} from "@/lcu/aboutSummoner";
+import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import { open } from '@tauri-apps/plugin-shell';
-import {summonerInfo} from "@/lcu/types/SummonerTypes";
 
 const matchStore = useMatchStore()
 const inputVal = ref('')
@@ -45,10 +44,8 @@ const options = [
     value: 1700
   },
 ]
-const showModal = ref(false)
-
 const changeMatchMode = async (queueId: number) => {
-  const sumInfo = matchStore.sumInfo as { info: summonerInfo, rank: string[] } | null
+  const sumInfo = matchStore.sumInfo
   if (sumInfo !== null) {
     const curMod = options.find(i => i.value === selectVal.value)?.label
     const mes: MessageReactive = message.loading(`${curMod} 加载中...`,
@@ -63,25 +60,30 @@ const changeMatchMode = async (queueId: number) => {
 }
 
 const searchSum = async () => {
-  showModal.value = !showModal.value
-/*  if (inputVal.value === '') {
-    message.warning('召唤师昵称不能为空')
-    return
-  }
-  const sumInfo = await querySummonerInfo(undefined, inputVal.value)
-  if (sumInfo === null) {
-    message.error('当前召唤师不存在，[ 需要加上编号，#号前后无空格 ] xxx#12138')
-    clearVal()
+  const query = inputVal.value.trim()
+  if (query === '') {
+    message.warning('请输入 Riot ID 或召唤师名')
     return
   }
 
-  if (sumInfo.privacy !== 'PUBLIC' && !subscribe) {
-    message.error('Sorry，不支持查询隐藏战绩玩家')
+  const loading = message.loading('查询召唤师中...', {duration: 0})
+  try {
+    const sumInfo = await querySummonerInfo(undefined, query)
+    if (sumInfo === null) {
+      message.error('当前召唤师不存在，请输入同大区的 Riot ID（例如 name#tag）或召唤师名')
+      return
+    }
+
+    if (sumInfo.privacy && sumInfo.privacy !== 'PUBLIC') {
+      message.error('当前召唤师战绩为隐藏状态')
+      return
+    }
+
+    await matchStore.init(sumInfo.currentId)
     clearVal()
-    return
+  } finally {
+    loading.destroy()
   }
-  matchStore.init(sumInfo.currentId)
-  clearVal()*/
 }
 const clearVal = () => {
   inputVal.value = ''
@@ -111,9 +113,6 @@ const pageChange = (page: number) => {
     matchStore.fromSpecialToMatchList(page)
   }
 }
-const refreshPage = () => {
-  matchStore.init()
-}
 </script>
 
 <template>
@@ -137,13 +136,13 @@ const refreshPage = () => {
       </n-button>
     </div>
     <div class="flex-grow flex items-center gap-x-3">
-      <n-button size="small" secondary type="tertiary" :bordered="false" @click="searchSum"
-                style="width: 141px;color: #666666;font-size: 13.5px">
-        仅显示玩家战绩数据
-      </n-button>
-      <n-button size="small" :bordered="false" @click="refreshPage"
+      <n-input v-model:value="inputVal" type="text" spellcheck="false"
+               style="width: 141px;font-size: 13.5px" size="small"
+               placeholder="输入 Riot ID 或召唤师名"
+               @keyup.enter="searchSum" />
+      <n-button size="small" :bordered="false" @click="searchSum"
                 type="success" style="width: 46px;padding: 0 9px">
-        刷新
+        查询
       </n-button>
       <n-select size="small" v-model:value="selectVal"
                 :disabled="inputVal!==''"
@@ -173,22 +172,6 @@ const refreshPage = () => {
         </n-icon>
       </n-button>
     </n-space>
-    <n-modal v-model:show="showModal" transform-origin="center">
-      <n-card
-        style="width: 540px;border-radius: 8px"
-        :bordered="false"
-        size="small"
-        role="dialog"
-        aria-modal="true"
-      >
-        <n-alert title="查询战绩已禁用" type="error">
-          尊敬的用户：<br><br>
-          根据英雄联盟官方要求，已于2024年7月17日起停止提供战绩查询功能。
-          对此给您带来的不便，深表歉意，感谢您一直对Frank的支持与理解。<br><br>
-          Frank开发者敬上
-        </n-alert>
-      </n-card>
-    </n-modal>
   </header>
 </template>
 

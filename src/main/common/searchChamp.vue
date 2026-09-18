@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed, h, ref, VNodeChild} from "vue";
 import {keywordsList} from "@/resources/champList";
-import {NAutoComplete, NAvatar, NButton, SelectOption} from "naive-ui";
+import {AutoCompleteOption, NAutoComplete, NAvatar, NButton} from "naive-ui";
 
 const {selectFunc} = defineProps<{
   selectFunc:(alias:string) => void
@@ -9,7 +9,7 @@ const {selectFunc} = defineProps<{
 
 const inputValue = ref('')
 // 渲染提示框
-const renderLabel = (option: SelectOption): VNodeChild => [
+const renderLabel = (option: AutoCompleteOption): VNodeChild => [
   h('div', { style: 'display: flex; align-items: center;' }, [
     h(NAvatar, {
       style: 'margin-right: 8px;',
@@ -21,15 +21,15 @@ const renderLabel = (option: SelectOption): VNodeChild => [
   ])
 ]
 // 生成输入框渲染提示选项
-const autoOptions = computed(() => {
+const autoOptions = computed<AutoCompleteOption[]>(() => {
   if (inputValue.value==='' || inputValue.value===null){
-    return
+    return []
   }
   const keyword = inputValue.value.toLowerCase()
   const renderList = keywordsList.filter(item => item.keywords.toLowerCase().includes(keyword))
 
   if (renderList.length > 5 || renderList.length===0){
-    return
+    return []
   }
 
   return renderList.map((champ) => {
@@ -58,7 +58,7 @@ const handleButton = () => {
     v-model:value="inputValue"
     @select="selectFunc"
     spellcheck="false"
-    :options="<{lable:string,value:string}[]>autoOptions"
+    :options="autoOptions"
     :render-label="renderLabel"
     placeholder="请输入你想查询的英雄"
     style="width: 162px;"
