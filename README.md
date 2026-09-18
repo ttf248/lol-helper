@@ -52,14 +52,18 @@ src-tauri
 │  └─lcu.rs
 ```
 
+## 🛠 开发环境
+
+Windows 桌面构建需要 Node.js、pnpm、Rust MSVC toolchain、Microsoft C++ Build Tools（含 Windows SDK）和 WebView2。当前仓库已固定使用 `pnpm@9.15.9`；完整安装包还需要 WiX 3 和 NSIS。
+
+`src-tauri/build.rs` 为程序声明了 `requireAdministrator`，因此启动 Tauri 或使用 VS Code 后端调试配置前，需要以“管理员身份运行”启动 VS Code。项目已提供 `.vscode/launch.json`、`.vscode/tasks.json` 和 MSVC 环境包装脚本。
+
 ## 📥 运行
 
 ```
 git clone https://github.com/SYJun404/frank.git
-cd src
+cd frank
 pnpm install
-cd src-tauri # 安装rust所需要的组件
-cd..
 pnpm run tauri dev
 ```
 

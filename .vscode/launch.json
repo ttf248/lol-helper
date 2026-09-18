@@ -1,0 +1,42 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Frank: Tauri Dev (Administrator)",
+			"type": "node-terminal",
+			"request": "launch",
+			"command": ".\\.vscode\\tauri-msvc.cmd tauri dev",
+			"cwd": "${workspaceFolder}",
+			"env": {
+				"TAURI_ENV_PLATFORM": "windows",
+				"RUST_BACKTRACE": "1"
+			},
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true
+			}
+		},
+		{
+			"name": "Frank: Rust Backend (MSVC, Administrator)",
+			"type": "cppvsdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}\\src-tauri\\target\\debug\\Frank.exe",
+			"args": [],
+			"cwd": "${workspaceFolder}\\src-tauri",
+			"preLaunchTask": "Frank: build debug",
+			"stopAtEntry": false,
+			"externalConsole": false,
+			"environment": [
+				{
+					"name": "RUST_BACKTRACE",
+					"value": "1"
+				},
+				{
+					"name": "TAURI_ENV_PLATFORM",
+					"value": "windows"
+				}
+			]
+		}
+	]
+}

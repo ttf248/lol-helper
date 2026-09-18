@@ -1,0 +1,11 @@
+{
+	"typescript.tsdk": "${workspaceFolder}/node_modules/typescript/lib",
+	"rust-analyzer.linkedProjects": [
+		"${workspaceFolder}/src-tauri/Cargo.toml"
+	],
+	"rust-analyzer.cargo.target": "x86_64-pc-windows-msvc",
+	"files.watcherExclude": {
+		"**/target/**": true,
+		"**/dist/**": true
+	}
+}
