@@ -19,6 +19,7 @@ dist-ssr
 !.vscode/tasks.json
 !.vscode/settings.json
 !.vscode/tauri-msvc.cmd
+!.vscode/elevate-tauri.ps1
 .idea
 .DS_Store
 *.suo

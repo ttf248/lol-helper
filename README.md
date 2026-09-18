@@ -56,7 +56,7 @@ src-tauri
 
 Windows 桌面构建需要 Node.js、pnpm、Rust MSVC toolchain、Microsoft C++ Build Tools（含 Windows SDK）和 WebView2。当前仓库已固定使用 `pnpm@9.15.9`；完整安装包还需要 WiX 3 和 NSIS。
 
-`src-tauri/build.rs` 为程序声明了 `requireAdministrator`，因此启动 Tauri 或使用 VS Code 后端调试配置前，需要以“管理员身份运行”启动 VS Code。项目已提供 `.vscode/launch.json`、`.vscode/tasks.json` 和 MSVC 环境包装脚本。
+Frank 需要读取 League 客户端进程参数来取得 LCU 端口和 Token，因此 Debug/Release 构建均使用 `requireAdministrator`。VS Code 本身不必管理员运行；`.vscode/tauri-msvc.cmd` 会在普通终端中自动请求 UAC，并在提升后的进程中启动 Tauri。项目已提供 `.vscode/launch.json`、`.vscode/tasks.json` 和 MSVC 环境包装脚本。
 
 ## 📥 运行
 

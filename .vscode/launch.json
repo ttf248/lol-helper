@@ -2,7 +2,7 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Frank: Tauri Dev (Administrator)",
+			"name": "Frank: Tauri Dev (auto UAC)",
 			"type": "node-terminal",
 			"request": "launch",
 			"command": ".\\.vscode\\tauri-msvc.cmd tauri dev",
