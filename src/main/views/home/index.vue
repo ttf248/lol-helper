@@ -30,6 +30,7 @@ import {
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 import { champDict } from "@/resources/champList";
+import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 const DEFAULT_WINDOWS = RECENT_ANALYSIS_WINDOWS;
 type AnalysisWindow = (typeof DEFAULT_WINDOWS)[number];
@@ -285,6 +286,10 @@ onMounted(async () => {
               <span>{{ item.games }} 次交手 · 对手胜率 {{ formatRate(item.opponentWins / item.games * 100) }}</span>
             </div>
           </div>
+        </n-card>
+
+        <n-card size="small" title="历史对局关系图" :bordered="false">
+          <recent-network-graph :analysis="analysis.network || null" />
         </n-card>
 
         <n-card size="small" title="本地缓存汇总" :bordered="false">

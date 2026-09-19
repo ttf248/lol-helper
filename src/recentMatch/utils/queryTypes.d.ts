@@ -226,6 +226,7 @@ export interface PlayerRecentAnalysis {
   moderation: PlayerModerationInfo;
   source: string;
   historyComplete: boolean;
+  network?: RecentNetworkAnalysis;
 }
 
 export interface OpponentMatchupStats {

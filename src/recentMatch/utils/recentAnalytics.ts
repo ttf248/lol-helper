@@ -1021,7 +1021,7 @@ export const loadPlayerModeAnalysis = async (
   });
   const moderationMap = await loadModerationMap(selectedPlayers);
 
-  return buildPlayerAnalysis(
+  const playerAnalysis = buildPlayerAnalysis(
     player,
     snapshot,
     buildPartyGroups([player, ...partyPlayers], snapshots, moderationMap),
@@ -1029,6 +1029,12 @@ export const loadPlayerModeAnalysis = async (
     moderationMap.get(player.puuid) || emptyModeration(),
     requestedGames,
   );
+  playerAnalysis.network = buildNetworkAnalysis(
+    [player, ...partyPlayers.slice(0, 5)],
+    opponentPlayers.slice(0, 5),
+    snapshots,
+  );
+  return playerAnalysis;
 };
 
 const buildNetworkAnalysis = (
