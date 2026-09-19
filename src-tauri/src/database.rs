@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -228,92 +229,136 @@ impl DatabaseState {
                 "INSERT INTO match_players(puuid, summoner_id, summoner_name, updated_at)
                  VALUES($1, $2, $3, NOW())
                  ON CONFLICT(puuid) DO UPDATE SET
-                   summoner_id = EXCLUDED.summoner_id,
-                   summoner_name = EXCLUDED.summoner_name,
+                   summoner_id = COALESCE(EXCLUDED.summoner_id, match_players.summoner_id),
+                   summoner_name = COALESCE(EXCLUDED.summoner_name, match_players.summoner_name),
                    updated_at = NOW()",
                 &[&request.puuid, &request.summoner_id, &request.summoner_name],
             )
             .await
             .map_err(|error| error.to_string())?;
 
-        let mut cached = 0usize;
-        for game in &request.games {
-            transaction
-                .execute(
-                    "INSERT INTO matches(game_id, queue_id, mode_key, game_creation, source, fetched_at)
-                     VALUES($1, $2, $3, $4, $5, NOW())
-                     ON CONFLICT(game_id) DO UPDATE SET
-                       queue_id = EXCLUDED.queue_id,
-                       mode_key = EXCLUDED.mode_key,
-                       game_creation = EXCLUDED.game_creation,
-                       source = EXCLUDED.source,
-                       fetched_at = NOW()",
-                    &[
-                        &game.game_id,
-                        &game.queue_id,
-                        &game.mode_key,
-                        &game.game_creation,
-                        &game.source,
-                    ],
+        // 一次请求通常包含几十到上百场、数百名参与者。把整个 payload
+        // 交给 PostgreSQL 展开，避免原先“每个对局 + 每个参与者一条 SQL”
+        // 带来的上千次往返；仍然保留单事务，任何一步失败都不会留下半批数据。
+        let games_json: Value = serde_json::to_value(&request.games)
+            .map_err(|error| format!("战绩缓存序列化失败: {error}"))?;
+        transaction
+            .execute(
+                r#"
+                WITH game_rows AS (
+                    SELECT DISTINCT ON (game."gameId")
+                        game."gameId" AS game_id,
+                        game."queueId" AS queue_id,
+                        game."modeKey" AS mode_key,
+                        game."gameCreation" AS game_creation,
+                        game.source,
+                        game.participants
+                    FROM jsonb_to_recordset($1::jsonb) AS game(
+                        "gameId" BIGINT,
+                        "queueId" INTEGER,
+                        "modeKey" TEXT,
+                        "gameCreation" BIGINT,
+                        source TEXT,
+                        participants JSONB
+                    )
+                    ORDER BY game."gameId", game."gameCreation" DESC
+                ), participant_rows AS (
+                    SELECT DISTINCT ON (game_rows.game_id, participant.puuid)
+                        game_rows.game_id,
+                        participant.puuid,
+                        participant."summonerId" AS summoner_id,
+                        participant."summonerName" AS summoner_name,
+                        participant."teamId" AS team_id,
+                        participant."championId" AS champion_id,
+                        participant.position,
+                        participant.kills,
+                        participant.deaths,
+                        participant.assists,
+                        participant.win
+                    FROM game_rows
+                    CROSS JOIN LATERAL jsonb_to_recordset(game_rows.participants)
+                        AS participant(
+                            puuid TEXT,
+                            "summonerId" BIGINT,
+                            "summonerName" TEXT,
+                            "teamId" INTEGER,
+                            "championId" INTEGER,
+                            position TEXT,
+                            kills INTEGER,
+                            deaths INTEGER,
+                            assists INTEGER,
+                            win BOOLEAN
+                        )
+                    WHERE participant.puuid IS NOT NULL
+                      AND participant.puuid <> ''
+                    ORDER BY game_rows.game_id, participant.puuid
+                ), upsert_players AS (
+                    INSERT INTO match_players(
+                        puuid, summoner_id, summoner_name, updated_at
+                    )
+                    SELECT DISTINCT ON (puuid)
+                        puuid, summoner_id, summoner_name, NOW()
+                    FROM participant_rows
+                    ORDER BY puuid, summoner_id NULLS LAST
+                    ON CONFLICT(puuid) DO UPDATE SET
+                        summoner_id = COALESCE(EXCLUDED.summoner_id, match_players.summoner_id),
+                        summoner_name = COALESCE(EXCLUDED.summoner_name, match_players.summoner_name),
+                        updated_at = NOW()
+                    RETURNING puuid
+                ), upsert_matches AS (
+                    INSERT INTO matches(
+                        game_id, queue_id, mode_key, game_creation, source, fetched_at
+                    )
+                    SELECT
+                        game_id, queue_id, mode_key, game_creation, source, NOW()
+                    FROM game_rows
+                    ON CONFLICT(game_id) DO UPDATE SET
+                        queue_id = EXCLUDED.queue_id,
+                        mode_key = EXCLUDED.mode_key,
+                        game_creation = EXCLUDED.game_creation,
+                        source = EXCLUDED.source,
+                        fetched_at = NOW()
+                    RETURNING game_id
                 )
-                .await
-                .map_err(|error| error.to_string())?;
-
-            for participant in &game.participants {
-                transaction
-                    .execute(
-                        "INSERT INTO match_players(puuid, summoner_id, summoner_name, updated_at)
-                         VALUES($1, $2, $3, NOW())
-                         ON CONFLICT(puuid) DO UPDATE SET
-                           summoner_id = COALESCE(EXCLUDED.summoner_id, match_players.summoner_id),
-                           summoner_name = COALESCE(EXCLUDED.summoner_name, match_players.summoner_name),
-                           updated_at = NOW()",
-                        &[
-                            &participant.puuid,
-                            &participant.summoner_id,
-                            &participant.summoner_name,
-                        ],
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                transaction
-                    .execute(
-                        "INSERT INTO match_participants(
-                           game_id, puuid, summoner_id, summoner_name, team_id,
-                           champion_id, position, kills, deaths, assists, win
-                         ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                         ON CONFLICT(game_id, puuid) DO UPDATE SET
-                           summoner_id = EXCLUDED.summoner_id,
-                           summoner_name = EXCLUDED.summoner_name,
-                           team_id = EXCLUDED.team_id,
-                           champion_id = EXCLUDED.champion_id,
-                           position = EXCLUDED.position,
-                           kills = EXCLUDED.kills,
-                           deaths = EXCLUDED.deaths,
-                           assists = EXCLUDED.assists,
-                           win = EXCLUDED.win",
-                        &[
-                            &game.game_id,
-                            &participant.puuid,
-                            &participant.summoner_id,
-                            &participant.summoner_name,
-                            &participant.team_id,
-                            &participant.champion_id,
-                            &participant.position,
-                            &participant.kills,
-                            &participant.deaths,
-                            &participant.assists,
-                            &participant.win,
-                        ],
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            cached += 1;
-        }
+                INSERT INTO match_participants(
+                    game_id, puuid, summoner_id, summoner_name, team_id,
+                    champion_id, position, kills, deaths, assists, win
+                )
+                SELECT
+                    participant_rows.game_id,
+                    participant_rows.puuid,
+                    participant_rows.summoner_id,
+                    participant_rows.summoner_name,
+                    participant_rows.team_id,
+                    participant_rows.champion_id,
+                    participant_rows.position,
+                    participant_rows.kills,
+                    participant_rows.deaths,
+                    participant_rows.assists,
+                    participant_rows.win
+                FROM participant_rows
+                JOIN upsert_players
+                    ON upsert_players.puuid = participant_rows.puuid
+                JOIN upsert_matches
+                    ON upsert_matches.game_id = participant_rows.game_id
+                ON CONFLICT(game_id, puuid) DO UPDATE SET
+                    summoner_id = EXCLUDED.summoner_id,
+                    summoner_name = EXCLUDED.summoner_name,
+                    team_id = EXCLUDED.team_id,
+                    champion_id = EXCLUDED.champion_id,
+                    position = EXCLUDED.position,
+                    kills = EXCLUDED.kills,
+                    deaths = EXCLUDED.deaths,
+                    assists = EXCLUDED.assists,
+                    win = EXCLUDED.win
+                "#,
+                &[&games_json],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
         transaction.commit().await.map_err(|error| error.to_string())?;
-        Ok(cached)
+        Ok(request.games.len())
     }
 
     pub async fn cached_history(

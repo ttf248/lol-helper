@@ -13,11 +13,18 @@ import {
     NTabPane,
 } from "naive-ui";
 import MatchErr from "@/queryMatch/components/matchErr.vue";
-import { computed, onBeforeMount, onBeforeUnmount, onMounted, Ref, ref } from "vue";
+import {
+    computed,
+    defineAsyncComponent,
+    onBeforeMount,
+    onBeforeUnmount,
+    onMounted,
+    Ref,
+    ref,
+} from "vue";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
-import HistoryAnalyticsPanel from "@/queryMatch/components/historyAnalyticsPanel.vue";
 import {
     MatchItemTypes,
     RecentSumInfo,
@@ -25,6 +32,11 @@ import {
 import { listen } from "@tauri-apps/api/event";
 
 const matchStore = useMatchStore();
+// 历史分析包含图表、数据库统计和较大的分析依赖，仅在用户打开该页签
+// 时加载，避免影响主战绩列表的首屏体积和启动时间。
+const HistoryAnalyticsPanel = defineAsyncComponent(
+    () => import("@/queryMatch/components/historyAnalyticsPanel.vue"),
+);
 const blackMatchDrawer = ref(false);
 const blackMatchDetails: Ref<[ParticipantsInfo, number] | null> = ref(null);
 const activeTab = ref<"matches" | "analytics">("matches");

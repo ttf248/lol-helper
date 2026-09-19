@@ -235,8 +235,16 @@ export const getCachedSgpMatch = (gameId: number): GamesBySgp | null =>
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 辅助函数：拆分请求区间
-const splitRequests = async (
+// 历史分析、个人战绩页和对局内面板可能同时请求同一名玩家的同一段
+// 历史。只合并进行中的请求，不长期缓存结果，避免客户端切换账号后读到
+// 旧数据，同时消除并发页面造成的重复 LCU/SGP 请求。
+const inFlightHistoryRequests = new Map<
+	string,
+	Promise<MatchHistoryQueryResult | null>
+>();
+
+// 摘要接口的串行分页实现；完整参与者分页由下面的并行实现处理。
+const splitRequestsSequential = async (
 	puuid: string,
 	begIndex: number,
 	endIndex: number,
@@ -282,6 +290,64 @@ const splitRequests = async (
 	return { games: allGames, source: combineSources(sources) };
 };
 
+const splitRequests = async (
+	puuid: string,
+	begIndex: number,
+	endIndex: number,
+	fullParticipants = false,
+): Promise<MatchHistoryBatchResult> => {
+	if (!fullParticipants) {
+		return splitRequestsSequential(puuid, begIndex, endIndex, false);
+	}
+
+	const step = 20;
+	const pageConcurrency = 2;
+	let allGames: MatchHistoryGame[] = [];
+	const sources: MatchHistorySource[] = [];
+	const totalToFetch = endIndex - begIndex;
+
+	// 完整参与者请求最多并行两页，批次之间保留间隔，兼顾速度和限流。
+	for (
+		let batchOffset = 0;
+		batchOffset < totalToFetch;
+		batchOffset += step * pageConcurrency
+	) {
+		const batch = Array.from(
+			{
+				length: Math.min(
+					pageConcurrency,
+					Math.ceil((totalToFetch - batchOffset) / step),
+				),
+			},
+			(_, batchIndex) => {
+				const offset = batchOffset + batchIndex * step;
+				return fetchMatchHistory(
+					puuid,
+					begIndex + offset,
+					Math.min(step, totalToFetch - offset),
+					true,
+				);
+			},
+		);
+		const results = await Promise.all(batch);
+		let reachedHistoryEnd = false;
+		for (const result of results) {
+			sources.push(result.source);
+			if (result.games.length > 0) {
+				allGames = allGames.concat(result.games);
+			} else {
+				reachedHistoryEnd = true;
+			}
+		}
+		if (reachedHistoryEnd) break;
+		if (batchOffset + step * pageConcurrency < totalToFetch) {
+			await delay(200);
+		}
+	}
+
+	return { games: allGames, source: combineSources(sources) };
+};
+
 // 主函数：查询历史比赛数据，并返回本次实际使用的数据源。
 export const queryMatchHistoryWithSource = async (
 	puuid: string,
@@ -291,7 +357,7 @@ export const queryMatchHistoryWithSource = async (
 	return queryMatchHistoryWithSourceInternal(puuid, begIndex, endIndex, false);
 };
 
-const queryMatchHistoryWithSourceInternal = async (
+const queryMatchHistoryWithSourceInternalUncached = async (
 	puuid: string,
 	begIndex: number,
 	endIndex: number,
@@ -337,6 +403,40 @@ const queryMatchHistoryWithSourceInternal = async (
 		console.error("Error fetching match history:", error);
 		return null;
 	}
+};
+
+const queryMatchHistoryWithSourceInternal = (
+	puuid: string,
+	begIndex: number,
+	endIndex: number,
+	fullParticipants: boolean,
+): Promise<MatchHistoryQueryResult | null> => {
+	const key = `${puuid}:${begIndex}:${endIndex}:${fullParticipants ? "full" : "summary"}`;
+	const pending = inFlightHistoryRequests.get(key);
+	if (pending) {
+		return pending;
+	}
+
+	const request = queryMatchHistoryWithSourceInternalUncached(
+		puuid,
+		begIndex,
+		endIndex,
+		fullParticipants,
+	);
+	inFlightHistoryRequests.set(key, request);
+	void request.then(
+		() => {
+			if (inFlightHistoryRequests.get(key) === request) {
+				inFlightHistoryRequests.delete(key);
+			}
+		},
+		() => {
+			if (inFlightHistoryRequests.get(key) === request) {
+				inFlightHistoryRequests.delete(key);
+			}
+		},
+	);
+	return request;
 };
 
 /** 查询完整 participant 列表，供对局内近期胜率和开黑分析使用。 */
