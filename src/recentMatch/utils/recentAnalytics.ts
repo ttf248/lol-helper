@@ -38,6 +38,7 @@ export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 const HISTORY_FAST_SCAN_LIMIT = 40;
 // 非当前模式的历史记录会占用窗口，因此完整分析需要多扫描一些记录。
 const HISTORY_SCAN_LIMIT = 300;
+const HISTORY_PAGE_SIZE = 20;
 const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -301,6 +302,64 @@ const queueHydration = new Map<string, Promise<NormalizedHistoryGame[]>>();
 const historyKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}:${modeKey}`;
 
+const syncPlayerModeGames = async (
+  player: RecentSumInfo,
+  modeKey: MatchModeKey,
+  existingGames: NormalizedHistoryGame[],
+): Promise<{ games: NormalizedHistoryGame[]; source: string }> => {
+  const cachedGameIds = new Set(existingGames.map((game) => game.gameId));
+  const fetchedGames = new Map<number, NormalizedHistoryGame>();
+  let source = "unavailable";
+  let reachedCachedBoundary = false;
+
+  for (
+    let offset = 0;
+    offset < HISTORY_SCAN_LIMIT;
+    offset += HISTORY_PAGE_SIZE
+  ) {
+    const result = await queryMatchHistoryFullWithSource(
+      player.puuid,
+      offset,
+      Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SCAN_LIMIT),
+    );
+    const rawGames = result?.games ?? [];
+    if (result?.source) source = result.source;
+    if (rawGames.length === 0) break;
+
+    const pageGames = uniqueGames(rawGames, modeKey, player);
+    for (const [gameId, game] of pageGames) {
+      if (cachedGameIds.has(gameId)) {
+        reachedCachedBoundary = true;
+      }
+      fetchedGames.set(gameId, game);
+    }
+
+    // 只要服务器分页触碰到本地已有 gameId，就已经追到缓存边界；
+    // 当合并样本已经覆盖最近 100 场时，后面的历史不再查询。
+    const mergedGameCount = new Set([
+      ...cachedGameIds,
+      ...fetchedGames.keys(),
+    ]).size;
+    if (
+      (reachedCachedBoundary &&
+        mergedGameCount >= RECENT_ANALYSIS_GAME_COUNT) ||
+      (cachedGameIds.size === 0 &&
+        fetchedGames.size >= RECENT_ANALYSIS_GAME_COUNT) ||
+      rawGames.length < HISTORY_PAGE_SIZE
+    ) {
+      break;
+    }
+  }
+
+  return {
+    games: sortGames([
+      ...existingGames,
+      ...Array.from(fetchedGames.values()),
+    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT),
+    source,
+  };
+};
+
 const hydratePlayerQueueHistory = (
   player: RecentSumInfo,
   queueId: number,
@@ -312,23 +371,15 @@ const hydratePlayerQueueHistory = (
   if (existing) return existing;
 
   const request = (async (): Promise<NormalizedHistoryGame[]> => {
-    const result = await queryMatchHistoryFullWithSource(
-      player.puuid,
-      0,
-      HISTORY_SCAN_LIMIT,
-    );
-    const fetchedGames = uniqueGames(result?.games ?? [], modeKey, player);
-    const games = sortGames([
-      ...existingGames,
-      ...Array.from(fetchedGames.values()),
-    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+    const synced = await syncPlayerModeGames(player, modeKey, existingGames);
+    const games = synced.games;
     if (games.length > 0) {
       await cacheHistory({
         puuid: player.puuid,
         summonerId: player.summonerId,
         summonerName: player.summonerName,
-        modeKey: modeForQueue(queueId),
-        source: result?.source || "unavailable",
+        modeKey,
+        source: synced.source,
         games,
       });
     }
@@ -362,12 +413,9 @@ const loadPlayerHistory = async (
       limit: RECENT_ANALYSIS_GAME_COUNT,
     });
     if (cachedGames.length > 0) {
-      if (
-        cachedGames.length < RECENT_ANALYSIS_GAME_COUNT ||
-        !hasParticipantRoster(cachedGames)
-      ) {
-        void hydratePlayerQueueHistory(player, queueId, cachedGames);
-      }
+      // 即使本地已经有 100 场，也必须向服务器同步最新分页；
+      // gameId 碰到本地记录后才停止继续翻页。
+      void hydratePlayerQueueHistory(player, queueId, cachedGames);
       const limitedGames = new Map(
         cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
           game.gameId,
@@ -565,46 +613,33 @@ const hydratePlayerModeHistory = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingSnapshot: PlayerHistorySnapshot,
-  requestedGames: number,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerHistorySnapshot> => {
   const existingGames = Array.from(existingSnapshot.games.values());
-  const scanLimit =
-    requestedGames <= RECENT_DEFAULT_GAME_COUNT
-      ? HISTORY_FAST_SCAN_LIMIT
-      : HISTORY_SCAN_LIMIT;
   onProgress?.({
     stage: "full",
     completed: 0,
     total: 1,
     percentage: 45,
-    message: `正在补齐最近 ${scanLimit} 场的完整参与者，用于同队/交手分析`,
+    message: "正在向服务器同步最近 100 场完整参与者，用于同队/交手分析",
   });
-  const fullResult = await queryMatchHistoryFullWithSource(
-    player.puuid,
-    0,
-    scanLimit,
-  );
-  const hydratedGames = normalizeModeGames(fullResult?.games || [], modeKey);
-  const mergedGames = sortGames([...existingGames, ...hydratedGames]).slice(
-    0,
-    RECENT_ANALYSIS_GAME_COUNT,
-  );
-  if (hydratedGames.length > 0) {
+  const synced = await syncPlayerModeGames(player, modeKey, existingGames);
+  const mergedGames = synced.games;
+  if (mergedGames.length > 0) {
     void cacheHistory({
       puuid: player.puuid,
       summonerId: player.summonerId,
       summonerName: player.summonerName,
       modeKey,
-      source: fullResult?.source || existingSnapshot.source,
+      source: synced.source || existingSnapshot.source,
       games: mergedGames,
     });
   }
   const result = toHistorySnapshot(
     player,
     mergedGames,
-    hydratedGames.length > 0
-      ? fullResult?.source || "历史接口完整参与者"
+    mergedGames.length > existingGames.length
+      ? synced.source || "历史接口完整参与者"
       : existingSnapshot.source,
   );
   onProgress?.({
@@ -613,9 +648,9 @@ const hydratePlayerModeHistory = async (
     total: 1,
     percentage: 72,
     message:
-      hydratedGames.length > 0
+      mergedGames.length > existingGames.length
         ? `完整参与者数据已返回，共 ${mergedGames.length} 场，正在计算关系`
-        : "完整参与者接口暂无结果，保留个人历史继续分析",
+        : `服务器数据已与本地缓存核对，共 ${mergedGames.length} 场，正在计算关系`,
   });
   return result;
 };
@@ -1169,14 +1204,14 @@ export const loadPlayerModeAnalysis = async (
   });
 
   const snapshotGames = Array.from(snapshot.games.values());
-  const needsHydration =
-    snapshotGames.length < requestedGames || !hasParticipantRoster(snapshotGames);
+  // 本地样本数量足够也不能跳过服务器同步；只有服务器分页命中
+  // 本地 gameId 后，syncPlayerModeGames 才会停止继续查询。
+  const needsHydration = snapshotGames.length > 0;
   if (needsHydration) {
     snapshot = await hydratePlayerModeHistory(
       player,
       modeKey,
       snapshot,
-      requestedGames,
       onProgress,
     );
     const hydratedPersonalAnalysis = buildPlayerAnalysis(
@@ -1491,12 +1526,12 @@ export const loadRecentTeamAnalysis = async (
     );
 
   if (hydrationEntries.length > 0) {
-    onProgress?.({
-      stage: "full",
-      completed: 0,
-      total: hydrationEntries.length,
-      message: "正在后台补齐最近 100 场",
-    });
+      onProgress?.({
+        stage: "full",
+        completed: 0,
+        total: hydrationEntries.length,
+        message: "正在从服务器同步最近 100 场（命中本地 gameId 后停止）",
+      });
   }
 
   const hydratedGamesByPlayer = new Map<string, NormalizedHistoryGame[]>();
@@ -1510,7 +1545,7 @@ export const loadRecentTeamAnalysis = async (
         stage: "full",
         completed: hydratedCount,
         total: hydrationEntries.length,
-        message: "正在后台补齐最近 100 场",
+        message: "正在从服务器同步最近 100 场（命中本地 gameId 后停止）",
       });
     }),
   );

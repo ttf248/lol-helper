@@ -17,6 +17,10 @@ import {
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
 
+const HISTORY_PAGE_SIZE = 20;
+const HISTORY_SYNC_SCAN_LIMIT = 300;
+const HISTORY_SYNC_GAME_LIMIT = 100;
+
 class QueryMatch {
     private cacheRawGames = async (
         puuid: string,
@@ -164,7 +168,7 @@ class QueryMatch {
                 // 对局内历史按模式读取，而不是把 420/440 或 400/430/490
                 // 拆成不同数据集；这样缓存和接口的筛选边界完全一致。
                 modeKey,
-                limit: 10,
+                limit: HISTORY_SYNC_GAME_LIMIT,
             });
             const cachedMatchItems = cachedMatches
                 .map((game) =>
@@ -174,12 +178,15 @@ class QueryMatch {
                     (match): match is MatchItemTypes => match !== null,
                 );
 
-            // 缓存不足时只补同一模式的接口数据，绝不把“最近 10 场
-            // 混合模式”直接展示。接口结果和缓存结果最后统一按真实
-            // gameCreation 去重、排序，避免某个玩家被旧数据顶到前面。
-            const apiMatches = cachedMatchItems.length >= 10
-                ? []
-                : await this.findMatch(puuid, modeKey, targetSummonerId);
+            // 缓存永远不是停止条件。每次打开对局面板都从服务器读取
+            // 最新分页；服务器返回某局 gameId 已存在于本地缓存后，才
+            // 认为已经追到缓存边界并停止继续向后翻页。
+            const apiMatches = await this.findMatch(
+                puuid,
+                modeKey,
+                targetSummonerId,
+                new Set(cachedMatches.map((game) => game.gameId)),
+            );
             const matches = this.uniqueAndSortMatches([
                 ...cachedMatchItems,
                 ...apiMatches,
@@ -234,20 +241,59 @@ class QueryMatch {
         puuid: string,
         modeKey: MatchModeKey,
         targetSummonerId?: number,
+        cachedGameIds: Set<number> = new Set(),
     ): Promise<MatchItemTypes[]> => {
-        // 多读取一页只用于筛掉其它模式；返回给面板的仍然最多 10 场。
-        const matchList = await this.queryRawHistory(puuid, 0, 20);
-        if (matchList.length > 0) {
-            return matchList
-                .filter((game) => isModeQueue(game.queueId, modeKey))
-                .map((games) => this.parseMatch(games, puuid, targetSummonerId))
-                .filter(
-                    (match): match is MatchItemTypes => match !== null,
-                )
-                .slice(0, 10);
-        } else {
-            return [];
+        const matchList: MatchItemTypes[] = [];
+        const seenGameIds = new Set<number>();
+        let reachedCachedBoundary = false;
+
+        for (
+            let offset = 0;
+            offset < HISTORY_SYNC_SCAN_LIMIT;
+            offset += HISTORY_PAGE_SIZE
+        ) {
+            const games = await this.queryRawHistory(
+                puuid,
+                offset,
+                Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SYNC_SCAN_LIMIT),
+            );
+            if (games.length === 0) break;
+
+            for (const game of games) {
+                if (!isModeQueue(game.queueId, modeKey)) continue;
+                if (cachedGameIds.has(game.gameId)) {
+                    reachedCachedBoundary = true;
+                }
+
+                const match = this.parseMatch(game, puuid, targetSummonerId);
+                if (match && !seenGameIds.has(match.gameId)) {
+                    seenGameIds.add(match.gameId);
+                    matchList.push(match);
+                }
+            }
+
+            // 最新 100 场已经足够支撑当前面板和后续分析；如果这一页
+            // 已碰到本地已有 gameId，且合并后的样本已经覆盖 100 场，
+            // 才算追到缓存边界。缓存不足 100 场时仍继续向后查询。
+            const mergedGameCount = new Set([
+                ...cachedGameIds,
+                ...seenGameIds,
+            ]).size;
+            if (
+                (reachedCachedBoundary &&
+                    mergedGameCount >= HISTORY_SYNC_GAME_LIMIT) ||
+                (cachedGameIds.size === 0 &&
+                    matchList.length >= HISTORY_SYNC_GAME_LIMIT) ||
+                games.length < HISTORY_PAGE_SIZE
+            ) {
+                break;
+            }
         }
+
+        return this.uniqueAndSortMatches(matchList).slice(
+            0,
+            HISTORY_SYNC_GAME_LIMIT,
+        );
     };
 }
 

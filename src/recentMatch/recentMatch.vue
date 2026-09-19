@@ -172,10 +172,10 @@ const init = () => {
                 stage: "history",
                 completed: 0,
                 total: Math.max(playerTotal, 10),
-                message: "正在加载最近 10 场战绩",
+                message: "正在读取缓存并校验服务器最新战绩",
                 detail: playerTotal < 10
                     ? `当前已识别 ${playerTotal}/10 人，先显示已有玩家。`
-                    : "本局玩家已读取，正在并发读取历史战绩。",
+                    : "每名玩家按模式分页查询，命中本地 gameId 后停止。",
             });
 
             let completedHistory = 0;
@@ -185,7 +185,7 @@ const init = () => {
                     stage: "history",
                     completed: completedHistory,
                     total: Math.max(playerTotal, 10),
-                    message: "正在加载最近 10 场战绩",
+                    message: "正在读取缓存并校验服务器最新战绩",
                     detail: `${completedHistory}/${playerTotal} 名玩家的基础战绩已完成。`,
                 });
             };

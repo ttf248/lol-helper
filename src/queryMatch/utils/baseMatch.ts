@@ -18,6 +18,10 @@ import {
 } from "@/recentMatch/utils/recentAnalytics";
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 
+const HISTORY_PAGE_SIZE = 20;
+const HISTORY_SYNC_SCAN_LIMIT = 300;
+const HISTORY_SYNC_GAME_LIMIT = 100;
+
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
     source: MatchHistorySource | null;
@@ -25,6 +29,108 @@ export interface ProcessedMatchHistory {
 
 export default class BaseMatch {
     public summonerId = 0;
+
+    private combineSources = (sources: MatchHistorySource[]) => {
+        const uniqueSources = Array.from(new Set(sources));
+        if (uniqueSources.length === 0) return null;
+        return uniqueSources.length === 1 ? uniqueSources[0] : "mixed";
+    };
+
+    private syncHistoryUntilCacheBoundary = async (
+        puuid: string,
+        cachedGameIds: Set<number>,
+        targetCount: number,
+    ): Promise<{
+        games: (Games | GamesBySgp)[];
+        source: MatchHistorySource | null;
+    }> => {
+        const serverGames = new Map<number, Games | GamesBySgp>();
+        const sources: MatchHistorySource[] = [];
+        let reachedCachedBoundary = false;
+
+        for (
+            let offset = 0;
+            offset < HISTORY_SYNC_SCAN_LIMIT;
+            offset += HISTORY_PAGE_SIZE
+        ) {
+            const result = await queryMatchHistoryWithSource(
+                puuid,
+                offset,
+                Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SYNC_SCAN_LIMIT),
+            );
+            if (result?.source) sources.push(result.source);
+            const games = result?.games ?? [];
+            if (games.length === 0) break;
+
+            for (const game of games) {
+                if (cachedGameIds.has(game.gameId)) {
+                    reachedCachedBoundary = true;
+                }
+                serverGames.set(game.gameId, game);
+            }
+
+            const mergedCount = new Set([
+                ...cachedGameIds,
+                ...serverGames.keys(),
+            ]).size;
+            if (
+                (reachedCachedBoundary && mergedCount >= targetCount) ||
+                (cachedGameIds.size === 0 &&
+                    serverGames.size >= targetCount) ||
+                games.length < HISTORY_PAGE_SIZE
+            ) {
+                break;
+            }
+        }
+
+        return {
+            games: Array.from(serverGames.values()),
+            source: this.combineSources(sources),
+        };
+    };
+
+    private mergeHistoryGames = (
+        cachedGames: NormalizedHistoryGame[],
+        serverGames: (Games | GamesBySgp)[],
+        limit: number,
+    ): NormalizedHistoryGame[] => {
+        const unique = new Map<number, NormalizedHistoryGame>();
+        cachedGames.forEach((game) => unique.set(game.gameId, game));
+        serverGames.forEach((rawGame) => {
+            const game = normalizeHistoryGame(rawGame);
+            if (game) unique.set(game.gameId, game);
+        });
+        return Array.from(unique.values())
+            .sort((left, right) => right.gameCreation - left.gameCreation)
+            .slice(0, limit);
+    };
+
+    private cacheNormalizedGames = (
+        puuid: string,
+        games: (Games | GamesBySgp)[],
+        source: MatchHistorySource,
+        summonerName: string,
+    ) => {
+        const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
+        for (const rawGame of games) {
+            const normalized = normalizeHistoryGame(rawGame);
+            if (!normalized) continue;
+            const modeKey = modeForQueue(normalized.queueId);
+            const modeGames = gamesByMode.get(modeKey) || [];
+            modeGames.push(normalized);
+            gamesByMode.set(modeKey, modeGames);
+        }
+        for (const [modeKey, modeGames] of gamesByMode) {
+            void cacheHistory({
+                puuid,
+                summonerId: this.summonerId,
+                summonerName,
+                modeKey,
+                source,
+                games: modeGames,
+            });
+        }
+    };
 
     public gerSummonerInfo = async (summonerId?: number) => {
         const summonerInfo = await querySummonerInfo(summonerId);
@@ -70,18 +176,47 @@ export default class BaseMatch {
 
         const requestedCount = Math.max(0, endIndex - begIndex);
         if (requestedCount > 0) {
+            const syncLimit = Math.min(
+                HISTORY_SYNC_SCAN_LIMIT,
+                Math.max(HISTORY_SYNC_GAME_LIMIT, endIndex),
+            );
             const cachedGames = await getCachedHistory({
                 puuid,
-                limit: requestedCount,
-                offset: begIndex,
+                limit: syncLimit,
+                offset: 0,
             });
-            const cachedMatches = cachedGames
+            const synced = await this.syncHistoryUntilCacheBoundary(
+                puuid,
+                new Set(cachedGames.map((game) => game.gameId)),
+                syncLimit,
+            );
+            const mergedGames = this.mergeHistoryGames(
+                cachedGames,
+                synced.games,
+                syncLimit,
+            );
+            const cachedMatches = mergedGames
                 .map((game) => this.getSimpleCachedMatch(game, puuid))
                 .filter(
                     (match): match is SimpleMatchDetailsTypes => match !== null,
                 );
-            if (cachedMatches.length >= requestedCount) {
-                return { matches: cachedMatches, source: "postgres" };
+            const pageMatches = cachedMatches.slice(begIndex, endIndex);
+            if (pageMatches.length >= requestedCount || mergedGames.length > 0) {
+                if (synced.games.length > 0 && synced.source) {
+                    this.cacheNormalizedGames(
+                        puuid,
+                        synced.games,
+                        synced.source,
+                        localSumInfo.name || "",
+                    );
+                }
+                return {
+                    matches: pageMatches,
+                    source:
+                        synced.source && cachedGames.length > 0
+                            ? "mixed"
+                            : synced.source || "postgres",
+                };
             }
         }
 
@@ -105,25 +240,12 @@ export default class BaseMatch {
 
         // 历史查询面板也负责回填统一分析缓存，后续首页、分页和模式分析
         // 都可以直接复用这些 participant 数据，避免重复请求同一段历史。
-        const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
-        for (const rawGame of result.games) {
-            const normalized = normalizeHistoryGame(rawGame);
-            if (!normalized) continue;
-            const modeKey = modeForQueue(normalized.queueId);
-            const modeGames = gamesByMode.get(modeKey) || [];
-            modeGames.push(normalized);
-            gamesByMode.set(modeKey, modeGames);
-        }
-        for (const [modeKey, games] of gamesByMode) {
-            void cacheHistory({
-                puuid,
-                summonerId: this.summonerId,
-                summonerName: localSumInfo.name || "",
-                modeKey,
-                source: result.source,
-                games,
-            });
-        }
+        this.cacheNormalizedGames(
+            puuid,
+            result.games,
+            result.source,
+            localSumInfo.name || "",
+        );
 
         return { matches, source: result.source };
     };
@@ -132,9 +254,11 @@ export default class BaseMatch {
         match: NormalizedHistoryGame,
         targetPuuid?: string,
     ): SimpleMatchDetailsTypes | null => {
-        const participant =
-            match.participants.find((item) => item.puuid === targetPuuid) ||
-            match.participants[0];
+        const participant = match.participants.find(
+            (item) =>
+                item.puuid === targetPuuid ||
+                (this.summonerId > 0 && item.summonerId === this.summonerId),
+        );
         if (!participant) return null;
 
         const { kills, deaths, assists } = participant;
@@ -177,11 +301,14 @@ export default class BaseMatch {
                 return match.participantIdentities?.some(
                     (identity) =>
                         identity.participantId === item?.participantId &&
-                        (identity.player as any).puuid === targetPuuid,
+                        ((identity.player as any).puuid === targetPuuid ||
+                            (this.summonerId > 0 &&
+                                (identity.player as any).summonerId ===
+                                    this.summonerId)),
                 );
             }
             return false;
-        }) ?? match.participants?.[0];
+        });
         if (!participant || typeof match.gameId !== "number") {
             return null;
         }
