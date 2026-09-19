@@ -131,6 +131,8 @@ export interface RecentHistoryStatus {
   modeGames: number;
   /** 接口返回且成功匹配到目标身份的对局数。 */
   matchedGames: number;
+  /** 本次成功返回数据的服务器接口；空数组表示只使用本地/页面缓存。 */
+  sourceEndpoints?: string[];
 }
 
 export interface RecentSumInfo {
@@ -298,6 +300,8 @@ export interface PlayerRecentAnalysis {
   confidence: ConfidenceInfo;
   moderation: PlayerModerationInfo;
   source: string;
+  /** 本次分析实际命中的服务器接口；本地缓存分析时为空数组。 */
+  sourceEndpoints?: string[];
   historyComplete: boolean;
   dataCoverage?: HistoryCoverageInfo;
   network?: RecentNetworkAnalysis;

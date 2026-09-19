@@ -13,7 +13,12 @@ import {
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
-import { getCachedLcuMatch, getCachedSgpMatch } from "@/lcu/aboutMatch";
+import {
+    getCachedLcuMatch,
+    getCachedLcuMatchSource,
+    getCachedSgpMatch,
+} from "@/lcu/aboutMatch";
+import type { MatchHistoryEndpoint } from "@/lcu/aboutMatch";
 import {
     GamesBySgp,
     Participant as SgpParticipant,
@@ -35,6 +40,12 @@ export default class MatchDetails {
         visionScore: true,
     };
 
+    private withDataSource = (
+        result: ParticipantsInfo | null,
+        dataSource: MatchHistoryEndpoint,
+    ): ParticipantsInfo | null =>
+        result === null ? null : { ...result, dataSource };
+
     public queryGameDetail = async (
         gameId: number,
         sumId: number,
@@ -52,7 +63,7 @@ export default class MatchDetails {
                 sumPuuid,
             );
             if (sgpResult !== null) {
-                return sgpResult;
+                return this.withDataSource(sgpResult, "sgp-summary");
             }
         }
 
@@ -84,7 +95,10 @@ export default class MatchDetails {
                           sumPuuid,
                       );
             if (lcuResult !== null) {
-                return lcuResult;
+                return this.withDataSource(
+                    lcuResult,
+                    getCachedLcuMatchSource(gameId) || "lcu-puuid",
+                );
             }
         }
 
@@ -97,23 +111,29 @@ export default class MatchDetails {
         }
 
         if (response.queueId === 1700) {
-            return this.getFighterParticipantsDetails(
+            return this.withDataSource(
+                this.getFighterParticipantsDetails(
+                    response,
+                    response.participants,
+                    response.participantIdentities,
+                    gameId,
+                    sumId,
+                    response.queueId,
+                ),
+                "lcu-game-detail",
+            );
+        }
+        return this.withDataSource(
+            this.getParticipantsDetails(
                 response,
                 response.participants,
                 response.participantIdentities,
-                gameId,
                 sumId,
                 response.queueId,
-            );
-        }
-        return this.getParticipantsDetails(
-            response,
-            response.participants,
-            response.participantIdentities,
-            sumId,
-            response.queueId,
-            gameId,
-            sumPuuid,
+                gameId,
+                sumPuuid,
+            ),
+            "lcu-game-detail",
         );
     };
 

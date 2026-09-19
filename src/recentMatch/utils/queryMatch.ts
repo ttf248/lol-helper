@@ -3,7 +3,10 @@ import {
     RecentHistoryStatus,
 } from "@/recentMatch/utils/queryTypes";
 import { champDict } from "@/resources/champList";
-import { queryMatchHistoryWithSource } from "@/lcu/aboutMatch";
+import {
+    MatchHistoryEndpoint,
+    queryMatchHistoryWithSource,
+} from "@/lcu/aboutMatch";
 import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import {
@@ -27,6 +30,7 @@ interface MatchSearchResult {
     modeGames: number;
     matchedGames: number;
     requestFailed: boolean;
+    sourceEndpoints: MatchHistoryEndpoint[];
 }
 
 class QueryMatch {
@@ -65,6 +69,7 @@ class QueryMatch {
             serverGames: search.serverGames,
             modeGames: search.modeGames,
             matchedGames: search.matchedGames,
+            sourceEndpoints: search.sourceEndpoints,
         };
 
         if (search.matches.length > 0) {
@@ -293,6 +298,7 @@ class QueryMatch {
                     serverGames: 0,
                     modeGames: 0,
                     matchedGames: 0,
+                    sourceEndpoints: [],
                 },
             ];
         }
@@ -347,6 +353,7 @@ class QueryMatch {
         let modeGames = 0;
         let matchedGames = 0;
         let requestFailed = false;
+        let sourceEndpoints: MatchHistoryEndpoint[] = [];
 
         const result = await queryMatchHistoryWithSource(
             puuid,
@@ -364,6 +371,7 @@ class QueryMatch {
                 },
             );
             serverGames = result.games.length;
+            sourceEndpoints = result.endpoints;
 
             for (const game of result.games) {
                 if (!isModeQueue(game.queueId, modeKey)) continue;
@@ -387,6 +395,7 @@ class QueryMatch {
             modeGames,
             matchedGames,
             requestFailed,
+            sourceEndpoints,
         };
     };
 

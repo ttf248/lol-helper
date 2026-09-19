@@ -15,6 +15,17 @@ export type MatchHistorySource =
 	| "postgres"
 	| "mixed";
 
+/**
+ * 历史数据实际命中的接口。source 只用于兼容旧的聚合标签，
+ * endpoints 才是界面展示和排查问题时应该信任的明细。
+ */
+export type MatchHistoryEndpoint =
+	| "lcu-current-summoner"
+	| "lcu-puuid"
+	| "sgp-summary"
+	| "sgp-summary-full"
+	| "lcu-game-detail";
+
 export const MATCH_HISTORY_SOURCE_LABELS: Record<MatchHistorySource, string> = {
 	"lcu-current": "LCU（当前召唤师）",
 	"lcu-puuid": "LCU（PUUID）",
@@ -23,11 +34,32 @@ export const MATCH_HISTORY_SOURCE_LABELS: Record<MatchHistorySource, string> = {
 	mixed: "LCU + SGP（混合）",
 };
 
+export const MATCH_HISTORY_ENDPOINT_LABELS: Record<MatchHistoryEndpoint, string> = {
+	"lcu-current-summoner": "LCU 当前召唤师历史接口",
+	"lcu-puuid": "LCU PUUID 历史接口",
+	"sgp-summary": "SGP SUMMARY 历史接口",
+	"sgp-summary-full": "SGP SUMMARY 完整参与者接口",
+	"lcu-game-detail": "LCU 对局详情接口",
+};
+
+export const MATCH_HISTORY_ENDPOINT_PATHS: Record<MatchHistoryEndpoint, string> = {
+	"lcu-current-summoner":
+		"/lol-match-history/v1/products/lol/current-summoner/matches?begIndex={start}&endIndex={end}",
+	"lcu-puuid":
+		"/lol-match-history/v1/products/lol/{puuid}/matches?begIndex={start}&endIndex={end}",
+	"sgp-summary":
+		"/match-history-query/v1/products/lol/player/{puuid}/SUMMARY?startIndex={start}&count={count}",
+	"sgp-summary-full":
+		"/match-history-query/v1/products/lol/player/{puuid}/SUMMARY?startIndex={start}&count={count}",
+	"lcu-game-detail": "/lol-match-history/v1/games/{gameId}",
+};
+
 export type MatchHistoryGame = Games | GamesBySgp;
 
 export interface MatchHistoryQueryResult {
 	games: MatchHistoryGame[];
 	source: MatchHistorySource;
+	endpoints: MatchHistoryEndpoint[];
 }
 
 interface MatchHistoryBatchResult extends MatchHistoryQueryResult {}
@@ -36,6 +68,10 @@ const combineSources = (sources: MatchHistorySource[]): MatchHistorySource => {
 	const uniqueSources = Array.from(new Set(sources));
 	return uniqueSources.length === 1 ? uniqueSources[0] : "mixed";
 };
+
+const combineEndpoints = (
+	endpoints: MatchHistoryEndpoint[],
+): MatchHistoryEndpoint[] => Array.from(new Set(endpoints));
 
 const tokenFetcher = async (): Promise<string | null> => {
 	const entitlements: EntitlementsTokenTypes | null = await invokeLcu(
@@ -51,17 +87,23 @@ const tokenFetcher = async (): Promise<string | null> => {
 
 const sgpService = new SgpMatchHistoryService(tokenFetcher);
 const lcuMatchCache = new Map<number, Games>();
+const lcuMatchSource = new Map<number, MatchHistoryEndpoint>();
 
-const cacheLcuGames = (games: Games[]) => {
+const cacheLcuGames = (games: Games[], endpoint: MatchHistoryEndpoint) => {
 	for (const game of games) {
 		if (typeof game?.gameId === "number") {
 			lcuMatchCache.set(game.gameId, game);
+			lcuMatchSource.set(game.gameId, endpoint);
 		}
 	}
 };
 
 export const getCachedLcuMatch = (gameId: number): Games | null =>
 	lcuMatchCache.get(gameId) ?? null;
+
+export const getCachedLcuMatchSource = (
+	gameId: number,
+): MatchHistoryEndpoint | null => lcuMatchSource.get(gameId) ?? null;
 
 const isCurrentSummoner = (puuid: string): boolean => {
 	try {
@@ -96,7 +138,7 @@ const fetchCurrentSummonerMatchHistory = async (
 		if (!Array.isArray(games)) {
 			return null;
 		}
-		cacheLcuGames(games);
+		cacheLcuGames(games, "lcu-current-summoner");
 		const responseStart = Number(history?.gameIndexBegin);
 		const responseEnd = Number(history?.gameIndexEnd);
 		// 新版 LCU 会按 query 参数返回分页结果，旧版可能忽略参数并
@@ -134,7 +176,7 @@ const fetchSummonerMatchHistoryFromLcu = async (
 		if (!Array.isArray(games)) {
 			return null;
 		}
-		cacheLcuGames(games);
+		cacheLcuGames(games, "lcu-puuid");
 		return games;
 	} catch {
 		return null;
@@ -190,7 +232,11 @@ const fetchMatchHistory = async (
 			endIndex,
 		);
 		if (currentGames !== null) {
-			return { games: currentGames, source: "lcu-current" };
+			return {
+				games: currentGames,
+				source: "lcu-current",
+				endpoints: ["lcu-current-summoner"],
+			};
 		}
 	}
 
@@ -206,7 +252,7 @@ const fetchMatchHistory = async (
 		lcuGames.length > 0 &&
 		(!fullParticipants || hasParticipantRoster(lcuGames))
 	) {
-		return { games: lcuGames, source: "lcu-puuid" };
+		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
 	}
 
 	try {
@@ -219,7 +265,11 @@ const fetchMatchHistory = async (
 			? await sgpService.getFullMatchHistory(sgpRequest)
 			: await sgpService.getMatchHistory(sgpRequest);
 		if (sgpGames.length > 0) {
-			return { games: sgpGames, source: "sgp" };
+			return {
+				games: sgpGames,
+				source: "sgp",
+				endpoints: [fullParticipants ? "sgp-summary-full" : "sgp-summary"],
+			};
 		}
 	} catch (sgpError) {
 		console.warn("SGP match history request failed, trying LCU fallback", sgpError);
@@ -233,11 +283,15 @@ const fetchMatchHistory = async (
 			endIndex,
 		);
 		if (currentGames !== null && currentGames.length > 0) {
-			return { games: currentGames, source: "lcu-current" };
+			return {
+				games: currentGames,
+				source: "lcu-current",
+				endpoints: ["lcu-current-summoner"],
+			};
 		}
 	}
 	if (lcuGames !== null) {
-		return { games: lcuGames, source: "lcu-puuid" };
+		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
 	}
 	throw new Error("Match history interfaces returned no data");
 };
@@ -266,6 +320,7 @@ const splitRequestsSequential = async (
 	const step = 20; // 接口单次最多请求 20 条
 	let allGames: MatchHistoryGame[] = [];
 	const sources: MatchHistorySource[] = [];
+	const endpoints: MatchHistoryEndpoint[] = [];
 
 	// 1. 计算总共需要获取的数量
 	const totalToFetch = endIndex - begIndex;
@@ -286,6 +341,7 @@ const splitRequestsSequential = async (
 			fullParticipants,
 		);
 		sources.push(result.source);
+		endpoints.push(...result.endpoints);
 
 		if (result.games.length > 0) {
 			allGames = allGames.concat(result.games);
@@ -300,7 +356,11 @@ const splitRequestsSequential = async (
 		}
 	}
 
-	return { games: allGames, source: combineSources(sources) };
+	return {
+		games: allGames,
+		source: combineSources(sources),
+		endpoints: combineEndpoints(endpoints),
+	};
 };
 
 const splitRequests = async (
@@ -317,6 +377,7 @@ const splitRequests = async (
 	const pageConcurrency = 2;
 	let allGames: MatchHistoryGame[] = [];
 	const sources: MatchHistorySource[] = [];
+	const endpoints: MatchHistoryEndpoint[] = [];
 	const totalToFetch = endIndex - begIndex;
 
 	// 完整参与者请求最多并行两页，批次之间保留间隔，兼顾速度和限流。
@@ -346,6 +407,7 @@ const splitRequests = async (
 		let reachedHistoryEnd = false;
 		for (const result of results) {
 			sources.push(result.source);
+			endpoints.push(...result.endpoints);
 			if (result.games.length > 0) {
 				allGames = allGames.concat(result.games);
 			} else {
@@ -358,7 +420,11 @@ const splitRequests = async (
 		}
 	}
 
-	return { games: allGames, source: combineSources(sources) };
+	return {
+		games: allGames,
+		source: combineSources(sources),
+		endpoints: combineEndpoints(endpoints),
+	};
 };
 
 // 主函数：查询历史比赛数据，并返回本次实际使用的数据源。
@@ -412,6 +478,7 @@ const queryMatchHistoryWithSourceInternalUncached = async (
 		return {
 			games: uniqueGames.sort((a, b) => b.gameCreation - a.gameCreation),
 			source: result.source,
+			endpoints: result.endpoints,
 		};
 	} catch (error) {
 		console.error("Error fetching match history:", error);
@@ -460,13 +527,3 @@ export const queryMatchHistoryFullWithSource = async (
 	endIndex: number,
 ): Promise<MatchHistoryQueryResult | null> =>
 	queryMatchHistoryWithSourceInternal(puuid, begIndex, endIndex, true);
-
-// 兼容其它页面原有的数组返回格式。
-export const queryMatchHistory = async (
-	puuid: string,
-	begIndex: number,
-	endIndex: number,
-): Promise<MatchHistoryGame[] | null> => {
-	const result = await queryMatchHistoryWithSource(puuid, begIndex, endIndex);
-	return result?.games ?? null;
-};

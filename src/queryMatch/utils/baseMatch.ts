@@ -1,6 +1,7 @@
 import { querySummonerInfo } from "@/lcu/aboutSummoner";
 import { Games, SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import {
+    MatchHistoryEndpoint,
     MatchHistorySource,
     queryMatchHistoryWithSource,
 } from "@/lcu/aboutMatch";
@@ -26,6 +27,8 @@ import {
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
     source: MatchHistorySource | null;
+    sourceEndpoints: MatchHistoryEndpoint[];
+    localCacheUsed: boolean;
     /** 本地缓存与最近服务器窗口合并后的可用记录数。 */
     availableCount: number;
 }
@@ -34,7 +37,11 @@ export default class BaseMatch {
     public summonerId = 0;
     private recentServerHistory = new Map<
         string,
-        { games: (Games | GamesBySgp)[]; source: MatchHistorySource }
+        {
+            games: (Games | GamesBySgp)[];
+            source: MatchHistorySource;
+            sourceEndpoints: MatchHistoryEndpoint[];
+        }
     >();
 
     private syncRecentServerHistory = async (
@@ -42,6 +49,7 @@ export default class BaseMatch {
     ): Promise<{
         games: (Games | GamesBySgp)[];
         source: MatchHistorySource | null;
+        sourceEndpoints: MatchHistoryEndpoint[];
         failed: boolean;
     }> => {
         const result = await queryMatchHistoryWithSource(
@@ -53,11 +61,13 @@ export default class BaseMatch {
             this.recentServerHistory.set(puuid, {
                 games: result.games,
                 source: result.source,
+                sourceEndpoints: result.endpoints,
             });
         }
         return {
             games: result?.games ?? [],
             source: result?.source ?? null,
+            sourceEndpoints: result?.endpoints ?? [],
             failed: result === null,
         };
     };
@@ -118,19 +128,6 @@ export default class BaseMatch {
         return null;
     };
 
-    public dealMatchHistory = async (
-        puuid: string,
-        begIndex: number,
-        endIndex: number,
-    ): Promise<SimpleMatchDetailsTypes[] | null> => {
-        const result = await this.dealMatchHistoryWithSource(
-            puuid,
-            begIndex,
-            endIndex,
-        );
-        return result?.matches ?? null;
-    };
-
     public dealMatchHistoryWithSource = async (
         puuid: string,
         begIndex: number,
@@ -151,7 +148,13 @@ export default class BaseMatch {
 
         const requestedCount = Math.max(0, endIndex - begIndex);
         if (requestedCount <= 0) {
-            return { matches: [], source: null, availableCount: 0 };
+            return {
+                matches: [],
+                source: null,
+                sourceEndpoints: [],
+                localCacheUsed: false,
+                availableCount: 0,
+            };
         }
 
         // 读取本地最新 100 场，再只请求服务器最近三页。服务器结果会
@@ -167,7 +170,12 @@ export default class BaseMatch {
         const synced =
             begIndex === 0 || !serverHistory
                 ? await this.syncRecentServerHistory(puuid)
-                : { games: serverHistory.games, source: serverHistory.source, failed: false };
+                : {
+                      games: serverHistory.games,
+                      source: serverHistory.source,
+                      sourceEndpoints: serverHistory.sourceEndpoints,
+                      failed: false,
+                  };
         const mergedGames = this.mergeHistoryGames(
             cachedGames,
             synced.games,
@@ -201,11 +209,13 @@ export default class BaseMatch {
                 synced.source && cachedGames.length > 0
                     ? "mixed"
                     : synced.source || (cachedGames.length > 0 ? "postgres" : null),
+            sourceEndpoints: synced.sourceEndpoints,
+            localCacheUsed: cachedGames.length > 0,
             availableCount: cachedMatches.length,
         };
     };
 
-    public getSimpleCachedMatch = (
+    private getSimpleCachedMatch = (
         match: NormalizedHistoryGame,
         targetPuuid?: string,
     ): SimpleMatchDetailsTypes | null => {
@@ -243,72 +253,6 @@ export default class BaseMatch {
         };
     };
 
-    public getSimpleMatch = (
-        match: Games | GamesBySgp,
-        targetPuuid?: string,
-    ): SimpleMatchDetailsTypes | null => {
-        // 1. 确定参与者数据源
-        const participant = match.participants?.find((item: any) => {
-            if (item?.puuid === targetPuuid) {
-                return true;
-            }
-            if (targetPuuid && "participantIdentities" in match) {
-                return match.participantIdentities?.some(
-                    (identity) =>
-                        identity.participantId === item?.participantId &&
-                        ((identity.player as any).puuid === targetPuuid ||
-                            (this.summonerId > 0 &&
-                                (identity.player as any).summonerId ===
-                                    this.summonerId)),
-                );
-            }
-            return false;
-        });
-        if (!participant || typeof match.gameId !== "number") {
-            return null;
-        }
-        const stats =
-            "stats" in participant ? (participant as any).stats : participant;
-
-        // 2. 提取核心数值
-        const { kills, deaths, assists, win } = stats;
-        const { championId } = participant; // championId 始终在参与者根节点
-        // 3. 计算 KDA
-        const kda =
-            deaths === 0
-                ? kills + assists
-                : Math.round(((kills + assists) / deaths) * 3);
-
-        // 4. 处理时间和字典查询
-        const [startTime, matchTime] = this.timestampToDate(match.gameCreation);
-        const champAlias = champDict[String(championId)]?.alias;
-        // 字典缺英雄时回退到 CommunityDragon 图标
-        const champImgUrl = champAlias
-            ? `https://game.gtimg.cn/images/lol/act/img/champion/${champAlias}.png`
-            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`;
-
-        // 5. 统一返回
-        return {
-            gameId: match.gameId,
-            champId: championId,
-            champImgUrl,
-            isWin: Boolean(win),
-            kills,
-            deaths,
-            assists,
-            kda,
-            matchTime,
-            startTime,
-            gameModel: queryGameType(match.queueId),
-            queueId: match.queueId,
-        };
-    };
-
-    public querySpecialMatch = async (puuid: string, queueId: number) => {
-        const result = await this.querySpecialMatchWithSource(puuid, queueId);
-        return result.matches;
-    };
-
     public querySpecialMatchWithSource = async (
         puuid: string,
         queueId: number,
@@ -319,7 +263,13 @@ export default class BaseMatch {
             HISTORY_ANALYSIS_LIMIT,
         );
         if (result === null) {
-            return { matches: [], source: null, availableCount: 0 };
+            return {
+                matches: [],
+                source: null,
+                sourceEndpoints: [],
+                localCacheUsed: false,
+                availableCount: 0,
+            };
         }
         const specialList = result.matches.filter(
             (matchList) => matchList.queueId === queueId,
@@ -328,6 +278,8 @@ export default class BaseMatch {
         return {
             matches: specialList,
             source: result.source,
+            sourceEndpoints: result.sourceEndpoints,
+            localCacheUsed: result.localCacheUsed,
             availableCount: specialList.length,
         };
     };

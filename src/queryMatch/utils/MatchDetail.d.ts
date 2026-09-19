@@ -291,7 +291,9 @@ export interface ParticipantsInfo {
   teamTwo: SummonerDetailInfo[],
   headerInfo: string[],
   queueId:number,
-  gameId:number
+  gameId:number,
+  /** 详情面板实际使用的接口或已缓存响应来源。 */
+  dataSource?: MatchHistoryEndpoint
 }
 
 export interface MatchHistoryTypes {
@@ -331,3 +333,4 @@ export interface ShowDataTypes {
   visionScore: number,
   totalMinionsKilled: number
 }
+import type { MatchHistoryEndpoint } from "@/lcu/aboutMatch";

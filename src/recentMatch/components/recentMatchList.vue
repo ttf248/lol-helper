@@ -12,6 +12,11 @@ import {
   RecentMatchLoadingState,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
+import {
+  MATCH_HISTORY_ENDPOINT_LABELS,
+  MATCH_HISTORY_ENDPOINT_PATHS,
+  MATCH_HISTORY_SOURCE_LABELS,
+} from "@/lcu/aboutMatch";
 
 const {
   sumList,
@@ -108,6 +113,29 @@ const positionHeroSummary = (position: PositionRecentStats) =>
 
 const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
   status !== undefined && status.kind !== "ready";
+
+const sourceEndpointLabel = (endpoint: string) =>
+  MATCH_HISTORY_ENDPOINT_LABELS[
+    endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_LABELS
+  ] || endpoint;
+
+const historySourceLabel = (source: string) =>
+  MATCH_HISTORY_SOURCE_LABELS[
+    source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
+  ] || source;
+
+const sourceEndpointSummary = (endpoints?: string[]) =>
+  (endpoints || []).map(sourceEndpointLabel).join("、");
+
+const sourceEndpointTitle = (endpoints?: string[]) =>
+  (endpoints || [])
+    .map(
+      (endpoint) =>
+        MATCH_HISTORY_ENDPOINT_PATHS[
+          endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_PATHS
+        ] || endpoint,
+    )
+    .join("\n");
 
 const teamInsight = computed(() => {
   const analyzedPlayers = sumList.filter(
@@ -275,6 +303,13 @@ const teamInsight = computed(() => {
           >
             <div class="font-medium">{{ summoner.historyStatus?.title }}</div>
             <div>{{ summoner.historyStatus?.detail }}</div>
+            <div
+              v-if="summoner.historyStatus?.sourceEndpoints?.length"
+              class="mt-1"
+              :title="sourceEndpointTitle(summoner.historyStatus.sourceEndpoints)"
+            >
+              服务器接口：{{ sourceEndpointSummary(summoner.historyStatus.sourceEndpoints) }}
+            </div>
           </div>
 
           <div
@@ -397,9 +432,20 @@ const teamInsight = computed(() => {
             </div>
             <div class="rounded bg-gray-100 dark:bg-gray-800 p-2">
               <div class="text-gray-500">数据源</div>
-              <div class="font-medium truncate" :title="selectedPlayer.recentAnalysis.source">
-                {{ selectedPlayer.recentAnalysis.source }}
+              <div
+                class="font-medium truncate"
+                :title="sourceEndpointTitle(selectedPlayer.recentAnalysis.sourceEndpoints) || selectedPlayer.recentAnalysis.source"
+              >
+                {{ historySourceLabel(selectedPlayer.recentAnalysis.source) }}
               </div>
+              <div
+                v-if="selectedPlayer.recentAnalysis.sourceEndpoints?.length"
+                class="text-gray-500 truncate"
+                :title="sourceEndpointTitle(selectedPlayer.recentAnalysis.sourceEndpoints)"
+              >
+                {{ sourceEndpointSummary(selectedPlayer.recentAnalysis.sourceEndpoints) }}
+              </div>
+              <div v-else class="text-gray-500 truncate">仅本地缓存/已加载摘要</div>
             </div>
           </div>
 					<div

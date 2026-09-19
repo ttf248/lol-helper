@@ -6,7 +6,7 @@ import { SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
 import { RencentDataAnalysisTypes } from "@/queryMatch/utils/analysisTypes";
 import { findTopChamp } from "@/queryMatch/utils/analysisSummary";
-import { MatchHistorySource } from "@/lcu/aboutMatch";
+import { MatchHistoryEndpoint, MatchHistorySource } from "@/lcu/aboutMatch";
 import { invoke } from "@tauri-apps/api/core";
 import { TencentRsoPlatformId } from "@/resources/areaList";
 
@@ -65,6 +65,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			detailLoading: false,
 			matchError: null as string | null,
 			matchSource: null as MatchHistorySource | null,
+			matchSourceEndpoints: [] as MatchHistoryEndpoint[],
+			matchLocalCacheUsed: false,
 			analysisData: null as RencentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
@@ -80,6 +82,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.detailLoading = false;
 			this.matchError = null;
 			this.matchSource = null;
+			this.matchSourceEndpoints = [];
+			this.matchLocalCacheUsed = false;
 			this.participantsInfo = null;
 			try {
 				const sumResult = await baseMatch.gerSummonerInfo(summonerId);
@@ -176,6 +180,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			}
 
 			this.matchSource = matchResult.source;
+			this.matchSourceEndpoints = matchResult.sourceEndpoints;
+			this.matchLocalCacheUsed = matchResult.localCacheUsed;
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
 			this.matchAvailableCount = matchResult.availableCount;
@@ -216,6 +222,8 @@ const useMatchStore = defineStore("useMatchStore", {
 
 			if (matchResult !== null) {
 				this.matchSource = matchResult.source;
+				this.matchSourceEndpoints = matchResult.sourceEndpoints;
+				this.matchLocalCacheUsed = matchResult.localCacheUsed;
 				this.matchAvailableCount = matchResult.availableCount;
 				this.matchPageCount = Math.max(
 					1,
@@ -261,6 +269,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			);
 			const matchSpecialList = matchSpecialResult.matches;
 			this.matchSource = matchSpecialResult.source;
+			this.matchSourceEndpoints = matchSpecialResult.sourceEndpoints;
+			this.matchLocalCacheUsed = matchSpecialResult.localCacheUsed;
 			if (matchSpecialList.length !== 0) {
 				this.specialMatchList = matchSpecialList;
 				this.matchAvailableCount = matchSpecialList.length;

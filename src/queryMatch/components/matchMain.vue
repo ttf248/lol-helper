@@ -5,12 +5,38 @@ import useMatchStore from "@/queryMatch/store";
 import {computed} from "vue";
 import {NResult, NTag} from "naive-ui";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
-import {MATCH_HISTORY_SOURCE_LABELS} from "@/lcu/aboutMatch";
+import {
+  MATCH_HISTORY_ENDPOINT_LABELS,
+  MATCH_HISTORY_ENDPOINT_PATHS,
+  MATCH_HISTORY_SOURCE_LABELS,
+} from "@/lcu/aboutMatch";
 
 const matchStore = useMatchStore()
 const matchSourceLabel = computed(() => {
   const source = matchStore.matchSource
-  return source === null ? null : MATCH_HISTORY_SOURCE_LABELS[source]
+  if (source === null) return null
+  if (source === "postgres") return MATCH_HISTORY_SOURCE_LABELS.postgres
+  const endpoints = matchStore.matchSourceEndpoints
+    .map((endpoint) => MATCH_HISTORY_ENDPOINT_LABELS[endpoint])
+  const serverLabel = endpoints.length > 0
+    ? endpoints.join("、")
+    : MATCH_HISTORY_SOURCE_LABELS[source]
+  return matchStore.matchLocalCacheUsed && source === "mixed"
+    ? `PostgreSQL 本地缓存 + ${serverLabel}`
+    : serverLabel
+})
+const matchSourceTitle = computed(() =>
+  matchStore.matchSourceEndpoints
+    .map((endpoint) => MATCH_HISTORY_ENDPOINT_PATHS[endpoint])
+    .join("\n"),
+)
+const detailSourceLabel = computed(() => {
+  const source = matchStore.participantsInfo?.dataSource
+  return source ? MATCH_HISTORY_ENDPOINT_LABELS[source] : null
+})
+const detailSourceTitle = computed(() => {
+  const source = matchStore.participantsInfo?.dataSource
+  return source ? MATCH_HISTORY_ENDPOINT_PATHS[source] : ""
 })
 const searchSum = (summonerId: number) => {
   matchStore.init(summonerId)
@@ -21,8 +47,14 @@ const searchSum = (summonerId: number) => {
   <div class="match-main">
     <div class="match-source-bar">
       <n-tag v-if="matchSourceLabel" size="small" type="info"
-             :bordered="false" round style="white-space: nowrap;">
-        数据源：{{ matchSourceLabel }}
+             :bordered="false" round style="white-space: nowrap;"
+             :title="matchSourceTitle || matchSourceLabel">
+        列表：{{ matchSourceLabel }}
+      </n-tag>
+      <n-tag v-if="detailSourceLabel" size="small" type="success"
+             :bordered="false" round style="white-space: nowrap;"
+             :title="detailSourceTitle">
+        详情：{{ detailSourceLabel }}
       </n-tag>
     </div>
     <div class="match-main-body">
@@ -72,6 +104,7 @@ const searchSum = (summonerId: number) => {
   flex: 0 0 28px;
   align-items: center;
   justify-content: flex-end;
+  gap: 6px;
   padding-right: 12px;
 }
 

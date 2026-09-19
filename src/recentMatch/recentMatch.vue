@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, Ref } from "vue";
+import { computed, onMounted, reactive, ref, Ref } from "vue";
 import QuerySummoner from "@/recentMatch/utils/querySummoner";
 import Dashboard from "@/recentMatch/components/dashboard.vue";
 import RecentMatchList from "@/recentMatch/components/recentMatchList.vue";
@@ -36,6 +36,7 @@ import {
 } from "@/recentMatch/utils/historyConfig";
 import type { CurrentMatchProgress } from "@/recentMatch/utils/querySummoner";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
+import { MATCH_HISTORY_ENDPOINT_LABELS } from "@/lcu/aboutMatch";
 
 const querySummoner = new QuerySummoner();
 const queryMatch = new QueryMatch();
@@ -60,6 +61,20 @@ const loadingState = reactive<RecentMatchLoadingState>({
 const setLoadingState = (next: Partial<RecentMatchLoadingState>) => {
     Object.assign(loadingState, next);
 };
+
+const historySourceLabels = computed(() => {
+    const endpoints = new Set(
+        [...friendList.value, ...enemyList.value].flatMap(
+            (player) => player.historyStatus?.sourceEndpoints || [],
+        ),
+    );
+    return Array.from(endpoints).map(
+        (endpoint) =>
+            MATCH_HISTORY_ENDPOINT_LABELS[
+                endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_LABELS
+            ] || endpoint,
+    );
+});
 
 const currentId = ref(0);
 const matchDetials = new MatchDetails();
@@ -339,6 +354,7 @@ const getChampInfoList = async (champId: number) => {
             :queue-id="queueId"
             :analysis-loading="recentAnalysisLoading"
             :loading-state="loadingState"
+            :history-source-labels="historySourceLabels"
         />
 
         <null-page v-if="isLcuErr" />

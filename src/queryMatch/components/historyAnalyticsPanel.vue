@@ -39,6 +39,11 @@ import {
   RecentSumInfo,
   TeammateSynergyStats,
 } from "@/recentMatch/utils/queryTypes";
+import {
+  MATCH_HISTORY_ENDPOINT_LABELS,
+  MATCH_HISTORY_ENDPOINT_PATHS,
+  MATCH_HISTORY_SOURCE_LABELS,
+} from "@/lcu/aboutMatch";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 type AnalysisWindow = (typeof RECENT_ANALYSIS_WINDOWS)[number];
@@ -94,6 +99,31 @@ const coverageRate = computed(() => {
   if (!coverage || coverage.mergedGames === 0) return null;
   return Math.round((coverage.completeGames / coverage.mergedGames) * 1000) / 10;
 });
+
+const endpointLabel = (endpoint: string) =>
+  MATCH_HISTORY_ENDPOINT_LABELS[
+    endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_LABELS
+  ] || endpoint;
+
+const sourceLabel = (source: string) =>
+  MATCH_HISTORY_SOURCE_LABELS[
+    source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
+  ] || source;
+
+const analysisEndpointLabels = computed(() =>
+  (analysis.value?.sourceEndpoints || []).map(endpointLabel),
+);
+
+const analysisEndpointTitle = computed(() =>
+  (analysis.value?.sourceEndpoints || [])
+    .map(
+      (endpoint) =>
+        MATCH_HISTORY_ENDPOINT_PATHS[
+          endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_PATHS
+        ] || endpoint,
+    )
+    .join("\n"),
+);
 
 const partyRankingSections = computed(() => {
   const groups = analysis.value?.partyGroups || [];
@@ -255,7 +285,13 @@ const cachedPlayerWinRate = computed(() =>
 
 const cachedPlayerSources = computed(() =>
   cachedPlayerSummary.value.sources
-    .map((item) => `${item.source} ${item.matches}场`)
+    .map((item) => {
+      const source =
+        MATCH_HISTORY_SOURCE_LABELS[
+          item.source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
+        ] || item.source;
+      return `${source} ${item.matches}场`;
+    })
     .join("、"),
 );
 
@@ -542,7 +578,15 @@ onMounted(() => {
             <div class="metric-label">个人置信度</div>
             <div class="metric-value">{{ analysis.confidence.score }}</div>
             <div class="metric-sub">
-              {{ confidenceLabel(analysis.confidence.level) }} · {{ analysis.source }}
+              {{ confidenceLabel(analysis.confidence.level) }} · {{ sourceLabel(analysis.source) }}
+            </div>
+            <div
+              class="metric-source"
+              :title="analysisEndpointTitle || 'PostgreSQL 本地缓存'"
+            >
+              服务器：{{ analysisEndpointLabels.length
+                ? analysisEndpointLabels.join("、")
+                : "未直接命中（本地缓存）" }}
             </div>
           </n-card>
           <n-card size="small" :bordered="false">
@@ -778,6 +822,14 @@ onMounted(() => {
             class="text-xs text-gray-500 mt-1"
           >
             本次分析来源：{{ analysis.dataCoverage.sources.join("、") }}
+          </div>
+          <div
+            class="text-xs text-gray-500 mt-1"
+            :title="analysisEndpointTitle || 'PostgreSQL 本地缓存'"
+          >
+            服务器接口：{{ analysisEndpointLabels.length
+              ? analysisEndpointLabels.join("、")
+              : "本次未直接命中，使用 PostgreSQL 本地缓存" }}
           </div>
         </n-card>
       </div>

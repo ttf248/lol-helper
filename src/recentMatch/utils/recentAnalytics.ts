@@ -73,6 +73,7 @@ interface PlayerHistorySnapshot {
   puuid: string;
   games: Map<number, NormalizedHistoryGame>;
   source: string;
+  sourceEndpoints: string[];
   complete: boolean;
   dataCoverage?: HistoryCoverageInfo;
 }
@@ -315,7 +316,13 @@ const hasParticipantRoster = (games: NormalizedHistoryGame[]): boolean =>
   games.length > 0 &&
   games.every((game) => historyGameQuality(game) === "complete");
 
-const queueHydration = new Map<string, Promise<NormalizedHistoryGame[]>>();
+interface QueueHydrationResult {
+  games: NormalizedHistoryGame[];
+  source: string;
+  sourceEndpoints: string[];
+}
+
+const queueHydration = new Map<string, Promise<QueueHydrationResult>>();
 
 const historyKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}:${modeKey}`;
@@ -327,6 +334,7 @@ const syncPlayerModeGames = async (
 ): Promise<{
   games: NormalizedHistoryGame[];
   source: string;
+  sourceEndpoints: string[];
   coverage: HistoryCoverageInfo;
 }> => {
   // 服务器只取最近三页。更早的记录全部交给 PostgreSQL，避免为了
@@ -350,6 +358,7 @@ const syncPlayerModeGames = async (
   return {
     games: merged.games,
     source: result?.source || (existingGames.length > 0 ? "PostgreSQL 本地缓存" : "unavailable"),
+    sourceEndpoints: result?.endpoints || [],
     coverage: merged.coverage,
   };
 };
@@ -364,7 +373,7 @@ const hydratePlayerQueueHistory = (
   const existing = queueHydration.get(key);
   if (existing) return existing;
 
-  const request = (async (): Promise<NormalizedHistoryGame[]> => {
+  const request = (async (): Promise<QueueHydrationResult> => {
     const synced = await syncPlayerModeGames(player, modeKey, existingGames);
     const games = synced.games;
     if (games.length > 0) {
@@ -377,10 +386,18 @@ const hydratePlayerQueueHistory = (
         games,
       });
     }
-    return games;
+    return {
+      games,
+      source: synced.source,
+      sourceEndpoints: synced.sourceEndpoints,
+    };
   })().catch((error) => {
     console.warn("Failed to hydrate full queue history", error);
-    return existingGames;
+    return {
+      games: existingGames,
+      source: "PostgreSQL 本地缓存",
+      sourceEndpoints: [],
+    };
   });
   queueHydration.set(key, request);
   // 任务结果保留在当前面板生命周期内，保证极快返回的完整历史也能被
@@ -420,6 +437,7 @@ const loadPlayerHistory = async (
         puuid: player.puuid,
         games: limitedGames,
         source: "PostgreSQL 本地缓存",
+        sourceEndpoints: player.historyStatus?.sourceEndpoints || [],
         complete:
           limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
           hasParticipantRoster(Array.from(limitedGames.values())),
@@ -445,6 +463,7 @@ const loadPlayerHistory = async (
         puuid: player.puuid,
         games: new Map(quickGames.map((game) => [game.gameId, game])),
         source: "当前面板已加载的最近战绩",
+        sourceEndpoints: player.historyStatus?.sourceEndpoints || [],
         complete: false,
         dataCoverage: mergeHistoryGames([], quickGames, RECENT_DEFAULT_GAME_COUNT)
           .coverage,
@@ -458,6 +477,7 @@ const loadPlayerHistory = async (
       puuid: player.puuid,
       games: new Map(),
       source: "后台查询中",
+      sourceEndpoints: player.historyStatus?.sourceEndpoints || [],
       complete: false,
     };
   })();
@@ -474,11 +494,13 @@ const toHistorySnapshot = (
   player: RecentSumInfo,
   games: NormalizedHistoryGame[],
   source: string,
+  sourceEndpoints: string[] = [],
   dataCoverage?: HistoryCoverageInfo,
 ): PlayerHistorySnapshot => ({
   puuid: player.puuid,
   games: new Map(games.map((game) => [game.gameId, game])),
   source,
+  sourceEndpoints,
   complete:
     games.length >= RECENT_ANALYSIS_GAME_COUNT && hasParticipantRoster(games),
   dataCoverage,
@@ -547,6 +569,7 @@ const loadPlayerModeHistory = async (
       : seededGames.length > 0
         ? "当前个人战绩列表"
         : "等待服务器历史接口",
+    [],
     initial.coverage,
   );
 };
@@ -583,6 +606,9 @@ const hydratePlayerModeHistory = async (
     mergedGames.length > existingGames.length
       ? synced.source || "历史接口完整参与者"
       : existingSnapshot.source,
+    synced.sourceEndpoints.length > 0
+      ? synced.sourceEndpoints
+      : existingSnapshot.sourceEndpoints,
     synced.coverage,
   );
   onProgress?.({
@@ -841,6 +867,7 @@ const buildQuickPlayerAnalysis = (
     ]),
     moderation: emptyModeration(),
     source: "当前面板已加载的最近战绩",
+    sourceEndpoints: player.historyStatus?.sourceEndpoints || [],
     historyComplete: false,
   };
 };
@@ -1299,6 +1326,7 @@ const buildPlayerAnalysis = (
     confidence: confidenceInfo(confidenceScore, confidenceReasons),
     moderation,
     source: snapshot.source,
+    sourceEndpoints: snapshot.sourceEndpoints,
     historyComplete:
       snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT,
     dataCoverage: snapshot.dataCoverage,
@@ -1384,6 +1412,7 @@ export const loadPlayerModeAnalysis = async (
       sameTeamGames: number;
       opposedGames: number;
       games: Map<number, NormalizedHistoryGame>;
+      sourceEndpoints: string[];
     }
   >();
   for (const game of snapshot.games.values()) {
@@ -1405,6 +1434,7 @@ export const loadPlayerModeAnalysis = async (
         sameTeamGames: 0,
         opposedGames: 0,
         games: new Map<number, NormalizedHistoryGame>(),
+        sourceEndpoints: snapshot.sourceEndpoints,
       };
       existing.games.set(game.gameId, game);
       if (participant.teamId === ownParticipant.teamId) {
@@ -1452,6 +1482,7 @@ export const loadPlayerModeAnalysis = async (
         puuid: item.puuid,
         games: itemSnapshot.games,
         source: snapshot.source,
+        sourceEndpoints: itemSnapshot.sourceEndpoints,
         complete: snapshot.complete,
       });
     }
@@ -1668,7 +1699,7 @@ export const loadRecentTeamAnalysis = async (
         entry,
       ): entry is {
         player: RecentSumInfo;
-        request: Promise<NormalizedHistoryGame[]>;
+        request: Promise<QueueHydrationResult>;
       } => entry !== null,
     );
 
@@ -1681,12 +1712,12 @@ export const loadRecentTeamAnalysis = async (
       });
   }
 
-  const hydratedGamesByPlayer = new Map<string, NormalizedHistoryGame[]>();
+  const hydratedResultsByPlayer = new Map<string, QueueHydrationResult>();
   let hydratedCount = 0;
   const hydratedGamesPromise = Promise.all(
     hydrationEntries.map(async ({ player, request }) => {
-      const games = await request;
-      hydratedGamesByPlayer.set(player.puuid, games);
+      const hydratedResult = await request;
+      hydratedResultsByPlayer.set(player.puuid, hydratedResult);
       hydratedCount += 1;
       onProgress?.({
         stage: "full",
@@ -1721,7 +1752,8 @@ export const loadRecentTeamAnalysis = async (
   await hydratedGamesPromise;
   const hydratedSnapshots = players.map((player, index) => {
       const initialSnapshot = snapshots[index];
-      const hydratedGames = hydratedGamesByPlayer.get(player.puuid);
+      const hydratedResult = hydratedResultsByPlayer.get(player.puuid);
+      const hydratedGames = hydratedResult?.games;
       // hydratePlayerQueueHistory 已经返回了合并后的完整结果，并负责写入
       // PostgreSQL。这里直接复用结果，避免补全结束后再为每个玩家重复读
       // 一次数据库（十名玩家会额外产生十次串行 SQL）。
@@ -1743,8 +1775,12 @@ export const loadRecentTeamAnalysis = async (
         games: new Map(mergedGames.map((game) => [game.gameId, game])),
         source:
           hasParticipantRoster(mergedGames) && hydratedGames.length > 0
-            ? "历史接口完整参与者"
+            ? hydratedResult?.source || "历史接口完整参与者"
             : "PostgreSQL 本地缓存",
+        sourceEndpoints:
+          hydratedResult && hydratedResult.sourceEndpoints.length > 0
+            ? hydratedResult.sourceEndpoints
+            : initialSnapshot.sourceEndpoints,
         complete:
           mergedGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
           hasParticipantRoster(mergedGames),

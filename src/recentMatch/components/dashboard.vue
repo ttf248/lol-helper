@@ -23,11 +23,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import BrandLockup from "@/components/BrandLockup.vue";
 import { RecentMatchLoadingState } from "@/recentMatch/utils/queryTypes";
 
-const { winCount, isFriCount, loadingState } = defineProps<{
+const { winCount, isFriCount, loadingState, historySourceLabels } = defineProps<{
 	winCount: { friend: number[]; enemy: number[] };
 	isFriCount: boolean;
 	analysisLoading: boolean;
 	loadingState: RecentMatchLoadingState;
+	historySourceLabels: string[];
 }>();
 const emits = defineEmits<{ openNetwork: [] }>();
 const config: ConfigSettingTypes = reactive(
@@ -141,6 +142,15 @@ const changeConfig = () => {
 					<span v-if="loadingState.total > 0">
 						· {{ loadingState.completed }}/{{ loadingState.total }}
 					</span>
+				</n-tag>
+				<n-tag
+					v-if="historySourceLabels.length"
+					class="dashboard-source"
+					:bordered="false"
+					type="info"
+					:title="`本局历史服务器接口：${historySourceLabels.join('、')}`"
+				>
+					接口：{{ historySourceLabels.join("、") }}
 				</n-tag>
 			</div>
 		</div>
@@ -299,6 +309,7 @@ const changeConfig = () => {
 
 .dashboard-shortcut,
 .dashboard-loading,
+.dashboard-source,
 .dashboard-hint {
 	flex: 0 1 auto;
 	min-width: 0;
@@ -341,6 +352,10 @@ const changeConfig = () => {
 
 	.dashboard-loading {
 		max-width: 170px;
+	}
+
+	.dashboard-source {
+		max-width: 210px;
 	}
 }
 </style>
