@@ -1,15 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { window } from "@tauri-apps/api";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { ConfigSettingTypes } from "../types";
+
+const MAIN_WINDOW_SIZE = { width: 1174, height: 760 };
+const RECENT_MATCH_WINDOW_SIZE = { width: 1254, height: 720 };
 
 export class MainWindow {
 	constructor() {
 		const webview = new WebviewWindow("mainWindow", {
 			title: "本地试验台 - 我的战绩",
 			url: "src/main/index.html",
-			width: 1174,
-			height: 668,
+			...MAIN_WINDOW_SIZE,
 			visible: false,
 			resizable: false,
 			decorations: false,
@@ -43,8 +46,7 @@ export class RecentMatchWindow {
 		const webview = new WebviewWindow("recentMatchWindow", {
 			title: "对局详情",
 			url: "src/recentMatch/index.html",
-			width: 1254,
-			height: 562,
+			...RECENT_MATCH_WINDOW_SIZE,
 			resizable: false,
 			decorations: false,
 			center: true,
@@ -68,6 +70,13 @@ export class RecentMatchWindow {
 	public static async ensure() {
 		const existing = await window.Window.getByLabel("recentMatchWindow");
 		if (existing !== null) {
+			// 旧版本窗口可能仍然存在于本次进程中，打开时同步到新的纵向布局。
+			await existing.setSize(
+				new LogicalSize(
+					RECENT_MATCH_WINDOW_SIZE.width,
+					RECENT_MATCH_WINDOW_SIZE.height,
+				),
+			);
 			await existing.show();
 			return;
 		}
