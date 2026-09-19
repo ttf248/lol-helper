@@ -127,6 +127,22 @@ export interface RecentAllSumInfo {
   queueId: number;
 }
 
+export type RecentMatchLoadingStage =
+  | "players"
+  | "history"
+  | "recent"
+  | "full"
+  | "done"
+  | "error";
+
+export interface RecentMatchLoadingState {
+  stage: RecentMatchLoadingStage;
+  completed: number;
+  total: number;
+  message: string;
+  detail: string;
+}
+
 export interface MatchItemTypes {
   champImg: string;
   championId?: number;

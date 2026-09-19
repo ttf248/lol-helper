@@ -10,12 +10,36 @@ import {
   TeamData,
 } from "@/recentMatch/utils/queryTypes";
 
+export interface CurrentMatchProgress {
+  loaded: number;
+  total: number;
+  message: string;
+}
+
+type CurrentMatchProgressCallback = (progress: CurrentMatchProgress) => void;
+
 class QuerySummoner {
   public matchSession: null|SessionTypes = null
   public currentId: number = 0
   public queueId: number = 0
 
   private wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  private summonerInfoCache = new Map<string, ReturnType<typeof querySummonerInfo>>();
+
+  private querySummonerByName = (name: string) => {
+    const key = name.trim().toLocaleLowerCase();
+    const cached = this.summonerInfoCache.get(key);
+    if (cached) return cached;
+
+    const request = querySummonerInfo(undefined, name).then((info) => {
+      if (info === null) {
+        this.summonerInfoCache.delete(key);
+      }
+      return info;
+    });
+    this.summonerInfoCache.set(key, request);
+    return request;
+  };
 
   private getExpectedTeamSize = (session: SessionTypes) => {
     const teamSize = Number(session.gameData.queue.numPlayersPerTeam);
@@ -95,17 +119,10 @@ class QuerySummoner {
       }
     }
 
-    const teamOne: TeamData[] = [];
-    const teamTwo: TeamData[] = [];
-    for (const player of livePlayers) {
+    const resolvedPlayers = await Promise.all(livePlayers.map(async (player) => {
       const team = player.team.toLocaleUpperCase();
-      const targetTeam = team === "ORDER"
-        ? teamOne
-        : team === "CHAOS"
-          ? teamTwo
-          : null;
-      if (targetTeam === null) {
-        continue;
+      if (team !== "ORDER" && team !== "CHAOS") {
+        return null;
       }
 
       const knownPlayer = knownPlayers.get(this.normalizeName(player.summonerName));
@@ -115,13 +132,15 @@ class QuerySummoner {
             name: knownPlayer.summonerName,
             puuid: knownPlayer.puuid,
           }
-        : await querySummonerInfo(undefined, player.summonerName);
+        : await this.querySummonerByName(player.summonerName);
       if (info === null) {
-        continue;
+        return null;
       }
 
       const championId = this.findChampionId(player, selections);
-      targetTeam.push({
+      return {
+        team,
+        player: {
         championId: championId || knownPlayer?.championId || 0,
         lastSelectedSkinIndex: knownPlayer?.lastSelectedSkinIndex || 0,
         profileIconId: knownPlayer?.profileIconId || 0,
@@ -132,6 +151,18 @@ class QuerySummoner {
         summonerInternalName: knownPlayer?.summonerInternalName || player.summonerName,
         summonerName: info.name || player.summonerName,
         teamOwner: knownPlayer?.teamOwner || false,
+        teamParticipantId: 0,
+        },
+      };
+    }));
+
+    const teamOne: TeamData[] = [];
+    const teamTwo: TeamData[] = [];
+    for (const resolved of resolvedPlayers) {
+      if (resolved === null) continue;
+      const targetTeam = resolved.team === "ORDER" ? teamOne : teamTwo;
+      targetTeam.push({
+        ...resolved.player,
         teamParticipantId: targetTeam.length + 1,
       });
     }
@@ -181,10 +212,7 @@ class QuerySummoner {
 
     const hydratedPlayers = await Promise.all(
       missingSelections.map(async (selection, index): Promise<TeamData | null> => {
-        const info = await querySummonerInfo(
-          undefined,
-          selection.summonerInternalName,
-        );
+        const info = await this.querySummonerByName(selection.summonerInternalName);
         if (info === null) {
           return null;
         }
@@ -217,15 +245,26 @@ class QuerySummoner {
     };
   };
 
-  // 初始化数据
-  public init = async () => {
+  // 初始化数据。游戏加载阶段最多等待 6 秒，避免一个缺失玩家让整个面板
+  // 阻塞 15 秒；每次尝试都会把当前已识别人数反馈给界面。
+  public init = async (onProgress?: CurrentMatchProgressCallback) => {
     let latestSession: SessionTypes | null = null;
+    const maxAttempts = 12;
 
-    // 加载画面期间分阶段补全队伍信息，最多等待 15 秒。
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const session = await invokeLcu<SessionTypes>('get','/lol-gameflow/v1/session');
       if (session?.gameData) {
         latestSession = await this.hydrateMissingTeam(session);
+
+        const detectedPlayers =
+          latestSession.gameData.teamOne.length + latestSession.gameData.teamTwo.length;
+        onProgress?.({
+          loaded: detectedPlayers,
+          total: this.getExpectedTeamSize(latestSession) * 2,
+          message: detectedPlayers >= this.getExpectedTeamSize(latestSession) * 2
+            ? "本局玩家已读取"
+            : `正在读取本局玩家（已识别 ${detectedPlayers} 人）`,
+        });
 
         // gameflow 数据仍不完整时，定期切换到游戏内玩家列表再次获取。
         if (!this.hasCompleteTeams(latestSession) && attempt >= 2 && attempt % 3 === 2) {
@@ -240,13 +279,21 @@ class QuerySummoner {
               },
             };
           }
+
+          const refreshedPlayers =
+            latestSession.gameData.teamOne.length + latestSession.gameData.teamTwo.length;
+          onProgress?.({
+            loaded: refreshedPlayers,
+            total: this.getExpectedTeamSize(latestSession) * 2,
+            message: `正在读取本局玩家（已识别 ${refreshedPlayers} 人）`,
+          });
         }
 
         if (this.hasCompleteTeams(latestSession)) {
           break;
         }
       }
-      if (attempt < 29) {
+      if (attempt < maxAttempts - 1) {
         await this.wait(500);
       }
     }
@@ -263,8 +310,8 @@ class QuerySummoner {
     this.currentId = Number(localSumInfo?.summonerId || 0);
   }
   // 通过Lcu接口查询数据
-  public fromLcuQuery = async () => {
-    await this.init()
+  public fromLcuQuery = async (onProgress?: CurrentMatchProgressCallback) => {
+    await this.init(onProgress)
     if (this.matchSession === null){
       return null
     }
@@ -276,6 +323,11 @@ class QuerySummoner {
       this.simplifySummonerInfo(isTeamOne ? this.matchSession.gameData.teamOne : this.matchSession.gameData.teamTwo),
       this.simplifySummonerInfo(isTeamOne ? this.matchSession.gameData.teamTwo : this.matchSession.gameData.teamOne)
     ])
+    onProgress?.({
+      loaded: friendList.length + enemyList.length,
+      total: this.getExpectedTeamSize(this.matchSession) * 2,
+      message: `本局玩家读取完成（${friendList.length + enemyList.length} 人）`,
+    });
     return {friendList, enemyList,queueId:this.queueId}
   }
   // 获取召唤师Icon

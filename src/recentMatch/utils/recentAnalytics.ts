@@ -66,6 +66,13 @@ interface PlayerHistorySnapshot {
   complete: boolean;
 }
 
+export interface RecentAnalysisProgress {
+  stage: "cache" | "recent" | "full" | "done";
+  completed: number;
+  total: number;
+  message: string;
+}
+
 const asNumber = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -383,32 +390,14 @@ const loadPlayerHistory = async (
       };
     }
 
-    const result = await queryMatchHistoryFullWithSource(
-      player.puuid,
-      0,
-      HISTORY_SCAN_LIMIT,
-    );
-    const games = uniqueGames(result?.games ?? [], queueId, player);
-    if (games.size > 0) {
-      void cacheHistory({
-        puuid: player.puuid,
-        summonerId: player.summonerId,
-        summonerName: player.summonerName,
-        modeKey,
-        source: result?.source || "unavailable",
-        games: Array.from(games.values()),
-      });
-    }
-    const limitedGames = new Map(
-      Array.from(games.entries()).slice(0, RECENT_ANALYSIS_GAME_COUNT),
-    );
+    // 没有首屏摘要时也不要让一个玩家阻塞其它玩家的最近 10 场分析。
+    // 由统一的后台补全任务异步拉取完整历史，完成后再刷新整队分析。
+    void hydratePlayerQueueHistory(player, queueId, []);
     return {
       puuid: player.puuid,
-      games: limitedGames,
-      source: result?.source || "unavailable",
-      complete:
-        limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
-        hasParticipantRoster(Array.from(limitedGames.values())),
+      games: new Map(),
+      source: "后台查询中",
+      complete: false,
     };
   })();
 
@@ -513,6 +502,7 @@ const mapWithConcurrency = async <T, R>(
   items: T[],
   limit: number,
   worker: (item: T) => Promise<R>,
+  onItem?: (index: number, result: R) => void,
 ): Promise<R[]> => {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
@@ -521,6 +511,7 @@ const mapWithConcurrency = async <T, R>(
     while (nextIndex < items.length) {
       const currentIndex = nextIndex++;
       results[currentIndex] = await worker(items[currentIndex]);
+      onItem?.(currentIndex, results[currentIndex]);
     }
   };
 
@@ -1187,31 +1178,65 @@ export const loadRecentTeamAnalysis = async (
   friendList: RecentSumInfo[],
   enemyList: RecentSumInfo[],
   queueId: number,
+  onProgress?: (progress: RecentAnalysisProgress) => void,
 ): Promise<RecentNetworkAnalysis> => {
   const players = Array.from(
     new Map(
       [...friendList, ...enemyList].map((player) => [player.puuid, player]),
     ).values(),
   );
-  const [snapshots, moderationMap] = await Promise.all([
-    mapWithConcurrency(
-      players,
-      HISTORY_CONCURRENCY,
-      (player) => loadPlayerHistory(player, queueId),
-    ),
-    loadModerationMap(players),
-  ]);
+
+  if (players.length === 0) {
+    onProgress?.({
+      stage: "done",
+      completed: 0,
+      total: 0,
+      message: "暂无可分析的本局玩家",
+    });
+    return buildNetworkAnalysis(friendList, enemyList, new Map());
+  }
+
+  onProgress?.({
+    stage: "cache",
+    completed: 0,
+    total: players.length,
+    message: "正在读取本地历史缓存",
+  });
+
+  // 举报记录不是最近 10 场分析的前置条件，与缓存读取并行执行。
+  const moderationPromise = loadModerationMap(players);
+  const snapshots = await mapWithConcurrency(
+    players,
+    HISTORY_CONCURRENCY,
+    (player) => loadPlayerHistory(player, queueId),
+    (index) => {
+      onProgress?.({
+        stage: "cache",
+        completed: index + 1,
+        total: players.length,
+        message: "正在读取本地历史缓存",
+      });
+    },
+  );
   const snapshotMap = new Map(
     players.map((player, index) => [player.puuid, snapshots[index]]),
   );
-  // 第一阶段只使用缓存/首屏的最近 10 场，立刻把个人分析和已有关系交付给 UI。
+
+  // 第一阶段只使用缓存/首屏的最近 10 场，立刻把个人分析交付给 UI。
+  // 先使用空的举报结果，避免外部举报服务拖慢首屏。
   applyTeamAnalysis(
     friendList,
     enemyList,
     snapshotMap,
-    moderationMap,
+    new Map(players.map((player) => [player.puuid, emptyModeration()])),
     RECENT_DEFAULT_GAME_COUNT,
   );
+  onProgress?.({
+    stage: "recent",
+    completed: players.length,
+    total: players.length,
+    message: "最近 10 场分析已完成",
+  });
 
   const hydrationEntries = players
     .map((player) => {
@@ -1226,19 +1251,54 @@ export const loadRecentTeamAnalysis = async (
         request: Promise<NormalizedHistoryGame[]>;
       } => entry !== null,
     );
-  if (hydrationEntries.length === 0) {
-    return buildNetworkAnalysis(friendList, enemyList, snapshotMap);
+
+  if (hydrationEntries.length > 0) {
+    onProgress?.({
+      stage: "full",
+      completed: 0,
+      total: hydrationEntries.length,
+      message: "正在后台补齐最近 100 场",
+    });
   }
 
-  // 第二阶段等待后台补齐；此函数由调用方 fire-and-forget，因而不会阻塞
-  // 首屏，但能让顶部“100 场分析中”状态准确持续到真正完成。
   const hydratedGamesByPlayer = new Map<string, NormalizedHistoryGame[]>();
-  await Promise.all(
+  let hydratedCount = 0;
+  const hydratedGamesPromise = Promise.all(
     hydrationEntries.map(async ({ player, request }) => {
       const games = await request;
       hydratedGamesByPlayer.set(player.puuid, games);
+      hydratedCount += 1;
+      onProgress?.({
+        stage: "full",
+        completed: hydratedCount,
+        total: hydrationEntries.length,
+        message: "正在后台补齐最近 100 场",
+      });
     }),
   );
+
+  const moderationMap = await moderationPromise;
+  // 举报记录完成后只刷新已有的最近 10 场结果，不影响历史补全任务。
+  applyTeamAnalysis(
+    friendList,
+    enemyList,
+    snapshotMap,
+    moderationMap,
+    RECENT_DEFAULT_GAME_COUNT,
+  );
+
+  if (hydrationEntries.length === 0) {
+    const network = buildNetworkAnalysis(friendList, enemyList, snapshotMap);
+    onProgress?.({
+      stage: "done",
+      completed: players.length,
+      total: players.length,
+      message: "近期分析已完成",
+    });
+    return network;
+  }
+
+  await hydratedGamesPromise;
   const hydratedSnapshots = await Promise.all(
     players.map(async (player, index) => {
       const cachedGames = await getCachedHistory({
@@ -1282,7 +1342,14 @@ export const loadRecentTeamAnalysis = async (
     moderationMap,
     RECENT_ANALYSIS_GAME_COUNT,
   );
-  return buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
+  const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
+  onProgress?.({
+    stage: "done",
+    completed: hydrationEntries.length,
+    total: hydrationEntries.length,
+    message: "近期 100 场分析已完成",
+  });
+  return network;
 };
 
 export const clearRecentAnalysisCache = () => historyCache.clear();

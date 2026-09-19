@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, Ref } from "vue";
+import { onMounted, reactive, ref, Ref } from "vue";
 import QuerySummoner from "@/recentMatch/utils/querySummoner";
 import Dashboard from "@/recentMatch/components/dashboard.vue";
 import RecentMatchList from "@/recentMatch/components/recentMatchList.vue";
@@ -9,6 +9,7 @@ import {
     RecentAllSumInfo,
     RecentNetworkAnalysis,
     RecentSumInfo,
+    RecentMatchLoadingState,
 } from "@/recentMatch/utils/queryTypes";
 import QueryMatch from "@/recentMatch/utils/queryMatch";
 import { SimpleMatchTypes } from "@/lcu/types/queryMatchLcuTypes";
@@ -24,7 +25,9 @@ import { requestFetch } from "@/main/utils/request.ts";
 import {
     applyFastRecentAnalysis,
     loadRecentTeamAnalysis,
+    RecentAnalysisProgress,
 } from "@/recentMatch/utils/recentAnalytics";
+import type { CurrentMatchProgress } from "@/recentMatch/utils/querySummoner";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 const querySummoner = new QuerySummoner();
@@ -39,6 +42,17 @@ const isFriCount = ref(true);
 const recentAnalysisLoading = ref(false);
 const isNetworkModal = ref(false);
 const networkAnalysis: Ref<RecentNetworkAnalysis | null> = ref(null);
+const loadingState = reactive<RecentMatchLoadingState>({
+    stage: "players",
+    completed: 0,
+    total: 10,
+    message: "正在读取本局玩家",
+    detail: "正在连接游戏数据接口…",
+});
+
+const setLoadingState = (next: Partial<RecentMatchLoadingState>) => {
+    Object.assign(loadingState, next);
+};
 
 const currentId = ref(0);
 const matchDetials = new MatchDetails();
@@ -65,68 +79,123 @@ onMounted(() => {
     });
 });
 
-const queryAllSumInfo = async (): Promise<RecentAllSumInfo | null> => {
-    let latestResult: RecentAllSumInfo | null = null;
+const queryAllSumInfo = async (): Promise<RecentAllSumInfo | null> =>
+    querySummoner.fromLcuQuery((progress: CurrentMatchProgress) => {
+        setLoadingState({
+            stage: "players",
+            completed: progress.loaded,
+            total: progress.total,
+            message: progress.message,
+            detail: progress.loaded >= progress.total
+                ? "正在准备读取最近战绩…"
+                : "游戏加载阶段可能暂时缺少玩家，已识别的数据会先显示。",
+        });
+    });
 
-    // 首次查询仍可能发生在加载画面中，未满十人时重新拉取整场玩家列表。
-    for (let attempt = 0; attempt < 3; attempt++) {
-        latestResult = await querySummoner.fromLcuQuery();
-        if (latestResult === null) {
-            return null;
-        }
-        if (latestResult.friendList.length + latestResult.enemyList.length >= 10) {
-            return latestResult;
-        }
-        if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
+const commitHistoryResult = (
+    summoner: RecentSumInfo,
+    result: [RecentSumInfo["matchList"], number],
+    isFri: boolean,
+    onComplete?: () => void,
+) => {
+    const targetList = isFri ? friendList.value : enemyList.value;
+    const countList = isFri ? winCount.value.friend : winCount.value.enemy;
+    const oldIndex = targetList.findIndex((item) => item.puuid === summoner.puuid);
+
+    summoner.matchList = result[0];
+    countList[0] += result[1];
+    countList[1] += result[0].length;
+    if (oldIndex >= 0) {
+        targetList[oldIndex] = summoner;
+    } else {
+        targetList.push(summoner);
     }
-
-    return latestResult;
+    targetList.sort((left, right) => left.teamParticipantId - right.teamParticipantId);
+    onComplete?.();
 };
 
 const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
-    queryAllSumInfo()
-        .then(async (allSumInfo: RecentAllSumInfo | null) => {
+    // 面板刷新时清理上一轮结果，避免胜场和进度重复累计。
+    friendList.value = [];
+    enemyList.value = [];
+    winCount.value = { friend: [0, 0], enemy: [0, 0] };
+    networkAnalysis.value = null;
+    recentAnalysisLoading.value = false;
+    setLoadingState({
+        stage: "players",
+        completed: 0,
+        total: 10,
+        message: "正在读取本局玩家",
+        detail: "正在连接游戏数据接口…",
+    });
+
+    void (async () => {
+        try {
+            const allSumInfo = await queryAllSumInfo();
             if (allSumInfo === null) {
                 isLcuErr.value = true;
+                setLoadingState({
+                    stage: "error",
+                    message: "本局玩家读取失败",
+                    detail: "未取得 LCU 对局数据，请确认游戏仍在加载或已进入对局。",
+                });
                 return;
             }
 
             isLcuErr.value = false;
             queueId.value = allSumInfo.queueId;
-            // 是否从缓存数据中获取队友的战绩数据
-            if (Object.keys(simpleMatchList).length === 0) {
-                await Promise.all([
-                    getCompleteSumInfo(
+            // 先把当前已识别的玩家渲染出来，历史接口不再阻塞本局阵容显示。
+            friendList.value = allSumInfo.friendList;
+            enemyList.value = allSumInfo.enemyList;
+            const playerTotal = friendList.value.length + enemyList.value.length;
+            setLoadingState({
+                stage: "history",
+                completed: 0,
+                total: Math.max(playerTotal, 10),
+                message: "正在加载最近 10 场战绩",
+                detail: playerTotal < 10
+                    ? `当前已识别 ${playerTotal}/10 人，先显示已有玩家。`
+                    : "本局玩家已读取，正在并发读取历史战绩。",
+            });
+
+            let completedHistory = 0;
+            const onHistoryComplete = () => {
+                completedHistory += 1;
+                setLoadingState({
+                    stage: "history",
+                    completed: completedHistory,
+                    total: Math.max(playerTotal, 10),
+                    message: "正在加载最近 10 场战绩",
+                    detail: `${completedHistory}/${playerTotal} 名玩家的基础战绩已完成。`,
+                });
+            };
+
+            // 是否从主面板缓存获取友方战绩；没有缓存的玩家单独回退到接口，
+            // 不再因为一个缓存键缺失而清空整列并重新串行查询。
+            await Promise.all([
+                Object.keys(simpleMatchList).length === 0
+                    ? getCompleteSumInfo(
                         allSumInfo.friendList,
                         allSumInfo.queueId,
                         true,
-                    ),
-                    getCompleteSumInfo(
-                        allSumInfo.enemyList,
-                        allSumInfo.queueId,
-                        false,
-                    ),
-                ]);
-            } else {
-                await Promise.all([
-                    getSumInfoFromCache(
+                        onHistoryComplete,
+                    )
+                    : getSumInfoFromCache(
                         allSumInfo.friendList,
                         simpleMatchList,
                         allSumInfo.queueId,
+                        onHistoryComplete,
                     ),
-                    getCompleteSumInfo(
-                        allSumInfo.enemyList,
-                        allSumInfo.queueId,
-                        false,
-                    ),
-                ]);
-            }
-            // 判断敌我双方谁的赢场最多
+                getCompleteSumInfo(
+                    allSumInfo.enemyList,
+                    allSumInfo.queueId,
+                    false,
+                    onHistoryComplete,
+                ),
+            ]);
+
             isFriCount.value =
                 winCount.value.friend[0] >= winCount.value.enemy[0];
-            // 先用基础战绩列表中的最近 10 场填充面板，完整 100 场分析在后台加载。
             applyFastRecentAnalysis([
                 ...friendList.value,
                 ...enemyList.value,
@@ -136,57 +205,73 @@ const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
                 friendList.value,
                 enemyList.value,
                 allSumInfo.queueId,
+                (progress: RecentAnalysisProgress) => {
+                    setLoadingState({
+                        stage: progress.stage === "cache" ? "history" : progress.stage,
+                        completed: progress.completed,
+                        total: progress.total,
+                        message: progress.message,
+                        detail: progress.stage === "full"
+                            ? `${progress.completed}/${progress.total} 名玩家的完整历史已处理。`
+                            : "最近 10 场已可查看，完整历史在后台继续处理。",
+                    });
+                },
             )
                 .then((analysis) => {
                     networkAnalysis.value = analysis;
                 })
                 .catch((error) => {
                     console.error("Failed to load recent team analysis", error);
+                    setLoadingState({
+                        stage: "error",
+                        message: "最近历史分析部分失败",
+                        detail: "最近 10 场仍可查看，完整 100 场稍后可重试。",
+                    });
                 })
                 .finally(() => {
                     recentAnalysisLoading.value = false;
                 });
-        });
+        } catch (error) {
+            console.error("Failed to initialize recent-match panel", error);
+            isLcuErr.value = true;
+            setLoadingState({
+                stage: "error",
+                message: "对局数据加载失败",
+                detail: "请确认 League 客户端和游戏进程正常运行后重试。",
+            });
+        }
+    })();
 };
 
 const getCompleteSumInfo = async (
     sumInfos: RecentSumInfo[],
     queueId: number,
     isFri: boolean,
+    onComplete?: () => void,
 ) => {
-    const results = await Promise.all(
-        sumInfos.map(async (summoner) => ({
-            summoner,
-            result: await queryMatch.queryMatchHistory(
+    await Promise.all(
+        sumInfos.map(async (summoner) => {
+            const result = await queryMatch.queryMatchHistory(
                 summoner.puuid,
                 queueId,
                 summoner.summonerId,
-            ),
-        })),
+            );
+            commitHistoryResult(summoner, result, isFri, onComplete);
+        }),
     );
-    const targetList = isFri ? friendList.value : enemyList.value;
-    const countList = isFri ? winCount.value.friend : winCount.value.enemy;
-    for (const { summoner, result } of results) {
-        summoner.matchList = result[0];
-        countList[0] += result[1];
-        countList[1] += result[0].length;
-        targetList.push(summoner);
-    }
 };
 
 const getSumInfoFromCache = async (
     sumInfos: RecentSumInfo[],
     simpleMatchList: { [key: string]: SimpleMatchTypes[] },
     queueId: number,
+    onComplete?: () => void,
 ) => {
-    try {
-        for (const sumInfo of sumInfos) {
-            let winMatchCount = 0;
-            const matchListElement = simpleMatchList[
-                String(sumInfo.summonerId)
-            ].map((match) => {
-                winMatchCount = match.isWin ? winMatchCount + 1 : winMatchCount;
-                return {
+    await Promise.all(
+        sumInfos.map(async (sumInfo) => {
+            const cachedMatches = simpleMatchList[String(sumInfo.summonerId)];
+            if (Array.isArray(cachedMatches)) {
+                const matchListElement = cachedMatches.map((match) => ({
                     champImg: match.champImgUrl,
                     championId: match.champId,
                     kills: match.kills,
@@ -195,20 +280,24 @@ const getSumInfoFromCache = async (
                     isWin: match.isWin,
                     gameId: match.gameId,
                     queueId: match.queueId,
-                };
-            });
-            sumInfo.matchList = matchListElement;
-            friendList.value.push(sumInfo);
-            winCount.value.friend[0] += winMatchCount;
-            winCount.value.friend[1] += matchListElement.length;
-            await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-    } catch (e) {
-        friendList.value = [];
-        winCount.value.friend[0] = 0;
-        winCount.value.friend[1] = 0;
-        await getCompleteSumInfo(sumInfos, queueId, true);
-    }
+                }));
+                commitHistoryResult(
+                    sumInfo,
+                    [matchListElement, matchListElement.filter((match) => match.isWin).length],
+                    true,
+                    onComplete,
+                );
+                return;
+            }
+
+            const result = await queryMatch.queryMatchHistory(
+                sumInfo.puuid,
+                queueId,
+                sumInfo.summonerId,
+            );
+            commitHistoryResult(sumInfo, result, true, onComplete);
+        }),
+    );
 };
 
 const openDetailDrawer = async (
@@ -266,6 +355,7 @@ const getChampInfoList = async (champId: number) => {
             :is-fri-count="isFriCount"
             :queue-id="queueId"
             :analysis-loading="recentAnalysisLoading"
+            :loading-state="loadingState"
         />
 
         <null-page v-if="isLcuErr" />
@@ -277,6 +367,7 @@ const getChampInfoList = async (champId: number) => {
                 :queue-id="queueId"
                 :is-fri="true"
                 :analysis-loading="recentAnalysisLoading"
+                :loading-state="loadingState"
             />
             <recent-match-list
                 @show-detail="openDetailDrawer"
@@ -284,6 +375,7 @@ const getChampInfoList = async (champId: number) => {
                 :queue-id="queueId"
                 :is-fri="false"
                 :analysis-loading="recentAnalysisLoading"
+                :loading-state="loadingState"
             />
         </div>
     </div>

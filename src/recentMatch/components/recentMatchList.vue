@@ -8,6 +8,7 @@ import {
   OpponentMatchupStats,
   PartyGroupAnalysis,
   PositionRecentStats,
+  RecentMatchLoadingState,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 
@@ -15,10 +16,12 @@ const {
   sumList,
   isFri,
   analysisLoading,
+  loadingState,
 } = defineProps<{
   sumList: RecentSumInfo[];
   isFri: boolean;
   analysisLoading: boolean;
+  loadingState: RecentMatchLoadingState;
 }>();
 
 const emits = defineEmits<{
@@ -145,7 +148,7 @@ const positionHeroSummary = (position: PositionRecentStats) =>
             </div>
           </div>
           <div v-else class="text-xs text-gray-400 text-center leading-5">
-            {{ analysisLoading ? "10场数据加载中" : "暂无完整分析" }}
+            {{ loadingState.stage === "history" || analysisLoading ? "最近10场数据加载中" : "暂无完整分析" }}
           </div>
 
           <div
@@ -383,7 +386,11 @@ const positionHeroSummary = (position: PositionRecentStats) =>
       </div>
     </div>
     <div v-else class="flex h-full justify-center items-center">
-      <n-result status="418" title="数据加载中" description="正在读取本局玩家信息" />
+      <n-result
+        :status="loadingState.stage === 'error' ? 'error' : '418'"
+        :title="loadingState.stage === 'error' ? '数据读取失败' : '数据加载中'"
+        :description="loadingState.detail || loadingState.message"
+      />
     </div>
   </n-card>
 </template>

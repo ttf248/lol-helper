@@ -51,9 +51,11 @@ class QueryMatch {
             endIndex,
         );
         if (!result || result.games.length === 0) return [];
-        // 只缓存当前请求返回的 participant；写库在首屏请求内完成，
-        // 后续完整分析即可直接读取这批最近数据，不会立即重复拉取 100 场。
-        await this.cacheRawGames(puuid, result.games, result.source);
+        // 缓存写入不再阻塞首屏。当前请求的数据已经可以直接渲染，
+        // 后续分析会优先使用 player.matchList；数据库在后台完成持久化。
+        void this.cacheRawGames(puuid, result.games, result.source).catch((error) => {
+            console.warn("Failed to persist recent match cache", error);
+        });
         return result.games;
     };
 

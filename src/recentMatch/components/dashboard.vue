@@ -7,6 +7,7 @@ import {
 	NButtonGroup,
 	NPopconfirm,
 	NDivider,
+	NProgress,
 } from "naive-ui";
 import {
 	ThumbUp,
@@ -16,15 +17,17 @@ import {
 	CircleX,
 	Refresh,
 } from "@vicons/tabler";
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ConfigSettingTypes } from "@/background/types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import BrandLockup from "@/components/BrandLockup.vue";
+import { RecentMatchLoadingState } from "@/recentMatch/utils/queryTypes";
 
-const { winCount, isFriCount, analysisLoading } = defineProps<{
+const { winCount, isFriCount, loadingState } = defineProps<{
 	winCount: { friend: number[]; enemy: number[] };
 	isFriCount: boolean;
 	analysisLoading: boolean;
+	loadingState: RecentMatchLoadingState;
 }>();
 const emits = defineEmits<{ openNetwork: [] }>();
 const config: ConfigSettingTypes = reactive(
@@ -32,6 +35,15 @@ const config: ConfigSettingTypes = reactive(
 );
 
 const isModalOpen = ref(false);
+
+const loadingPercent = computed(() => {
+	if (loadingState.stage === "done") return 100;
+	if (loadingState.total <= 0) return 0;
+	return Math.min(
+		99,
+		Math.max(0, Math.round((loadingState.completed / loadingState.total) * 100)),
+	);
+});
 
 onMounted(() => {
 	if (!config.isGameInTips) {
@@ -119,10 +131,14 @@ const changeConfig = () => {
 				<n-tag
 					class="h-10 ml-2"
 					:bordered="false"
-					:type="analysisLoading ? 'warning' : 'success'"
+					:type="loadingState.stage === 'error' ? 'error' : loadingState.stage === 'done' ? 'success' : 'warning'"
 					style="cursor: default !important"
+					:title="loadingState.detail"
 				>
-					{{ analysisLoading ? "近10场已显示 · 100场扩展中" : "近期100场分析已完成" }}
+					{{ loadingState.message }}
+					<span v-if="loadingState.total > 0">
+						· {{ loadingState.completed }}/{{ loadingState.total }}
+					</span>
 				</n-tag>
 			</div>
 		</div>
@@ -187,6 +203,19 @@ const changeConfig = () => {
 					关闭此窗口 o.O?
 				</n-popconfirm>
 			</n-button-group>
+		</div>
+		<div
+			v-if="loadingState.stage !== 'done'"
+			class="absolute bottom-0 left-0 right-0 px-1"
+			:title="loadingState.detail"
+		>
+			<n-progress
+				type="line"
+				:percentage="loadingPercent"
+				:show-indicator="false"
+				:height="3"
+				:status="loadingState.stage === 'error' ? 'error' : 'success'"
+			/>
 		</div>
 	</header>
 
