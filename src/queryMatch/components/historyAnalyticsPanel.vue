@@ -34,10 +34,12 @@ import {
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 type AnalysisWindow = (typeof RECENT_ANALYSIS_WINDOWS)[number];
+type PartyRankingMode = "frequency" | "winRate";
 
 const props = defineProps<{ player: RecentSumInfo }>();
 const selectedMode = ref<MatchModeKey>("match");
 const selectedWindow = ref<AnalysisWindow>(10);
+const partyRankingMode = ref<PartyRankingMode>("frequency");
 const analysis = ref<PlayerRecentAnalysis | null>(null);
 const analysisProgress = ref<PlayerAnalysisProgress | null>(null);
 const loading = ref(false);
@@ -76,12 +78,20 @@ const partyRankingSections = computed(() => {
   const groups = analysis.value?.partyGroups || [];
   return [2, 3, 4, 5].map((size) => {
     const allGroups = groups
-      .filter((group) => group.members.length === size)
+      .filter(
+        (group) =>
+          group.members.length === size &&
+          (partyRankingMode.value === "frequency" || group.games >= 5),
+      )
       .sort(
         (left, right) =>
-          right.games - left.games ||
-          right.stabilityScore - left.stabilityScore ||
-          right.winRate - left.winRate,
+          partyRankingMode.value === "frequency"
+            ? right.games - left.games ||
+              right.stabilityScore - left.stabilityScore ||
+              right.winRate - left.winRate
+            : right.winRate - left.winRate ||
+              right.games - left.games ||
+              right.stabilityScore - left.stabilityScore,
       );
     return {
       size,
@@ -375,8 +385,25 @@ onMounted(() => {
 
         <n-card size="small" title="我常和谁开黑 · 组合 Top 5" :bordered="false">
           <div class="party-ranking-caption">
-            基于 PostgreSQL 当前模式最近 {{ partyAnalysisGames }} 场完整对局，按共同同队场次排序；
-            同场次数越多，越能说明是稳定组合，胜率用于评价组合效果。
+            基于 PostgreSQL 当前模式最近 {{ partyAnalysisGames }} 场完整对局；
+            {{ partyRankingMode === "frequency" ? "常玩排行按共同同队场次排序" : "最佳胜率排行要求至少共同 5 场" }}。
+          </div>
+          <div class="party-ranking-toolbar">
+            <span class="control-label">排行依据</span>
+            <n-button-group size="tiny">
+              <n-button
+                :type="partyRankingMode === 'frequency' ? 'primary' : 'default'"
+                @click="partyRankingMode = 'frequency'"
+              >
+                常玩排行
+              </n-button>
+              <n-button
+                :type="partyRankingMode === 'winRate' ? 'primary' : 'default'"
+                @click="partyRankingMode = 'winRate'"
+              >
+                最佳胜率
+              </n-button>
+            </n-button-group>
           </div>
           <div class="party-ranking-grid">
             <div
@@ -655,6 +682,13 @@ onMounted(() => {
 }
 
 .party-ranking-caption {
+  margin-bottom: 0.45rem;
+}
+
+.party-ranking-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   margin-bottom: 0.45rem;
 }
 
