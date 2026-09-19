@@ -125,6 +125,7 @@ class QueryMatch {
 
         return {
             champImg: champImgUrl,
+            championId,
             kills,
             deaths,
             assists,

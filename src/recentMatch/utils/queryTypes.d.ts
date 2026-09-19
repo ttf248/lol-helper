@@ -131,6 +131,7 @@ export interface RecentAllSumInfo {
 
 export interface MatchItemTypes {
   champImg: string;
+  championId?: number;
   kills: number;
   deaths: number;
   assists: number;
@@ -158,7 +159,7 @@ export interface ConfidenceInfo {
 }
 
 export interface WinRateTrendPoint {
-  window: 20 | 50 | 100;
+  window: 10 | 20 | 50 | 100;
   games: number;
   wins: number;
   winRate: number | null;

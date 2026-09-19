@@ -10,6 +10,7 @@ import {
   ChampionRecentStats,
   ConfidenceInfo,
   ConfidenceLevel,
+  MatchItemTypes,
   ModerationRecord,
   OpponentMatchupStats,
   PartyGroupAnalysis,
@@ -25,11 +26,12 @@ import {
 } from "@/recentMatch/utils/queryTypes";
 
 export const RECENT_ANALYSIS_GAME_COUNT = 100;
-export const RECENT_ANALYSIS_WINDOWS = [20, 50, 100] as const;
+export const RECENT_DEFAULT_GAME_COUNT = 10;
+export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 
 // 非当前模式的历史记录会占用窗口，因此多扫描一些记录后再截取当前队列的 100 场。
 const HISTORY_SCAN_LIMIT = 300;
-const HISTORY_CONCURRENCY = 3;
+const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -468,6 +470,78 @@ const buildTrendStats = (
     };
   });
 
+const quickMatchToGame = (
+  match: MatchItemTypes,
+  player: RecentSumInfo,
+  index: number,
+): NormalizedHistoryGame => ({
+  gameId: match.gameId,
+  gameCreation: Date.now() - index,
+  queueId: match.queueId,
+  participants: [
+    {
+      puuid: player.puuid,
+      summonerId: player.summonerId,
+      summonerName: player.summonerName,
+      teamId: 100,
+      championId: asNumber(match.championId),
+      position: "UNKNOWN",
+      kills: asNumber(match.kills),
+      deaths: asNumber(match.deaths),
+      assists: asNumber(match.assists),
+      win: Boolean(match.isWin),
+    },
+  ],
+});
+
+const buildQuickPlayerAnalysis = (
+  player: RecentSumInfo,
+): PlayerRecentAnalysis => {
+  const quickMatches = (Array.isArray(player.matchList) ? player.matchList : [])
+    .slice(0, RECENT_DEFAULT_GAME_COUNT);
+  const games = quickMatches.map((match, index) =>
+    quickMatchToGame(match, player, index),
+  );
+  const playerGames = games
+    .map((game) => findPlayerParticipant(game, player))
+    .filter(
+      (participant): participant is NormalizedHistoryParticipant =>
+        participant !== undefined,
+    );
+  const wins = playerGames.filter((participant) => participant.win).length;
+  const champions = buildChampionStats(games, player);
+  const actualGames = playerGames.length;
+  const confidenceScore = Math.min(actualGames / RECENT_DEFAULT_GAME_COUNT, 1) * 70;
+
+  return {
+    requestedGames: RECENT_DEFAULT_GAME_COUNT,
+    actualGames,
+    wins,
+    winRate: roundRate(wins, actualGames),
+    currentChampion:
+      champions.find((item) => item.championId === player.champId) || null,
+    champions,
+    trends: buildTrendStats(games, player),
+    positions: [],
+    opponents: [],
+    partyGroups: [],
+    confidence: confidenceInfo(confidenceScore, [
+      `面板已加载最近 ${actualGames} 场`,
+      "位置、交手和组合关系将在后台继续补齐",
+    ]),
+    moderation: emptyModeration(),
+    source: "当前面板已加载的最近战绩",
+    historyComplete: false,
+  };
+};
+
+/** 先使用面板已有的最近 10 场，避免完整历史接口阻塞首屏。 */
+export const applyFastRecentAnalysis = (players: RecentSumInfo[]) => {
+  players.forEach((player) => {
+    player.recentAnalysis = buildQuickPlayerAnalysis(player);
+  });
+};
+
 const confidenceLevel = (score: number): ConfidenceLevel =>
   score >= 80 ? "high" : score >= 50 ? "medium" : "low";
 
@@ -789,7 +863,8 @@ export const loadRecentTeamAnalysis = async (
     const groups = buildPartyGroups(team, snapshotMap, moderationMap);
     for (const player of team) {
       const snapshot = snapshotMap.get(player.puuid);
-      if (!snapshot) continue;
+      // 完整历史接口失败时保留首屏已经计算出的最近 10 场，避免空结果覆盖可用数据。
+      if (!snapshot || snapshot.games.size === 0) continue;
       player.recentAnalysis = buildPlayerAnalysis(
         player,
         snapshot,

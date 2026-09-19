@@ -21,7 +21,10 @@ import { emitTo, once } from "@tauri-apps/api/event";
 import { window } from "@tauri-apps/api";
 import ChampInfo from "@/recentMatch/components/champInfo.vue";
 import { requestFetch } from "@/main/utils/request.ts";
-import { loadRecentTeamAnalysis } from "@/recentMatch/utils/recentAnalytics";
+import {
+    applyFastRecentAnalysis,
+    loadRecentTeamAnalysis,
+} from "@/recentMatch/utils/recentAnalytics";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 const querySummoner = new QuerySummoner();
@@ -128,7 +131,11 @@ const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
             fScoreMax.value = getMaxSummonerStateScore(friendList.value);
             eScoreMax.value = getMaxSummonerStateScore(enemyList.value);
 
-            // 基础卡片先展示，完整 100 场分析在后台按 3 名玩家并发加载。
+            // 先用基础战绩列表中的最近 10 场填充面板，完整 100 场分析在后台加载。
+            applyFastRecentAnalysis([
+                ...friendList.value,
+                ...enemyList.value,
+            ]);
             recentAnalysisLoading.value = true;
             void loadRecentTeamAnalysis(
                 friendList.value,
@@ -193,6 +200,7 @@ const getSumInfoFromCache = async (
                 winMatchCount = match.isWin ? winMatchCount + 1 : winMatchCount;
                 return {
                     champImg: match.champImgUrl,
+                    championId: match.champId,
                     kills: match.kills,
                     deaths: match.deaths,
                     assists: match.assists,

@@ -184,7 +184,7 @@ const isMaxScore = (player: RecentSumInfo) =>
             </div>
           </div>
           <div v-else class="text-xs text-gray-400 text-center leading-5">
-            {{ analysisLoading ? "100场分析中" : "暂无完整分析" }}
+            {{ analysisLoading ? "10场数据加载中" : "暂无完整分析" }}
           </div>
 
           <div
@@ -251,7 +251,7 @@ const isMaxScore = (player: RecentSumInfo) =>
       >
         <div class="flex items-center justify-between mb-2">
           <div class="font-medium">
-            {{ selectedPlayer.summonerName }} · 近期 100 场分析
+            {{ selectedPlayer.summonerName }} · 近期 {{ selectedPlayer.recentAnalysis?.requestedGames || 10 }} 场分析
           </div>
           <n-button text size="tiny" @click="selectedPuuid = null">关闭</n-button>
         </div>
@@ -280,7 +280,13 @@ const isMaxScore = (player: RecentSumInfo) =>
             </div>
           </div>
 					<div
-						v-if="!selectedPlayer.recentAnalysis.historyComplete"
+						v-if="!selectedPlayer.recentAnalysis.historyComplete && analysisLoading"
+						class="text-blue-500 mb-2"
+					>
+						已先展示面板中已有的最近 10 场，位置、交手和组合关系正在后台补齐。
+					</div>
+					<div
+						v-else-if="!selectedPlayer.recentAnalysis.historyComplete"
 						class="text-orange-500 mb-2"
 					>
 						当前队列历史不足 100 场，以上数据按实际可用样本统计。
@@ -288,7 +294,7 @@ const isMaxScore = (player: RecentSumInfo) =>
 
           <div class="mb-3">
             <div class="font-medium mb-1">胜率趋势</div>
-            <div class="grid grid-cols-3 gap-2">
+				<div class="grid grid-cols-4 gap-2">
               <div
                 v-for="trend in selectedPlayer.recentAnalysis.trends"
                 :key="trend.window"

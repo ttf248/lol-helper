@@ -169,7 +169,7 @@ const changeConfig = () => {
 					:type="analysisLoading ? 'warning' : 'success'"
 					style="cursor: default !important"
 				>
-					{{ analysisLoading ? "近期100场分析中" : "近期100场分析已完成" }}
+					{{ analysisLoading ? "近10场已显示 · 100场扩展中" : "近期100场分析已完成" }}
 				</n-tag>
 			</div>
 		</div>
@@ -275,7 +275,7 @@ const changeConfig = () => {
 			<p class="my-1">4：标签含义 【S : 小代】【A : 绝活】【B : 熟练】</p>
 			<p class="my-1">5：点击下方战绩标签，即可查看此局详细数据</p>
 			<p class="my-1">6：点击英雄头像，可查看此英雄的技能信息</p>
-			<p class="my-1">7：展开分析可查看最近100场胜率、英雄胜率和疑似开黑组合</p>
+			<p class="my-1">7：先展示最近10场，后台扩展100场；展开分析可查看详细统计</p>
 
 			<n-divider style="margin: 22px 0 20px 0" />
 
