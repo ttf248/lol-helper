@@ -1,6 +1,5 @@
 import {
   queryMatchHistoryFullWithSource,
-  queryMatchHistoryWithSource,
   MatchHistoryGame,
 } from "@/lcu/aboutMatch";
 import { Games } from "@/lcu/types/queryMatchLcuTypes";
@@ -35,16 +34,16 @@ import {
   historyGameQuality,
   mergeHistoryGames,
 } from "@/recentMatch/utils/historyData";
+import {
+  HISTORY_ANALYSIS_LIMIT,
+  HISTORY_FAST_WINDOW,
+  HISTORY_SERVER_FETCH_LIMIT,
+} from "@/recentMatch/utils/historyConfig";
 
-export const RECENT_ANALYSIS_GAME_COUNT = 100;
-export const RECENT_DEFAULT_GAME_COUNT = 10;
+export const RECENT_ANALYSIS_GAME_COUNT = HISTORY_ANALYSIS_LIMIT;
+export const RECENT_DEFAULT_GAME_COUNT = HISTORY_FAST_WINDOW;
 export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 
-// 默认只读取小窗口，避免首页第一次打开就等待分页扫描；完整窗口在后台补齐。
-const HISTORY_FAST_SCAN_LIMIT = 40;
-// 非当前模式的历史记录会占用窗口，因此完整分析需要多扫描一些记录。
-const HISTORY_SCAN_LIMIT = 300;
-const HISTORY_PAGE_SIZE = 20;
 const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -330,55 +329,19 @@ const syncPlayerModeGames = async (
   source: string;
   coverage: HistoryCoverageInfo;
 }> => {
-  const cachedGameIds = new Set(existingGames.map((game) => game.gameId));
-  const fetchedGames = new Map<number, NormalizedHistoryGame>();
-  let source = "unavailable";
-  let reachedCachedBoundary = false;
-
-  for (
-    let offset = 0;
-    offset < HISTORY_SCAN_LIMIT;
-    offset += HISTORY_PAGE_SIZE
-  ) {
-    const result = await queryMatchHistoryFullWithSource(
-      player.puuid,
-      offset,
-      Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SCAN_LIMIT),
-    );
-    const rawGames = result?.games ?? [];
-    if (result?.source) source = result.source;
-    if (rawGames.length === 0) break;
-
-    const pageGames = uniqueGames(
-      rawGames,
-      modeKey,
-      player,
-      result?.source || "interface",
-    );
-    for (const [gameId, game] of pageGames) {
-      if (cachedGameIds.has(gameId)) {
-        reachedCachedBoundary = true;
-      }
-      fetchedGames.set(gameId, game);
-    }
-
-    // 只要服务器分页触碰到本地已有 gameId，就已经追到缓存边界；
-    // 当合并样本已经覆盖最近 100 场时，后面的历史不再查询。
-    const mergedGameCount = new Set([
-      ...cachedGameIds,
-      ...fetchedGames.keys(),
-    ]).size;
-    if (
-      (reachedCachedBoundary &&
-        mergedGameCount >= RECENT_ANALYSIS_GAME_COUNT) ||
-      (cachedGameIds.size === 0 &&
-        fetchedGames.size >= RECENT_ANALYSIS_GAME_COUNT) ||
-      rawGames.length < HISTORY_PAGE_SIZE
-    ) {
-      break;
-    }
-  }
-
+  // 服务器只取最近三页。更早的记录全部交给 PostgreSQL，避免为了
+  // “追到缓存边界”继续翻页，也避免服务器返回异常时放大请求范围。
+  const result = await queryMatchHistoryFullWithSource(
+    player.puuid,
+    0,
+    HISTORY_SERVER_FETCH_LIMIT,
+  );
+  const fetchedGames = uniqueGames(
+    result?.games ?? [],
+    modeKey,
+    player,
+    result?.source || "interface",
+  );
   const merged = mergeHistoryGames(
     existingGames,
     Array.from(fetchedGames.values()),
@@ -386,7 +349,7 @@ const syncPlayerModeGames = async (
   );
   return {
     games: merged.games,
-    source,
+    source: result?.source || (existingGames.length > 0 ? "PostgreSQL 本地缓存" : "unavailable"),
     coverage: merged.coverage,
   };
 };
@@ -444,8 +407,8 @@ const loadPlayerHistory = async (
       limit: RECENT_ANALYSIS_GAME_COUNT,
     });
     if (cachedGames.length > 0) {
-      // 即使本地已经有 100 场，也必须向服务器同步最新分页；
-      // gameId 碰到本地记录后才停止继续翻页。
+      // 即使本地已经有 100 场，也只向服务器同步最近三页；
+      // 合并时通过 gameId 去重并让接口的完整 participant 覆盖旧缓存。
       void hydratePlayerQueueHistory(player, queueId, cachedGames);
       const limitedGames = new Map(
         cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
@@ -469,7 +432,7 @@ const loadPlayerHistory = async (
     }
 
     // PostgreSQL 不可用或首次缓存尚未写入时，直接复用首屏已取得的
-    // 最近 10 场。完整历史只在后台补齐，不能阻塞对局面板的首屏分析。
+    // 最近 10 场。服务器最近三页在后台补齐，不能阻塞对局面板首屏。
     const quickGames = sortGames(
       (Array.isArray(player.matchList) ? player.matchList : [])
         .filter((match) => isModeQueue(match.queueId, modeKey))
@@ -489,7 +452,7 @@ const loadPlayerHistory = async (
     }
 
     // 没有首屏摘要时也不要让一个玩家阻塞其它玩家的最近 10 场分析。
-    // 由统一的后台补全任务异步拉取完整历史，完成后再刷新整队分析。
+    // 由统一的后台任务异步拉取服务器最近三页，完成后再刷新整队分析。
     void hydratePlayerQueueHistory(player, queueId, []);
     return {
       puuid: player.puuid,
@@ -502,20 +465,6 @@ const loadPlayerHistory = async (
   historyCache.set(key, request);
   return request;
 };
-
-const normalizeModeGames = (
-  games: MatchHistoryGame[],
-  modeKey: MatchModeKey,
-  source = "interface",
-) =>
-  sortGames(
-    games
-      .map((game) => normalizeHistoryGame(game, source))
-      .filter(
-        (game): game is NormalizedHistoryGame =>
-          game !== null && isModeQueue(game.queueId, modeKey),
-    ),
-  );
 
 type PlayerAnalysisProgressHandler = (
   progress: PlayerAnalysisProgress,
@@ -538,7 +487,7 @@ const toHistorySnapshot = (
 const loadPlayerModeHistory = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
-  requestedGames = RECENT_DEFAULT_GAME_COUNT,
+  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerHistorySnapshot> => {
   const progressTotal = Math.max(requestedGames, 1);
@@ -562,10 +511,12 @@ const loadPlayerModeHistory = async (
       .filter((match) => isModeQueue(match.queueId, modeKey))
       .map((match, index) => quickMatchToGame(match, player, index)),
   );
-  const initialGames = sortGames([...seededGames, ...cachedGames]).slice(
-    0,
+  const initial = mergeHistoryGames(
+    cachedGames,
+    seededGames,
     RECENT_ANALYSIS_GAME_COUNT,
   );
+  const initialGames = initial.games;
   onProgress?.({
     stage: "cache",
     completed: 1,
@@ -573,124 +524,30 @@ const loadPlayerModeHistory = async (
     percentage: 12,
     message:
       cachedGames.length > 0
-        ? `本地缓存命中 ${cachedGames.length} 场，正在检查个人样本`
-        : `本地暂无缓存，已使用面板中的 ${seededGames.length} 场个人战绩作为种子`,
+      ? `本地缓存命中 ${cachedGames.length} 场，正在检查个人样本`
+      : `本地暂无缓存，已使用面板中的 ${seededGames.length} 场个人战绩作为种子`,
   });
-
-  const requiredGames = Math.min(requestedGames, RECENT_ANALYSIS_GAME_COUNT);
-
-  // 个人胜率可以只用一名玩家的摘要，但开黑、交手和关系图必须有
-  // 完整 participant。只要缓存/面板种子已经覆盖当前窗口，就先直接
-  // 展示个人指标；完整 participant 由后续 hydrate 阶段补齐。
-  if (initialGames.length >= requiredGames) {
-    onProgress?.({
-      stage: "personal",
-      completed: Math.min(initialGames.length, progressTotal),
-      total: progressTotal,
-      percentage: 38,
-      message:
-        cachedGames.length > 0
-          ? `个人历史已从本地缓存读取 ${Math.min(initialGames.length, progressTotal)} 场`
-          : `已使用页面已有的个人历史 ${Math.min(initialGames.length, progressTotal)} 场`,
-    });
-    return toHistorySnapshot(
-      player,
-      initialGames,
-      cachedGames.length > 0 ? "PostgreSQL 本地缓存" : "当前个人战绩列表",
-    );
-  }
-
-  // 这里使用普通个人历史接口先拿到摘要。完整 participant 关系分析
-  // 在下一阶段单独补齐，避免把个人战绩首屏绑在慢接口上。
-  const scanLimit =
-    requestedGames <= RECENT_DEFAULT_GAME_COUNT
-      ? HISTORY_FAST_SCAN_LIMIT
-      : HISTORY_SCAN_LIMIT;
+  // 这里只读取本地缓存和已经加载的个人摘要，不再额外扫描服务器。
+  // 后续 hydrate 阶段统一只请求服务器最近三页，并与这批数据合并。
   onProgress?.({
     stage: "personal",
     completed: Math.min(initialGames.length, progressTotal),
     total: progressTotal,
-    percentage: 20,
-    message: `正在查询个人历史摘要（目标最近 ${scanLimit} 场）`,
-  });
-  const fastResult = await queryMatchHistoryWithSource(
-    player.puuid,
-    0,
-    scanLimit,
-  );
-  const fastGames = sortGames([
-    ...initialGames,
-    ...normalizeModeGames(
-      fastResult?.games || [],
-      modeKey,
-      fastResult?.source || "interface",
-    ),
-  ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
-  if (fastGames.length > 0) {
-    void cacheHistory({
-      puuid: player.puuid,
-      summonerId: player.summonerId,
-      summonerName: player.summonerName,
-      modeKey,
-      source: fastResult?.source || "unavailable",
-      games: fastGames,
-    });
-  }
-
-  // 摘要接口可能因客户端分页或临时网络错误返回空结果。窗口大于
-  // 10 场时不能直接退回“当前面板的 10 场”，再尝试完整参与者接口，
-  // 确保可用的历史数据不会被首屏摘要失败遮住。
-  if (fastGames.length === 0 && requestedGames > RECENT_DEFAULT_GAME_COUNT) {
-    onProgress?.({
-      stage: "full",
-      completed: 0,
-      total: progressTotal,
-      percentage: 45,
-      message: "个人摘要接口未返回数据，正在尝试完整历史接口",
-    });
-    const recovered = await syncPlayerModeGames(player, modeKey, []);
-    if (recovered.games.length > 0) {
-      void cacheHistory({
-        puuid: player.puuid,
-        summonerId: player.summonerId,
-        summonerName: player.summonerName,
-        modeKey,
-        source: recovered.source,
-        games: recovered.games,
-      });
-      return toHistorySnapshot(
-        player,
-        recovered.games,
-        recovered.source,
-        recovered.coverage,
-      );
-    }
-  }
-
-  onProgress?.({
-    stage: "personal",
-    completed: Math.min(fastGames.length, progressTotal),
-    total: progressTotal,
-    percentage: 38,
-    message: `个人历史摘要已返回 ${Math.min(fastGames.length, progressTotal)} 场`,
+    percentage: 28,
+    message:
+      initialGames.length > 0
+        ? `已从本地与页面数据取得 ${Math.min(initialGames.length, progressTotal)} 场，准备同步服务器最近三页`
+        : "本地暂无可用样本，准备同步服务器最近三页",
   });
   return toHistorySnapshot(
     player,
-    fastGames,
-    fastGames.length > initialGames.length
-      ? fastResult?.source || "unavailable"
-      : cachedGames.length > 0
-        ? "PostgreSQL 本地缓存"
-      : "当前个人战绩列表",
-    mergeHistoryGames(
-      [...cachedGames, ...initialGames],
-      normalizeModeGames(
-        fastResult?.games || [],
-        modeKey,
-        fastResult?.source || "interface",
-      ),
-      RECENT_ANALYSIS_GAME_COUNT,
-    ).coverage,
+    initialGames,
+    cachedGames.length > 0
+      ? "PostgreSQL 本地缓存"
+      : seededGames.length > 0
+        ? "当前个人战绩列表"
+        : "等待服务器历史接口",
+    initial.coverage,
   );
 };
 
@@ -706,7 +563,7 @@ const hydratePlayerModeHistory = async (
     completed: 0,
     total: 1,
     percentage: 45,
-    message: "正在向服务器同步最近 100 场完整参与者，用于同队/交手分析",
+    message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场），并与本地缓存按 gameId 合并`,
   });
   const synced = await syncPlayerModeGames(player, modeKey, existingGames);
   const mergedGames = synced.games;
@@ -734,9 +591,7 @@ const hydratePlayerModeHistory = async (
     total: 1,
     percentage: 72,
     message:
-      mergedGames.length > existingGames.length
-        ? `完整参与者数据已返回，共 ${mergedGames.length} 场，正在计算关系`
-        : `服务器数据已与本地缓存核对，共 ${mergedGames.length} 场，正在计算关系`,
+      `服务器最近 3 页已与本地缓存合并，共 ${mergedGames.length} 场，正在计算关系`,
   });
   return result;
 };
@@ -1450,11 +1305,11 @@ const buildPlayerAnalysis = (
   };
 };
 
-/** 默认面板使用最近 10 场；用户展开更多分析时仍可复用同一份缓存。 */
+/** 历史分析默认使用最近 100 场；对局内面板另有最近 10 场快速首屏。 */
 export const loadPlayerModeAnalysis = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
-  requestedGames = 10,
+  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerRecentAnalysis> => {
   let snapshot = await loadPlayerModeHistory(
@@ -1463,26 +1318,46 @@ export const loadPlayerModeAnalysis = async (
     requestedGames,
     onProgress,
   );
+  // 先交付本地缓存/页面摘要；服务器只在下一步读取最近三页，
+  // 不会因为本地缓存较多而继续向更早分页扩展。
+  const personalAnalysis = snapshot.games.size > 0
+    ? buildPlayerAnalysis(
+        player,
+        snapshot,
+        [],
+        [],
+        emptyModeration(),
+        requestedGames,
+      )
+    : buildQuickPlayerAnalysis(player, modeKey, requestedGames);
+  onProgress?.({
+    stage: "personal",
+    completed: Math.min(personalAnalysis.actualGames, requestedGames),
+    total: Math.max(requestedGames, 1),
+    percentage: 38,
+    message: `个人战绩已展示 ${personalAnalysis.actualGames} 场，正在查询服务器最近 3 页`,
+    analysis: personalAnalysis,
+  });
+
+  snapshot = await hydratePlayerModeHistory(
+    player,
+    modeKey,
+    snapshot,
+    onProgress,
+  );
   if (snapshot.games.size === 0) {
-    const quickAnalysis = buildQuickPlayerAnalysis(
-      player,
-      modeKey,
-      requestedGames,
-    );
     onProgress?.({
       stage: "done",
       completed: 0,
       total: Math.max(requestedGames, 1),
       percentage: 100,
-      message: "没有取得可用历史数据，已保留个人战绩摘要",
-      analysis: quickAnalysis,
+      message: "服务器最近 3 页和本地缓存均没有可用历史数据",
+      analysis: personalAnalysis,
     });
-    return quickAnalysis;
+    return personalAnalysis;
   }
 
-  // 个人摘要先交付给界面；同队、交手和关系图等完整 participant
-  // 数据在后台继续补齐，不再阻塞个人胜率首屏。
-  const personalAnalysis = buildPlayerAnalysis(
+  const hydratedPersonalAnalysis = buildPlayerAnalysis(
     player,
     snapshot,
     [],
@@ -1491,42 +1366,13 @@ export const loadPlayerModeAnalysis = async (
     requestedGames,
   );
   onProgress?.({
-    stage: "personal",
-    completed: Math.min(personalAnalysis.actualGames, requestedGames),
+    stage: "full",
+    completed: hydratedPersonalAnalysis.actualGames,
     total: Math.max(requestedGames, 1),
-    percentage: 38,
-    message: `个人战绩已展示 ${personalAnalysis.actualGames} 场，正在补充关系数据`,
-    analysis: personalAnalysis,
+    percentage: 74,
+    message: `合并后个人历史可用 ${hydratedPersonalAnalysis.actualGames} 场，正在计算共同对局`,
+    analysis: hydratedPersonalAnalysis,
   });
-
-  const snapshotGames = Array.from(snapshot.games.values());
-  // 本地样本数量足够也不能跳过服务器同步；只有服务器分页命中
-  // 本地 gameId 后，syncPlayerModeGames 才会停止继续查询。
-  const needsHydration = snapshotGames.length > 0;
-  if (needsHydration) {
-    snapshot = await hydratePlayerModeHistory(
-      player,
-      modeKey,
-      snapshot,
-      onProgress,
-    );
-    const hydratedPersonalAnalysis = buildPlayerAnalysis(
-      player,
-      snapshot,
-      [],
-      [],
-      emptyModeration(),
-      requestedGames,
-    );
-    onProgress?.({
-      stage: "full",
-      completed: hydratedPersonalAnalysis.actualGames,
-      total: Math.max(requestedGames, 1),
-      percentage: 74,
-      message: `个人历史已补齐 ${hydratedPersonalAnalysis.actualGames} 场，正在计算共同对局`,
-      analysis: hydratedPersonalAnalysis,
-    });
-  }
 
   // 单个用户的默认面板也需要展示关系分析。历史详情已经包含每局的
   // participant，因此可以从同一份缓存构造共同对局快照，不必为每个队友
@@ -1775,7 +1621,7 @@ export const loadRecentTeamAnalysis = async (
     message: "正在读取本地历史缓存",
   });
 
-  // 举报记录不是最近 10 场分析的前置条件，与缓存读取并行执行。
+  // 举报记录不是首屏最近 10 场分析的前置条件，与缓存读取并行执行。
   const moderationPromise = loadModerationMap(players);
   const snapshots = await mapWithConcurrency(
     players,
@@ -1831,7 +1677,7 @@ export const loadRecentTeamAnalysis = async (
         stage: "full",
         completed: 0,
         total: hydrationEntries.length,
-        message: "正在从服务器同步最近 100 场（命中本地 gameId 后停止）",
+        message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场）并合并本地缓存`,
       });
   }
 
@@ -1846,7 +1692,7 @@ export const loadRecentTeamAnalysis = async (
         stage: "full",
         completed: hydratedCount,
         total: hydrationEntries.length,
-        message: "正在从服务器同步最近 100 场（命中本地 gameId 后停止）",
+        message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场）并合并本地缓存`,
       });
     }),
   );

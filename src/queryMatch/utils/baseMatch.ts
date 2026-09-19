@@ -18,75 +18,47 @@ import {
 } from "@/recentMatch/utils/recentAnalytics";
 import { mergeHistoryGames as mergeNormalizedHistoryGames } from "@/recentMatch/utils/historyData";
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
-
-const HISTORY_PAGE_SIZE = 20;
-const HISTORY_SYNC_SCAN_LIMIT = 300;
-const HISTORY_SYNC_GAME_LIMIT = 100;
+import {
+    HISTORY_ANALYSIS_LIMIT,
+    HISTORY_SERVER_FETCH_LIMIT,
+} from "@/recentMatch/utils/historyConfig";
 
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
     source: MatchHistorySource | null;
+    /** 本地缓存与最近服务器窗口合并后的可用记录数。 */
+    availableCount: number;
 }
 
 export default class BaseMatch {
     public summonerId = 0;
+    private recentServerHistory = new Map<
+        string,
+        { games: (Games | GamesBySgp)[]; source: MatchHistorySource }
+    >();
 
-    private combineSources = (sources: MatchHistorySource[]) => {
-        const uniqueSources = Array.from(new Set(sources));
-        if (uniqueSources.length === 0) return null;
-        return uniqueSources.length === 1 ? uniqueSources[0] : "mixed";
-    };
-
-    private syncHistoryUntilCacheBoundary = async (
+    private syncRecentServerHistory = async (
         puuid: string,
-        cachedGameIds: Set<number>,
-        targetCount: number,
     ): Promise<{
         games: (Games | GamesBySgp)[];
         source: MatchHistorySource | null;
+        failed: boolean;
     }> => {
-        const serverGames = new Map<number, Games | GamesBySgp>();
-        const sources: MatchHistorySource[] = [];
-        let reachedCachedBoundary = false;
-
-        for (
-            let offset = 0;
-            offset < HISTORY_SYNC_SCAN_LIMIT;
-            offset += HISTORY_PAGE_SIZE
-        ) {
-            const result = await queryMatchHistoryWithSource(
-                puuid,
-                offset,
-                Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SYNC_SCAN_LIMIT),
-            );
-            if (result?.source) sources.push(result.source);
-            const games = result?.games ?? [];
-            if (games.length === 0) break;
-
-            for (const game of games) {
-                if (cachedGameIds.has(game.gameId)) {
-                    reachedCachedBoundary = true;
-                }
-                serverGames.set(game.gameId, game);
-            }
-
-            const mergedCount = new Set([
-                ...cachedGameIds,
-                ...serverGames.keys(),
-            ]).size;
-            if (
-                (reachedCachedBoundary && mergedCount >= targetCount) ||
-                (cachedGameIds.size === 0 &&
-                    serverGames.size >= targetCount) ||
-                games.length < HISTORY_PAGE_SIZE
-            ) {
-                break;
-            }
+        const result = await queryMatchHistoryWithSource(
+            puuid,
+            0,
+            HISTORY_SERVER_FETCH_LIMIT,
+        );
+        if (result) {
+            this.recentServerHistory.set(puuid, {
+                games: result.games,
+                source: result.source,
+            });
         }
-
         return {
-            games: Array.from(serverGames.values()),
-            source: this.combineSources(sources),
+            games: result?.games ?? [],
+            source: result?.source ?? null,
+            failed: result === null,
         };
     };
 
@@ -178,80 +150,59 @@ export default class BaseMatch {
         }
 
         const requestedCount = Math.max(0, endIndex - begIndex);
-        if (requestedCount > 0) {
-            const syncLimit = Math.min(
-                HISTORY_SYNC_SCAN_LIMIT,
-                Math.max(HISTORY_SYNC_GAME_LIMIT, endIndex),
-            );
-            const cachedGames = await getCachedHistory({
-                puuid,
-                limit: syncLimit,
-                offset: 0,
-            });
-            const synced = await this.syncHistoryUntilCacheBoundary(
-                puuid,
-                new Set(cachedGames.map((game) => game.gameId)),
-                syncLimit,
-            );
-            const mergedGames = this.mergeHistoryGames(
-                cachedGames,
-                synced.games,
-                syncLimit,
-                synced.source || "interface",
-            );
-            const cachedMatches = mergedGames
-                .map((game) => this.getSimpleCachedMatch(game, puuid))
-                .filter(
-                    (match): match is SimpleMatchDetailsTypes => match !== null,
-                );
-            const pageMatches = cachedMatches.slice(begIndex, endIndex);
-            if (pageMatches.length >= requestedCount || mergedGames.length > 0) {
-                if (synced.games.length > 0 && synced.source) {
-                    this.cacheNormalizedGames(
-                        puuid,
-                        synced.games,
-                        synced.source,
-                        localSumInfo.name || "",
-                    );
-                }
-                return {
-                    matches: pageMatches,
-                    source:
-                        synced.source && cachedGames.length > 0
-                            ? "mixed"
-                            : synced.source || "postgres",
-                };
-            }
+        if (requestedCount <= 0) {
+            return { matches: [], source: null, availableCount: 0 };
         }
 
-        const result = await queryMatchHistoryWithSource(
+        // 读取本地最新 100 场，再只请求服务器最近三页。服务器结果会
+        // 按 gameId 覆盖/补充缓存，最终固定按时间排序后再取页面。
+        const cachedGames = await getCachedHistory({
             puuid,
-            begIndex,
-            endIndex,
+            limit: HISTORY_ANALYSIS_LIMIT,
+            offset: 0,
+        });
+        // 首次查询或重新回到第一页时刷新服务器最近三页；同一玩家
+        // 后续翻页复用本次服务器窗口，第四页及更早页面只读本地缓存。
+        const serverHistory = this.recentServerHistory.get(puuid);
+        const synced =
+            begIndex === 0 || !serverHistory
+                ? await this.syncRecentServerHistory(puuid)
+                : { games: serverHistory.games, source: serverHistory.source, failed: false };
+        const mergedGames = this.mergeHistoryGames(
+            cachedGames,
+            synced.games,
+            HISTORY_ANALYSIS_LIMIT,
+            synced.source || "interface",
         );
-
-        if (result === null) {
-            return null;
-        }
-
-        const matches = result.games
-            .map((matchListElement) =>
-                this.getSimpleMatch(matchListElement, puuid),
-            )
+        const cachedMatches = mergedGames
+            .map((game) => this.getSimpleCachedMatch(game, puuid))
             .filter(
                 (match): match is SimpleMatchDetailsTypes => match !== null,
             );
+        const pageMatches = cachedMatches.slice(begIndex, endIndex);
 
-        // 历史查询面板也负责回填统一分析缓存，后续首页、分页和模式分析
-        // 都可以直接复用这些 participant 数据，避免重复请求同一段历史。
-        this.cacheNormalizedGames(
-            puuid,
-            result.games,
-            result.source,
-            localSumInfo.name || "",
-        );
+        if (synced.failed && mergedGames.length === 0) {
+            return null;
+        }
+        if (synced.games.length > 0 && synced.source) {
+            // 历史查询面板也负责回填统一分析缓存，后续首页、分页和
+            // 模式分析都可以复用这三页 participant 数据。
+            this.cacheNormalizedGames(
+                puuid,
+                synced.games,
+                synced.source,
+                localSumInfo.name || "",
+            );
+        }
 
-        return { matches, source: result.source };
+        return {
+            matches: pageMatches,
+            source:
+                synced.source && cachedGames.length > 0
+                    ? "mixed"
+                    : synced.source || (cachedGames.length > 0 ? "postgres" : null),
+            availableCount: cachedMatches.length,
+        };
     };
 
     public getSimpleCachedMatch = (
@@ -362,15 +313,23 @@ export default class BaseMatch {
         puuid: string,
         queueId: number,
     ): Promise<ProcessedMatchHistory> => {
-        const result = await this.dealMatchHistoryWithSource(puuid, 0, 60);
+        const result = await this.dealMatchHistoryWithSource(
+            puuid,
+            0,
+            HISTORY_ANALYSIS_LIMIT,
+        );
         if (result === null) {
-            return { matches: [], source: null };
+            return { matches: [], source: null, availableCount: 0 };
         }
         const specialList = result.matches.filter(
             (matchList) => matchList.queueId === queueId,
         );
 
-        return { matches: specialList, source: result.source };
+        return {
+            matches: specialList,
+            source: result.source,
+            availableCount: specialList.length,
+        };
     };
 
     public timestampToDate = (timestamp: number): [string, string] => {

@@ -19,16 +19,7 @@ import {
     normalizeHistoryGame,
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
-
-const HISTORY_PAGE_SIZE = 20;
-const HISTORY_SYNC_SCAN_LIMIT = 300;
-const HISTORY_SYNC_GAME_LIMIT = 100;
-
-interface RawHistoryPage {
-    games: (Games | GamesBySgp)[];
-    /** null 表示接口请求失败；空数组仍表示接口正常返回但没有记录。 */
-    failed: boolean;
-}
+import { HISTORY_ANALYSIS_LIMIT, HISTORY_SERVER_FETCH_LIMIT } from "@/recentMatch/utils/historyConfig";
 
 interface MatchSearchResult {
     matches: MatchItemTypes[];
@@ -65,30 +56,6 @@ class QueryMatch {
         );
     };
 
-    private queryRawHistory = async (
-        puuid: string,
-        begIndex: number,
-        endIndex: number,
-    ): Promise<RawHistoryPage> => {
-        const result = await queryMatchHistoryWithSource(
-            puuid,
-            begIndex,
-            endIndex,
-        );
-        if (!result) {
-            return { games: [], failed: true };
-        }
-        if (result.games.length === 0) {
-            return { games: [], failed: false };
-        }
-        // 缓存写入不再阻塞首屏。当前请求的数据已经可以直接渲染，
-        // 后续分析会优先使用 player.matchList；数据库在后台完成持久化。
-        void this.cacheRawGames(puuid, result.games, result.source).catch((error) => {
-            console.warn("Failed to persist recent match cache", error);
-        });
-        return { games: result.games, failed: false };
-    };
-
     private buildHistoryStatus = (
         cachedGames: number,
         search: MatchSearchResult,
@@ -106,7 +73,7 @@ class QueryMatch {
                     ...common,
                     kind: "cache-fallback",
                     title: "接口查询未完成，已使用可用数据",
-                    detail: `历史接口请求失败或超时，当前显示本地缓存及已返回的 ${search.matches.length} 场。`,
+                    detail: `服务器最近三页请求失败或超时，当前显示本地缓存及已返回的 ${search.matches.length} 场。`,
                 };
             }
             if (search.serverGames === 0) {
@@ -122,7 +89,7 @@ class QueryMatch {
                     ...common,
                     kind: "cache-fallback",
                     title: "当前模式未命中接口记录",
-                    detail: `接口返回了 ${search.serverGames} 场历史对局，但没有当前模式记录，已显示本地缓存 ${cachedGames} 场。`,
+                    detail: `服务器最近三页返回了 ${search.serverGames} 场历史对局，但没有当前模式记录，已显示本地缓存 ${cachedGames} 场。`,
                 };
             }
             if (search.matchedGames === 0) {
@@ -137,7 +104,7 @@ class QueryMatch {
                 ...common,
                 kind: "ready",
                 title: "历史战绩已加载",
-                detail: `已合并本地缓存 ${cachedGames} 场与接口匹配的 ${search.matchedGames} 场。`,
+                detail: `已合并本地缓存 ${cachedGames} 场与服务器最近三页中匹配的 ${search.matchedGames} 场。`,
             };
         }
 
@@ -146,7 +113,7 @@ class QueryMatch {
                 ...common,
                 kind: "error",
                 title: "历史接口请求失败",
-                detail: "接口请求失败或超时，且本地没有可用的该模式缓存。",
+                detail: "服务器最近三页请求失败或超时，且本地没有可用的该模式缓存。",
             };
         }
         if (search.serverGames === 0) {
@@ -162,7 +129,7 @@ class QueryMatch {
                 ...common,
                 kind: "mode-empty",
                 title: "当前模式没有历史记录",
-                detail: `接口返回了 ${search.serverGames} 场历史对局，但最近扫描范围内没有当前模式记录。`,
+                detail: `接口返回了 ${search.serverGames} 场历史对局，但服务器最近三页内没有当前模式记录。`,
             };
         }
         if (search.matchedGames === 0) {
@@ -282,7 +249,7 @@ class QueryMatch {
                 // 对局内历史按模式读取，而不是把 420/440 或 400/430/490
                 // 拆成不同数据集；这样缓存和接口的筛选边界完全一致。
                 modeKey,
-                limit: HISTORY_SYNC_GAME_LIMIT,
+                limit: HISTORY_ANALYSIS_LIMIT,
             });
             const cachedMatchItems = cachedMatches
                 .map((game) =>
@@ -292,14 +259,12 @@ class QueryMatch {
                     (match): match is MatchItemTypes => match !== null,
                 );
 
-            // 缓存永远不是停止条件。每次打开对局面板都从服务器读取
-            // 最新分页；服务器返回某局 gameId 已存在于本地缓存后，才
-            // 认为已经追到缓存边界并停止继续向后翻页。
+            // 每次打开对局面板只读取服务器最近三页，再与本地缓存按
+            // gameId 合并；更早记录不会触发服务器继续翻页。
             const search = await this.findMatchesWithStatus(
                 puuid,
                 modeKey,
                 targetSummonerId,
-                new Set(cachedMatches.map((game) => game.gameId)),
             );
             const matches = this.uniqueAndSortMatches([
                 ...cachedMatchItems,
@@ -375,39 +340,34 @@ class QueryMatch {
         puuid: string,
         modeKey: MatchModeKey,
         targetSummonerId?: number,
-        cachedGameIds: Set<number> = new Set(),
     ): Promise<MatchSearchResult> => {
         const matchList: MatchItemTypes[] = [];
         const seenGameIds = new Set<number>();
-        let reachedCachedBoundary = false;
         let serverGames = 0;
         let modeGames = 0;
         let matchedGames = 0;
         let requestFailed = false;
 
-        for (
-            let offset = 0;
-            offset < HISTORY_SYNC_SCAN_LIMIT;
-            offset += HISTORY_PAGE_SIZE
-        ) {
-            const page = await this.queryRawHistory(
-                puuid,
-                offset,
-                Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SYNC_SCAN_LIMIT),
+        const result = await queryMatchHistoryWithSource(
+            puuid,
+            0,
+            HISTORY_SERVER_FETCH_LIMIT,
+        );
+        if (!result) {
+            requestFailed = true;
+        } else {
+            // 缓存写入不阻塞首屏；三页服务器数据会在后台持久化，
+            // 下一次查询直接参与本地合并。
+            void this.cacheRawGames(puuid, result.games, result.source).catch(
+                (error) => {
+                    console.warn("Failed to persist recent match cache", error);
+                },
             );
-            if (page.failed) {
-                requestFailed = true;
-                break;
-            }
-            if (page.games.length === 0) break;
-            serverGames += page.games.length;
+            serverGames = result.games.length;
 
-            for (const game of page.games) {
+            for (const game of result.games) {
                 if (!isModeQueue(game.queueId, modeKey)) continue;
                 modeGames += 1;
-                if (cachedGameIds.has(game.gameId)) {
-                    reachedCachedBoundary = true;
-                }
 
                 const match = this.parseMatch(game, puuid, targetSummonerId);
                 if (match && !seenGameIds.has(match.gameId)) {
@@ -416,29 +376,12 @@ class QueryMatch {
                     matchedGames += 1;
                 }
             }
-
-            // 最新 100 场已经足够支撑当前面板和后续分析；如果这一页
-            // 已碰到本地已有 gameId，且合并后的样本已经覆盖 100 场，
-            // 才算追到缓存边界。缓存不足 100 场时仍继续向后查询。
-            const mergedGameCount = new Set([
-                ...cachedGameIds,
-                ...seenGameIds,
-            ]).size;
-            if (
-                (reachedCachedBoundary &&
-                    mergedGameCount >= HISTORY_SYNC_GAME_LIMIT) ||
-                (cachedGameIds.size === 0 &&
-                    matchList.length >= HISTORY_SYNC_GAME_LIMIT) ||
-                page.games.length < HISTORY_PAGE_SIZE
-            ) {
-                break;
-            }
         }
 
         return {
             matches: this.uniqueAndSortMatches(matchList).slice(
                 0,
-                HISTORY_SYNC_GAME_LIMIT,
+                HISTORY_ANALYSIS_LIMIT,
             ),
             serverGames,
             modeGames,
@@ -452,13 +395,11 @@ class QueryMatch {
         puuid: string,
         modeKey: MatchModeKey,
         targetSummonerId?: number,
-        cachedGameIds: Set<number> = new Set(),
     ): Promise<MatchItemTypes[]> => {
         const result = await this.findMatchesWithStatus(
             puuid,
             modeKey,
             targetSummonerId,
-            cachedGameIds,
         );
         return result.matches;
     };

@@ -57,6 +57,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			matchList: [] as SimpleMatchDetailsTypes[] | null,
 			recentMatchList20: [] as SimpleMatchDetailsTypes[],
 			specialMatchList: [] as SimpleMatchDetailsTypes[],
+			matchAvailableCount: 0,
+			matchPageCount: 1,
 			participantsInfo: null as null | ParticipantsInfo,
 			sumInfo: null as { info: summonerInfo } | null,
 			matchLoading: true,
@@ -105,6 +107,8 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.matchList = [];
 				this.recentMatchList20 = [];
 				this.analysisData = null;
+				this.matchAvailableCount = 0;
+				this.matchPageCount = 1;
 				await this.fetchAndProcessMatches(
 					this.sumInfo.info.puuid,
 					queryRequestId,
@@ -117,6 +121,8 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.matchList = null;
 				this.recentMatchList20 = [];
 				this.analysisData = null;
+				this.matchAvailableCount = 0;
+				this.matchPageCount = 1;
 				this.matchError =
 					"战绩接口请求失败，请稍后重试；如果该账号没有公开战绩，客户端不会返回对局数据。";
 			} finally {
@@ -172,6 +178,11 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchSource = matchResult.source;
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
+			this.matchAvailableCount = matchResult.availableCount;
+			this.matchPageCount = Math.max(
+				1,
+				Math.ceil(this.matchAvailableCount / 9),
+			);
 			this.matchList = this.recentMatchList20.slice(0, 9);
 			this.analysisData =
 				this.recentMatchList20.length === 0
@@ -205,6 +216,11 @@ const useMatchStore = defineStore("useMatchStore", {
 
 			if (matchResult !== null) {
 				this.matchSource = matchResult.source;
+				this.matchAvailableCount = matchResult.availableCount;
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(this.matchAvailableCount / 9),
+				);
 			}
 			const matchItems = matchResult?.matches ?? [];
 
@@ -247,9 +263,16 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchSource = matchSpecialResult.source;
 			if (matchSpecialList.length !== 0) {
 				this.specialMatchList = matchSpecialList;
+				this.matchAvailableCount = matchSpecialList.length;
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(this.matchAvailableCount / 9),
+				);
 				this.fromSpecialToMatchList();
 			} else {
 				this.matchList = [];
+				this.matchAvailableCount = 0;
+				this.matchPageCount = 1;
 				this.matchError = "该模式暂无可展示的公开战绩。";
 			}
 		},

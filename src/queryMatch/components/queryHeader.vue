@@ -147,7 +147,7 @@ const pageChange = (page: number) => {
       <n-pagination v-model:page="pageVal"
                     @update-page="pageChange"
                     :page-slot="5"
-                    :page-count="12"
+                    :page-count="matchStore.matchPageCount"
                     class="match-pagination"/>
 
     </div>

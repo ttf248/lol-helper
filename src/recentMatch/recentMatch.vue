@@ -29,6 +29,11 @@ import {
     loadRecentTeamAnalysis,
     RecentAnalysisProgress,
 } from "@/recentMatch/utils/recentAnalytics";
+import {
+    HISTORY_FAST_WINDOW,
+    HISTORY_SERVER_FETCH_LIMIT,
+    HISTORY_SERVER_PAGE_COUNT,
+} from "@/recentMatch/utils/historyConfig";
 import type { CurrentMatchProgress } from "@/recentMatch/utils/querySummoner";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
@@ -177,7 +182,7 @@ const init = () => {
                 message: "正在读取缓存并校验服务器最新战绩",
                 detail: playerTotal < 10
                     ? `当前已识别 ${playerTotal}/10 人，先显示已有玩家。`
-                    : "每名玩家按模式分页查询，命中本地 gameId 后停止。",
+                    : `每名玩家只查询服务器最近 ${HISTORY_SERVER_PAGE_COUNT} 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场），再合并本地缓存。`,
             });
 
             let completedHistory = 0;
@@ -228,8 +233,8 @@ const init = () => {
                         total: progress.total,
                         message: progress.message,
                         detail: progress.stage === "full"
-                            ? `${progress.completed}/${progress.total} 名玩家的完整历史已处理。`
-                            : "最近 10 场已可查看，完整历史在后台继续处理。",
+                            ? `${progress.completed}/${progress.total} 名玩家已完成三页服务器数据与本地缓存合并。`
+                            : `最近 ${HISTORY_FAST_WINDOW} 场已可查看，后台继续合并服务器最近三页。`,
                     });
                 },
             )
@@ -241,7 +246,7 @@ const init = () => {
                     setLoadingState({
                         stage: "error",
                         message: "最近历史分析部分失败",
-                        detail: "最近 10 场仍可查看，完整 100 场稍后可重试。",
+                        detail: `最近 ${HISTORY_FAST_WINDOW} 场仍可查看，服务器最近三页合并失败，可稍后重试。`,
                     });
                 })
                 .finally(() => {

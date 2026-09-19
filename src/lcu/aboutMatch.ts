@@ -83,16 +83,29 @@ const fetchCurrentSummonerMatchHistory = async (
 	count: number,
 ): Promise<Games[] | null> => {
 	try {
+		const query = new URLSearchParams({
+			begIndex: String(begIndex),
+			endIndex: String(begIndex + count),
+		});
 		const matchList = await invokeLcu<LcuMatchList>(
 			"get",
-			"/lol-match-history/v1/products/lol/current-summoner/matches",
+			`/lol-match-history/v1/products/lol/current-summoner/matches?${query.toString()}`,
 		);
-		const games = matchList?.games?.games;
+		const history = matchList?.games;
+		const games = history?.games;
 		if (!Array.isArray(games)) {
 			return null;
 		}
 		cacheLcuGames(games);
-		return games.slice(begIndex, begIndex + count);
+		const responseStart = Number(history?.gameIndexBegin);
+		const responseEnd = Number(history?.gameIndexEnd);
+		// 新版 LCU 会按 query 参数返回分页结果，旧版可能忽略参数并
+		// 返回完整列表。利用响应中的索引避免对新版结果二次 slice。
+		const alreadyPaged =
+			responseStart === begIndex &&
+			Number.isFinite(responseEnd) &&
+			responseEnd <= begIndex + count;
+		return alreadyPaged ? games : games.slice(begIndex, begIndex + count);
 	} catch {
 		return null;
 	}

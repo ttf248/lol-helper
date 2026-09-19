@@ -406,7 +406,7 @@ const teamInsight = computed(() => {
 						v-if="!selectedPlayer.recentAnalysis.historyComplete && analysisLoading"
 						class="text-blue-500 mb-2"
 					>
-						已先展示面板中已有的最近 10 场，位置、交手和组合关系正在后台补齐。
+						已先展示面板中已有的最近 10 场；后台只查询服务器最近 3 页，并与本地缓存合并后刷新最近 100 场分析。
 					</div>
 					<div
 						v-else-if="!selectedPlayer.recentAnalysis.historyComplete"
@@ -567,7 +567,7 @@ const teamInsight = computed(() => {
           </div>
         </template>
         <div v-else class="text-gray-500 py-4 text-center">
-          {{ analysisLoading ? "正在查询最近 100 场完整对局数据…" : "当前无法取得完整历史数据。" }}
+						  {{ analysisLoading ? "正在查询服务器最近 3 页并合并本地缓存…" : "当前无法取得完整历史数据。" }}
         </div>
       </div>
     </div>
