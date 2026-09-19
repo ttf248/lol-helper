@@ -7,9 +7,47 @@ import MatchDetails from "@/queryMatch/utils/matchDetails";
 import { RencentDataAnalysisTypes } from "@/queryMatch/utils/analysisTypes";
 import { findTopChamp } from "@/queryMatch/utils/analysisSummary";
 import { MatchHistorySource } from "@/lcu/aboutMatch";
+import { invoke } from "@tauri-apps/api/core";
+import { TencentRsoPlatformId } from "@/resources/areaList";
 
 const baseMatch = new BaseMatch();
 const matchDetials = new MatchDetails();
+
+const persistLocalSummoner = (info: summonerInfo) => {
+	let previous: Record<string, string | number> = {};
+	try {
+		previous = JSON.parse(
+			localStorage.getItem("sumInfo") || "{}",
+		) as Record<string, string | number>;
+	} catch {
+		previous = {};
+	}
+
+	const write = (region: string) => {
+		const newPlatformId = region || String(previous.newPlatformId || "");
+		const platformId =
+			TencentRsoPlatformId[newPlatformId] ||
+			String(previous.platformId || newPlatformId);
+		localStorage.setItem(
+			"sumInfo",
+			JSON.stringify({
+				name: info.name,
+				summonerId: info.currentId,
+				puuid: info.puuid,
+				platformId,
+				newPlatformId,
+			}),
+		);
+	};
+
+	// 基础身份先落盘，让游戏内窗口不必等待大区接口。
+	write("");
+	void invoke<string>("get_lol_region")
+		.then((region) => {
+			if (region) write(region);
+		})
+		.catch(() => undefined);
+};
 
 const useMatchStore = defineStore("useMatchStore", {
 	state: () => {
@@ -61,6 +99,9 @@ const useMatchStore = defineStore("useMatchStore", {
 					info: sumResult.summonerInfo,
 				};
 				this.summonerId = sumResult.summonerInfo.currentId;
+				if (summonerId === undefined && locSumId === undefined) {
+					persistLocalSummoner(sumResult.summonerInfo);
+				}
 				this.matchList = [];
 				this.recentMatchList20 = [];
 				this.analysisData = null;

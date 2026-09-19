@@ -5,10 +5,10 @@ import { ConfigSettingTypes } from "../types";
 export class MainWindow {
 	constructor() {
 		const webview = new WebviewWindow("mainWindow", {
-			title: "本地试验台",
+			title: "本地试验台 - 我的战绩",
 			url: "src/main/index.html",
-			width: 320,
-			height: 720,
+			width: 1174,
+			height: 668,
 			visible: false,
 			resizable: false,
 			decorations: false,
@@ -28,25 +28,6 @@ export class MainWindow {
 
 			// 2. 尝试启动循环（内部有锁，不怕多次执行）
 			await invoke("start_tracking_loop");
-		});
-	}
-}
-
-export class QueryMatchWindow {
-	constructor() {
-		const webview = new WebviewWindow("queryMatchWindow", {
-			title: "我的战绩",
-			url: "src/queryMatch/index.html",
-			width: 1174,
-			height: 668,
-			resizable: false,
-			decorations: false,
-			center: true,
-			visible: false,
-			transparent: true,
-		});
-		webview.once("tauri://created", async function () {
-			webview.show();
 		});
 	}
 }

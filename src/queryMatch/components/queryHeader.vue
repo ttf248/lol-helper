@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import {NButton, NInput, NSelect, NPagination, NTag,
-  useMessage, NIcon, NSpace, MessageReactive} from "naive-ui"
+  useMessage, NIcon, NSpace, MessageReactive, NDrawer} from "naive-ui"
 import {ref, watch} from "vue";
 import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
 import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import BrandLockup from "@/components/BrandLockup.vue";
+import Setting from "@/main/common/setting.vue";
 
 const matchStore = useMatchStore()
 const inputVal = ref('')
 const selectVal = ref(0)
 const pageVal = ref(1)
+const isShowSetting = ref(false)
 const message = useMessage()
 
 watch(() => matchStore.summonerId, () => {
@@ -95,7 +97,7 @@ const handleClose = async () => {
   await getCurrentWindow().close()
 }
 const handleSet = () => {
-  message.info('无效按钮，或许起到了造型上的作用')
+  isShowSetting.value = true
 }
 const backSelf = () => {
   matchStore.init()
@@ -167,5 +169,13 @@ const pageChange = (page: number) => {
       </n-button>
     </n-space>
   </header>
+  <n-drawer
+    v-model:show="isShowSetting"
+    placement="bottom"
+    :height="473"
+    :auto-focus="false"
+  >
+    <setting />
+  </n-drawer>
 </template>
 

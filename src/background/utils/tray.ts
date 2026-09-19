@@ -3,7 +3,7 @@ import {defaultWindowIcon} from '@tauri-apps/api/app';
 import {Menu} from '@tauri-apps/api/menu';
 import {exit} from "@tauri-apps/plugin-process";
 import {window} from "@tauri-apps/api";
-import { QueryMatchWindow, RecentMatchWindow } from "./creatWindow.ts";
+import { MainWindow, RecentMatchWindow } from "./creatWindow.ts";
 import {Image} from "@tauri-apps/api/image";
 
 const showMain = (isHide:boolean) => {
@@ -29,6 +29,19 @@ const showMain = (isHide:boolean) => {
     }
   })
 }
+
+const openMain = () => {
+  window.Window.getByLabel('mainWindow').then(async (win) => {
+    if (!win) {
+      new MainWindow();
+      return;
+    }
+    if (await win.isMinimized()) {
+      await win.unminimize();
+    }
+    await win.show();
+  });
+};
 
 const menu = await Menu.new({
   items: [
@@ -60,11 +73,7 @@ const menu = await Menu.new({
       id: 'queryMatch',
       text: '我的战绩',
       action: () => {
-        window.Window.getByLabel('queryMatchWindow').then((win) => {
-          if (win === null) {
-            new QueryMatchWindow()
-          }
-        })
+        openMain();
       },
     },
     {

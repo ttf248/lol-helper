@@ -13,17 +13,19 @@ import {
     NTabPane,
 } from "naive-ui";
 import MatchErr from "@/queryMatch/components/matchErr.vue";
-import { computed, onBeforeMount, Ref, ref } from "vue";
+import { computed, onBeforeMount, onBeforeUnmount, onMounted, Ref, ref } from "vue";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
 import HistoryAnalyticsPanel from "@/queryMatch/components/historyAnalyticsPanel.vue";
 import { RecentSumInfo } from "@/recentMatch/utils/queryTypes";
+import { listen } from "@tauri-apps/api/event";
 
 const matchStore = useMatchStore();
 const blackMatchDrawer = ref(false);
 const blackMatchDetails: Ref<[ParticipantsInfo, number] | null> = ref(null);
 const activeTab = ref<"matches" | "analytics">("matches");
+let stopInitHome: (() => void) | null = null;
 
 const analysisPlayer = computed<RecentSumInfo | null>(() => {
     const info = matchStore.sumInfo?.info;
@@ -50,6 +52,18 @@ onBeforeMount(() => {
             localStorage.removeItem("queSumMatch");
         });
     }
+});
+
+onMounted(async () => {
+    stopInitHome = await listen("initHome", () => {
+        if (localStorage.getItem("queSumMatch") === null) {
+            void matchStore.init();
+        }
+    });
+});
+
+onBeforeUnmount(() => {
+    stopInitHome?.();
 });
 
 const handleBlackListMatch = async (isQueryRecord: string) => {
@@ -193,6 +207,11 @@ const clearBlackMatch = () => {
 </template>
 
 <style scoped>
+.main {
+    /* 主窗口现在直接承载战绩工作区，不再为旧的底部导航预留空白。 */
+    padding-bottom: 0.5rem;
+}
+
 .match-tabs {
     height: 100%;
 }
