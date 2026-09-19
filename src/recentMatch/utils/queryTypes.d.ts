@@ -152,6 +152,8 @@ export interface MatchItemTypes {
   isWin: boolean;
   gameId: number;
   queueId: number;
+  /** 对局真实创建时间，用于合并数据库/API结果时保持时间顺序。 */
+  gameCreation?: number;
 }
 
 export interface ChampionRecentStats {

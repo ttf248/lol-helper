@@ -7,7 +7,11 @@ import {
     cacheHistory,
     getCachedHistory,
 } from "@/recentMatch/utils/databaseCache";
-import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
+import {
+    isModeQueue,
+    modeForQueue,
+    MatchModeKey,
+} from "@/recentMatch/utils/matchMode";
 import {
     normalizeHistoryGame,
     NormalizedHistoryGame,
@@ -94,7 +98,58 @@ class QueryMatch {
             }
         }
 
-        return participants[0];
+        // 找不到目标身份时不能回退到 participants[0]。不同玩家的
+        // participants 顺序并不代表当前查询对象，回退会把队友的 KDA
+        // 伪装成目标玩家的历史，正是缓存/API 混用时最难发现的错位来源。
+        return undefined;
+    };
+
+    private cachedGameToMatch = (
+        game: NormalizedHistoryGame,
+        targetPuuid: string,
+        targetSummonerId?: number,
+    ): MatchItemTypes | null => {
+        const participant = game.participants.find(
+            (item) =>
+                item.puuid === targetPuuid ||
+                (targetSummonerId !== undefined &&
+                    item.summonerId === targetSummonerId),
+        );
+        if (!participant) return null;
+
+        const championId = participant.championId || 0;
+        const alias = champDict[String(championId)]?.alias;
+        return {
+            champImg: alias
+                ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
+                : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`,
+            championId,
+            kills: participant.kills || 0,
+            deaths: participant.deaths || 0,
+            assists: participant.assists || 0,
+            isWin: Boolean(participant.win),
+            gameId: game.gameId,
+            queueId: game.queueId,
+            gameCreation: game.gameCreation,
+        };
+    };
+
+    private uniqueAndSortMatches = (
+        matches: MatchItemTypes[],
+    ): MatchItemTypes[] => {
+        const unique = new Map<number, MatchItemTypes>();
+        for (const match of matches) {
+            const previous = unique.get(match.gameId);
+            const currentCreation = Number(match.gameCreation || 0);
+            const previousCreation = Number(previous?.gameCreation || 0);
+            if (!previous || currentCreation > previousCreation) {
+                unique.set(match.gameId, match);
+            }
+        }
+        return Array.from(unique.values()).sort(
+            (left, right) =>
+                Number(right.gameCreation || 0) - Number(left.gameCreation || 0),
+        );
     };
 
     public queryMatchHistory = async (
@@ -103,64 +158,33 @@ class QueryMatch {
         targetSummonerId?: number,
     ): Promise<[MatchItemTypes[], number]> => {
         try {
+            const modeKey = modeForQueue(queueId);
             const cachedMatches = await getCachedHistory({
                 puuid,
-                queueId,
-                modeKey: modeForQueue(queueId),
+                // 对局内历史按模式读取，而不是把 420/440 或 400/430/490
+                // 拆成不同数据集；这样缓存和接口的筛选边界完全一致。
+                modeKey,
                 limit: 10,
             });
-            if (cachedMatches.length >= 10) {
-                const matches = cachedMatches.map((game) => {
-                    const participant = game.participants.find(
-                        (item) =>
-                            item.puuid === puuid ||
-                            item.summonerId === targetSummonerId,
-                    ) || game.participants[0];
-                    const championId = participant?.championId || 0;
-                    const alias = champDict[String(championId)]?.alias;
-                    return {
-                        champImg: alias
-                            ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
-                            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`,
-                        championId,
-                        kills: participant?.kills || 0,
-                        deaths: participant?.deaths || 0,
-                        assists: participant?.assists || 0,
-                        isWin: Boolean(participant?.win),
-                        gameId: game.gameId,
-                        queueId: game.queueId,
-                    } satisfies MatchItemTypes;
-                });
-                return [matches, matches.filter((match) => match.isWin).length];
-            }
-
-            let matchList: MatchItemTypes[] = [];
-
-            // Get match list based on queue type
-            if (queueId === 420 || queueId === 440) {
-                matchList = await this.findSpecialMatch(
-                    puuid,
-                    queueId,
-                    targetSummonerId,
+            const cachedMatchItems = cachedMatches
+                .map((game) =>
+                    this.cachedGameToMatch(game, puuid, targetSummonerId),
+                )
+                .filter(
+                    (match): match is MatchItemTypes => match !== null,
                 );
-            } else {
-                matchList = await this.findMatch(puuid, targetSummonerId);
-            }
 
-            // Remove duplicate matches by gameId
-            const uniqueMatches = matchList.reduce(
-                (acc: MatchItemTypes[], current) => {
-                    if (!acc.some((match) => match.gameId === current.gameId)) {
-                        acc.push(current);
-                    }
-                    return acc;
-                },
-                [],
-            );
-
-            const winCount = matchList.filter((match) => match.isWin).length;
-
-            return [uniqueMatches, winCount];
+            // 缓存不足时只补同一模式的接口数据，绝不把“最近 10 场
+            // 混合模式”直接展示。接口结果和缓存结果最后统一按真实
+            // gameCreation 去重、排序，避免某个玩家被旧数据顶到前面。
+            const apiMatches = cachedMatchItems.length >= 10
+                ? []
+                : await this.findMatch(puuid, modeKey, targetSummonerId);
+            const matches = this.uniqueAndSortMatches([
+                ...cachedMatchItems,
+                ...apiMatches,
+            ]).slice(0, 10);
+            return [matches, matches.filter((match) => match.isWin).length];
         } catch (error) {
             console.error("Error in queryMatchHistory:", error);
             // Return default values in case of error
@@ -172,10 +196,10 @@ class QueryMatch {
         games: Games | GamesBySgp,
         targetPuuid?: string,
         targetSummonerId?: number,
-    ): MatchItemTypes => {
+    ): MatchItemTypes | null => {
         const p0 = this.findParticipant(games, targetPuuid, targetSummonerId);
         if (p0 === undefined) {
-            throw new Error(`Match ${games.gameId} has no participants`);
+            return null;
         }
 
         // 1. 统一战斗数据源 (LCU 嵌套在 stats，SGP 就在 p0)
@@ -202,44 +226,28 @@ class QueryMatch {
             isWin: !!win,
             gameId: games.gameId,
             queueId: games.queueId,
+            gameCreation: games.gameCreation,
         };
     };
 
     public findMatch = async (
         puuid: string,
+        modeKey: MatchModeKey,
         targetSummonerId?: number,
     ): Promise<MatchItemTypes[]> => {
-        const matchList = await this.queryRawHistory(puuid, 0, 10);
+        // 多读取一页只用于筛掉其它模式；返回给面板的仍然最多 10 场。
+        const matchList = await this.queryRawHistory(puuid, 0, 20);
         if (matchList.length > 0) {
-            return matchList.map((games) =>
-                this.parseMatch(games, puuid, targetSummonerId),
-            );
+            return matchList
+                .filter((game) => isModeQueue(game.queueId, modeKey))
+                .map((games) => this.parseMatch(games, puuid, targetSummonerId))
+                .filter(
+                    (match): match is MatchItemTypes => match !== null,
+                )
+                .slice(0, 10);
         } else {
             return [];
         }
-    };
-
-    public findSpecialMatch = async (
-        puuid: string,
-        queueId: number,
-        targetSummonerId?: number,
-    ): Promise<MatchItemTypes[]> => {
-        const latestMatch = await this.queryRawHistory(puuid, 0, 10);
-        const specialList: MatchItemTypes[] = [];
-
-        for (const game of latestMatch.filter(
-            (item) => queueId === item.queueId,
-        )) {
-            specialList.push(this.parseMatch(game, puuid, targetSummonerId));
-        }
-        // 首屏只读取最近一页；完整模式历史由后台分析任务按需补齐。
-        // 这样排位/大乱斗混合历史不会阻塞整个对局面板几十秒。
-        if (specialList.length === 0) {
-            return latestMatch.map((games) =>
-                this.parseMatch(games, puuid, targetSummonerId),
-            );
-        }
-        return specialList;
     };
 }
 

@@ -258,12 +258,12 @@ export const normalizeHistoryGame = (
 
 const uniqueGames = (
   games: MatchHistoryGame[],
-  queueId: number,
+  modeKey: MatchModeKey,
   player: RecentSumInfo,
 ): Map<number, NormalizedHistoryGame> => {
   const result = new Map<number, NormalizedHistoryGame>();
   for (const rawGame of games) {
-    if (rawGame.queueId !== queueId) {
+    if (!isModeQueue(rawGame.queueId, modeKey)) {
       continue;
     }
     const game = normalizeHistoryGame(rawGame);
@@ -298,12 +298,16 @@ const hasParticipantRoster = (games: NormalizedHistoryGame[]): boolean =>
 
 const queueHydration = new Map<string, Promise<NormalizedHistoryGame[]>>();
 
+const historyKey = (puuid: string, modeKey: MatchModeKey) =>
+  `${puuid}:${modeKey}`;
+
 const hydratePlayerQueueHistory = (
   player: RecentSumInfo,
   queueId: number,
   existingGames: NormalizedHistoryGame[],
 ) => {
-  const key = `${player.puuid}:${queueId}`;
+  const modeKey = modeForQueue(queueId);
+  const key = historyKey(player.puuid, modeKey);
   const existing = queueHydration.get(key);
   if (existing) return existing;
 
@@ -313,7 +317,7 @@ const hydratePlayerQueueHistory = (
       0,
       HISTORY_SCAN_LIMIT,
     );
-    const fetchedGames = uniqueGames(result?.games ?? [], queueId, player);
+    const fetchedGames = uniqueGames(result?.games ?? [], modeKey, player);
     const games = sortGames([
       ...existingGames,
       ...Array.from(fetchedGames.values()),
@@ -344,17 +348,16 @@ const loadPlayerHistory = async (
   player: RecentSumInfo,
   queueId: number,
 ): Promise<PlayerHistorySnapshot> => {
-  const key = `${player.puuid}:${queueId}`;
+  const modeKey = modeForQueue(queueId);
+  const key = historyKey(player.puuid, modeKey);
   const cached = historyCache.get(key);
   if (cached) {
     return cached;
   }
 
   const request = (async (): Promise<PlayerHistorySnapshot> => {
-    const modeKey = modeForQueue(queueId);
     const cachedGames = await getCachedHistory({
       puuid: player.puuid,
-      queueId,
       modeKey,
       limit: RECENT_ANALYSIS_GAME_COUNT,
     });
@@ -383,9 +386,12 @@ const loadPlayerHistory = async (
 
     // PostgreSQL 不可用或首次缓存尚未写入时，直接复用首屏已取得的
     // 最近 10 场。完整历史只在后台补齐，不能阻塞对局面板的首屏分析。
-    const quickGames = (Array.isArray(player.matchList) ? player.matchList : [])
-      .slice(0, RECENT_DEFAULT_GAME_COUNT)
-      .map((match, index) => quickMatchToGame(match, player, index));
+    const quickGames = sortGames(
+      (Array.isArray(player.matchList) ? player.matchList : [])
+        .filter((match) => isModeQueue(match.queueId, modeKey))
+        .slice(0, RECENT_DEFAULT_GAME_COUNT)
+        .map((match, index) => quickMatchToGame(match, player, index)),
+    );
     if (quickGames.length > 0) {
       void hydratePlayerQueueHistory(player, queueId, quickGames);
       return {
@@ -793,7 +799,12 @@ const quickMatchToGame = (
   index: number,
 ): NormalizedHistoryGame => ({
   gameId: match.gameId,
-  gameCreation: Date.now() - index,
+  // 首屏摘要现在携带接口/数据库的真实时间。只有兼容旧数据时才
+  // 使用递减时间，避免把不同玩家的摘要按“请求完成时间”重新排序。
+  gameCreation:
+    Number.isFinite(match.gameCreation) && Number(match.gameCreation) > 0
+      ? Number(match.gameCreation)
+      : Date.now() - index,
   queueId: match.queueId,
   participants: [
     {
@@ -1465,7 +1476,9 @@ export const loadRecentTeamAnalysis = async (
 
   const hydrationEntries = players
     .map((player) => {
-      const request = queueHydration.get(`${player.puuid}:${queueId}`);
+      const request = queueHydration.get(
+        historyKey(player.puuid, modeForQueue(queueId)),
+      );
       return request ? { player, request } : null;
     })
     .filter(

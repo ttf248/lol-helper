@@ -6,13 +6,13 @@ import RecentMatchList from "@/recentMatch/components/recentMatchList.vue";
 import {
     ChampInfoTypes,
     ChampTinyTypes,
+    MatchItemTypes,
     RecentAllSumInfo,
     RecentNetworkAnalysis,
     RecentSumInfo,
     RecentMatchLoadingState,
 } from "@/recentMatch/utils/queryTypes";
 import QueryMatch from "@/recentMatch/utils/queryMatch";
-import { SimpleMatchTypes } from "@/lcu/types/queryMatchLcuTypes";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
@@ -64,12 +64,8 @@ const isChampInfo = ref(false);
 const champInfo: Ref<{ info: null | ChampTinyTypes; list: ChampInfoTypes[] }> =
     ref({ info: null, list: [] });
 
-interface simpleMatchList {
-    [key: string]: SimpleMatchTypes[];
-}
-
-once<simpleMatchList>("matchListCache", (res) => {
-    init(res.payload);
+once("matchListCache", () => {
+    init();
 });
 
 onMounted(() => {
@@ -93,6 +89,24 @@ const queryAllSumInfo = async (): Promise<RecentAllSumInfo | null> =>
         });
     });
 
+const normalizeMatchList = (matches: MatchItemTypes[]): MatchItemTypes[] => {
+    const unique = new Map<number, MatchItemTypes>();
+    for (const match of matches) {
+        if (!Number.isFinite(match.gameId)) continue;
+        const previous = unique.get(match.gameId);
+        const currentCreation = Number(match.gameCreation || 0);
+        const previousCreation = Number(previous?.gameCreation || 0);
+        if (!previous || currentCreation > previousCreation) {
+            unique.set(match.gameId, match);
+        }
+    }
+
+    return Array.from(unique.values()).sort(
+        (left, right) =>
+            Number(right.gameCreation || 0) - Number(left.gameCreation || 0),
+    );
+};
+
 const commitHistoryResult = (
     summoner: RecentSumInfo,
     result: [RecentSumInfo["matchList"], number],
@@ -102,10 +116,13 @@ const commitHistoryResult = (
     const targetList = isFri ? friendList.value : enemyList.value;
     const countList = isFri ? winCount.value.friend : winCount.value.enemy;
     const oldIndex = targetList.findIndex((item) => item.puuid === summoner.puuid);
+    const matchList = normalizeMatchList(result[0]);
 
-    summoner.matchList = result[0];
-    countList[0] += result[1];
-    countList[1] += result[0].length;
+    // 胜场和总场次始终从去重后的最终列表重算，不能信任不同数据源
+    // 合并前的数量，否则边界重复会污染顶部的队伍胜率。
+    summoner.matchList = matchList;
+    countList[0] += matchList.filter((match) => match.isWin).length;
+    countList[1] += matchList.length;
     if (oldIndex >= 0) {
         targetList[oldIndex] = summoner;
     } else {
@@ -115,7 +132,7 @@ const commitHistoryResult = (
     onComplete?.();
 };
 
-const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
+const init = () => {
     // 面板刷新时清理上一轮结果，避免胜场和进度重复累计。
     // 历史分析缓存也必须在新一局重新建立，避免复用上一局的玩家快照。
     clearRecentAnalysisCache();
@@ -173,22 +190,16 @@ const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
                 });
             };
 
-            // 是否从主面板缓存获取友方战绩；没有缓存的玩家单独回退到接口，
-            // 不再因为一个缓存键缺失而清空整列并重新串行查询。
+            // 每个玩家都必须按自己的 PUUID + 模式读取历史。旧的主面板
+            // simpleMatchList 只有 summonerId 索引，无法证明记录属于当前
+            // 队友，不能再作为队友历史的快捷数据源。
             await Promise.all([
-                Object.keys(simpleMatchList).length === 0
-                    ? getCompleteSumInfo(
-                        allSumInfo.friendList,
-                        allSumInfo.queueId,
-                        true,
-                        onHistoryComplete,
-                    )
-                    : getSumInfoFromCache(
-                        allSumInfo.friendList,
-                        simpleMatchList,
-                        allSumInfo.queueId,
-                        onHistoryComplete,
-                    ),
+                getCompleteSumInfo(
+                    allSumInfo.friendList,
+                    allSumInfo.queueId,
+                    true,
+                    onHistoryComplete,
+                ),
                 getCompleteSumInfo(
                     allSumInfo.enemyList,
                     allSumInfo.queueId,
@@ -260,45 +271,6 @@ const getCompleteSumInfo = async (
                 summoner.summonerId,
             );
             commitHistoryResult(summoner, result, isFri, onComplete);
-        }),
-    );
-};
-
-const getSumInfoFromCache = async (
-    sumInfos: RecentSumInfo[],
-    simpleMatchList: { [key: string]: SimpleMatchTypes[] },
-    queueId: number,
-    onComplete?: () => void,
-) => {
-    await Promise.all(
-        sumInfos.map(async (sumInfo) => {
-            const cachedMatches = simpleMatchList[String(sumInfo.summonerId)];
-            if (Array.isArray(cachedMatches)) {
-                const matchListElement = cachedMatches.map((match) => ({
-                    champImg: match.champImgUrl,
-                    championId: match.champId,
-                    kills: match.kills,
-                    deaths: match.deaths,
-                    assists: match.assists,
-                    isWin: match.isWin,
-                    gameId: match.gameId,
-                    queueId: match.queueId,
-                }));
-                commitHistoryResult(
-                    sumInfo,
-                    [matchListElement, matchListElement.filter((match) => match.isWin).length],
-                    true,
-                    onComplete,
-                );
-                return;
-            }
-
-            const result = await queryMatch.queryMatchHistory(
-                sumInfo.puuid,
-                queueId,
-                sumInfo.summonerId,
-            );
-            commitHistoryResult(sumInfo, result, true, onComplete);
         }),
     );
 };
