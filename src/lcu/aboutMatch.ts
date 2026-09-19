@@ -128,6 +128,40 @@ const fetchSummonerMatchHistoryFromLcu = async (
 	}
 };
 
+// 关系分析必须拿到同一局的多名参与者。LCU 的部分历史接口虽然返回
+// 了对局数量，但 participants 里可能只有目标玩家，不能当作完整历史。
+const hasParticipantRoster = (games: MatchHistoryGame[]): boolean =>
+	games.length > 0 &&
+	games.every(
+		(game) => {
+			if (!Array.isArray(game.participants) || game.participants.length < 5) {
+				return false;
+			}
+			if ("participantIdentities" in game) {
+				const identities = new Set(
+					(game.participantIdentities || [])
+						.filter((item) => {
+							const player = item.player as any;
+							return Boolean(
+								player?.puuid ||
+								player?.summonerId ||
+								player?.summonerName,
+							);
+						})
+						.map((item) => item.participantId),
+				);
+				return identities.size >= 5;
+			}
+			return game.participants.filter((participant: any) =>
+				Boolean(
+					participant?.puuid ||
+					participant?.summonerId ||
+					participant?.summonerName,
+				),
+			).length >= 5;
+		},
+	);
+
 // 辅助函数：处理单次请求
 const fetchMatchHistory = async (
 	puuid: string,
@@ -135,7 +169,9 @@ const fetchMatchHistory = async (
 	endIndex: number,
 	fullParticipants = false,
 ): Promise<MatchHistoryBatchResult> => {
-	if (isCurrentSummoner(puuid)) {
+	// 普通战绩列表可以使用当前召唤师历史 endpoint；它仍然是历史数据，
+	// 不是当前正在进行的对局。完整分析则必须继续检查参与者是否齐全。
+	if (!fullParticipants && isCurrentSummoner(puuid)) {
 		const currentGames = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
@@ -152,7 +188,11 @@ const fetchMatchHistory = async (
 		begIndex,
 		endIndex,
 	);
-	if (lcuGames !== null && lcuGames.length > 0) {
+	if (
+		lcuGames !== null &&
+		lcuGames.length > 0 &&
+		(!fullParticipants || hasParticipantRoster(lcuGames))
+	) {
 		return { games: lcuGames, source: "lcu-puuid" };
 	}
 
@@ -165,19 +205,28 @@ const fetchMatchHistory = async (
 		const sgpGames = fullParticipants
 			? await sgpService.getFullMatchHistory(sgpRequest)
 			: await sgpService.getMatchHistory(sgpRequest);
-		return { games: sgpGames, source: "sgp" };
+		if (sgpGames.length > 0) {
+			return { games: sgpGames, source: "sgp" };
+		}
 	} catch (sgpError) {
 		console.warn("SGP match history request failed, trying LCU fallback", sgpError);
-		const fallbackGames = await fetchSummonerMatchHistoryFromLcu(
-			puuid,
+	}
+
+	// SGP 不可用时，仍允许页面显示目标玩家的历史胜率；但这里明确是
+	// 降级数据，调用方会通过 participants 数量判断关系分析是否可信。
+	if (isCurrentSummoner(puuid)) {
+		const currentGames = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
 		);
-		if (fallbackGames === null) {
-			throw new Error("Match history interfaces returned no data");
+		if (currentGames !== null && currentGames.length > 0) {
+			return { games: currentGames, source: "lcu-current" };
 		}
-		return { games: fallbackGames, source: "lcu-puuid" };
 	}
+	if (lcuGames !== null) {
+		return { games: lcuGames, source: "lcu-puuid" };
+	}
+	throw new Error("Match history interfaces returned no data");
 };
 
 /** 返回最近一次 SGP SUMMARY 中缓存的完整对局，供详情展示复用。 */

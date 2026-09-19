@@ -18,7 +18,10 @@ import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
 import HistoryAnalyticsPanel from "@/queryMatch/components/historyAnalyticsPanel.vue";
-import { RecentSumInfo } from "@/recentMatch/utils/queryTypes";
+import {
+    MatchItemTypes,
+    RecentSumInfo,
+} from "@/recentMatch/utils/queryTypes";
 import { listen } from "@tauri-apps/api/event";
 
 const matchStore = useMatchStore();
@@ -27,9 +30,28 @@ const blackMatchDetails: Ref<[ParticipantsInfo, number] | null> = ref(null);
 const activeTab = ref<"matches" | "analytics">("matches");
 let stopInitHome: (() => void) | null = null;
 
+const historicalMatches = computed<MatchItemTypes[]>(() => {
+    const matches =
+        matchStore.recentMatchList20.length > 0
+            ? matchStore.recentMatchList20
+            : matchStore.matchList || [];
+    return matches.map((match) => ({
+        champImg: match.champImgUrl,
+        championId: match.champId,
+        kills: match.kills,
+        deaths: match.deaths,
+        assists: match.assists,
+        isWin: match.isWin,
+        gameId: match.gameId,
+        queueId: match.queueId,
+    }));
+});
+
 const analysisPlayer = computed<RecentSumInfo | null>(() => {
     const info = matchStore.sumInfo?.info;
     if (!info) return null;
+    // 个人战绩分析只接收已经查询到的历史记录。当前对局的 10 名玩家
+    // 以及当前英雄等信息只存在于 recentMatch 游戏内面板，不在这里混入。
     return {
         summonerId: info.currentId,
         summonerName: info.name,
@@ -37,7 +59,7 @@ const analysisPlayer = computed<RecentSumInfo | null>(() => {
         championUrl: info.imgUrl,
         champId: 0,
         teamParticipantId: 0,
-        matchList: [],
+        matchList: historicalMatches.value,
     };
 });
 

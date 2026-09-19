@@ -130,7 +130,7 @@ watch([selectedMode, selectedWindow], () => {
 });
 
 watch(
-  () => props.player.puuid,
+  () => [props.player.puuid, props.player.matchList.length],
   () => {
     analysis.value = null;
     void loadAnalysis();
@@ -149,7 +149,7 @@ onMounted(() => {
       <div>
         <div class="font-medium">历史战绩分析</div>
         <div class="text-xs text-gray-500">
-          {{ props.player.summonerName }} · {{ modeLabel(selectedMode) }} · 默认最近 10 场
+          {{ props.player.summonerName }} · 历史数据 · {{ modeLabel(selectedMode) }} · 默认最近 10 场
         </div>
       </div>
       <div class="flex items-center gap-2">

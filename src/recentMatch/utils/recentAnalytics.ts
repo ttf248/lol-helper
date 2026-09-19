@@ -276,7 +276,17 @@ const sortGames = (games: NormalizedHistoryGame[]) =>
     (left, right) => right.gameCreation - left.gameCreation,
   );
 
-const queueHydration = new Map<string, Promise<void>>();
+// 只有同一局至少包含一支完整队伍时，才能用于同队/对手关系分析。
+// 普通战绩接口可能只缓存目标玩家一个 participant，这种数据仍可计算
+// 个人胜率，但不能误判为“没有共同对局”。
+const hasParticipantRoster = (games: NormalizedHistoryGame[]): boolean =>
+  games.length > 0 &&
+  games.every((game) => {
+    const teams = new Set(game.participants.map((participant) => participant.teamId));
+    return game.participants.length >= 5 && teams.size >= 2;
+  });
+
+const queueHydration = new Map<string, Promise<NormalizedHistoryGame[]>>();
 
 const hydratePlayerQueueHistory = (
   player: RecentSumInfo,
@@ -287,7 +297,7 @@ const hydratePlayerQueueHistory = (
   const existing = queueHydration.get(key);
   if (existing) return existing;
 
-  const request = (async () => {
+  const request = (async (): Promise<NormalizedHistoryGame[]> => {
     const result = await queryMatchHistoryFullWithSource(
       player.puuid,
       0,
@@ -308,8 +318,10 @@ const hydratePlayerQueueHistory = (
         games,
       });
     }
+    return games;
   })().catch((error) => {
     console.warn("Failed to hydrate full queue history", error);
+    return existingGames;
   });
   queueHydration.set(key, request);
   return request;
@@ -334,7 +346,10 @@ const loadPlayerHistory = async (
       limit: RECENT_ANALYSIS_GAME_COUNT,
     });
     if (cachedGames.length > 0) {
-      if (cachedGames.length < RECENT_ANALYSIS_GAME_COUNT) {
+      if (
+        cachedGames.length < RECENT_ANALYSIS_GAME_COUNT ||
+        !hasParticipantRoster(cachedGames)
+      ) {
         void hydratePlayerQueueHistory(player, queueId, cachedGames);
       }
       const limitedGames = new Map(
@@ -347,7 +362,9 @@ const loadPlayerHistory = async (
         puuid: player.puuid,
         games: limitedGames,
         source: "PostgreSQL 本地缓存",
-        complete: limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT,
+        complete:
+          limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
+          hasParticipantRoster(Array.from(limitedGames.values())),
       };
     }
 
@@ -389,15 +406,15 @@ const loadPlayerHistory = async (
       puuid: player.puuid,
       games: limitedGames,
       source: result?.source || "unavailable",
-      complete: limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT,
+      complete:
+        limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
+        hasParticipantRoster(Array.from(limitedGames.values())),
     };
   })();
 
   historyCache.set(key, request);
   return request;
 };
-
-const modeHydration = new Map<string, Promise<void>>();
 
 const normalizeModeGames = (
   games: MatchHistoryGame[],
@@ -409,44 +426,8 @@ const normalizeModeGames = (
       .filter(
         (game): game is NormalizedHistoryGame =>
           game !== null && isModeQueue(game.queueId, modeKey),
-      ),
+    ),
   );
-
-const hydratePlayerModeHistory = (
-  player: RecentSumInfo,
-  modeKey: MatchModeKey,
-  existingGames: NormalizedHistoryGame[],
-) => {
-  const key = `${player.puuid}:${modeKey}`;
-  const existing = modeHydration.get(key);
-  if (existing) return existing;
-
-  const request = (async () => {
-    const result = await queryMatchHistoryFullWithSource(
-      player.puuid,
-      0,
-      HISTORY_SCAN_LIMIT,
-    );
-    const games = sortGames([
-      ...existingGames,
-      ...normalizeModeGames(result?.games || [], modeKey),
-    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
-    if (games.length > 0) {
-      await cacheHistory({
-        puuid: player.puuid,
-        summonerId: player.summonerId,
-        summonerName: player.summonerName,
-        modeKey,
-        source: result?.source || "unavailable",
-        games,
-      });
-    }
-  })().catch((error) => {
-    console.warn("Failed to hydrate full mode history", error);
-  });
-  modeHydration.set(key, request);
-  return request;
-};
 
 const loadPlayerModeHistory = async (
   player: RecentSumInfo,
@@ -458,25 +439,49 @@ const loadPlayerModeHistory = async (
     modeKey,
     limit: RECENT_ANALYSIS_GAME_COUNT,
   });
-  if (cachedGames.length >= Math.min(requestedGames, RECENT_ANALYSIS_GAME_COUNT)) {
-    if (cachedGames.length < RECENT_ANALYSIS_GAME_COUNT) {
-      void hydratePlayerModeHistory(player, modeKey, cachedGames);
-    }
+
+  // 个人战绩面板已经加载过一批历史摘要，先把它作为历史数据种子。
+  // 这里绝不读取当前对局；当前对局玩家列表只在 recentMatch 面板使用。
+  const seededGames = sortGames(
+    (Array.isArray(player.matchList) ? player.matchList : [])
+      .filter((match) => isModeQueue(match.queueId, modeKey))
+      .map((match, index) => quickMatchToGame(match, player, index)),
+  );
+  const initialGames = sortGames([...seededGames, ...cachedGames]).slice(
+    0,
+    RECENT_ANALYSIS_GAME_COUNT,
+  );
+  const requiredGames = Math.min(requestedGames, RECENT_ANALYSIS_GAME_COUNT);
+
+  // 个人胜率可以只用一名玩家的摘要，但开黑、交手和关系图必须有
+  // 完整 participant。缓存里只有 10 场并不代表它可用于关系分析。
+  if (
+    initialGames.length >= requiredGames &&
+    hasParticipantRoster(initialGames)
+  ) {
     return {
       puuid: player.puuid,
-      games: new Map(cachedGames.map((game) => [game.gameId, game])),
+      games: new Map(initialGames.map((game) => [game.gameId, game])),
       source: "PostgreSQL 本地缓存",
-      complete: cachedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+      complete:
+        initialGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
+        hasParticipantRoster(initialGames),
     };
   }
 
+  // 默认窗口只扫描最近 40 场历史，足够覆盖最近 10 场且不会把首屏
+  // 阻塞在 100 场接口上；用户切换 20/50/100 场时再扩展扫描范围。
+  const scanLimit =
+    requestedGames <= RECENT_DEFAULT_GAME_COUNT
+      ? HISTORY_FAST_SCAN_LIMIT
+      : HISTORY_SCAN_LIMIT;
   const fastResult = await queryMatchHistoryFullWithSource(
     player.puuid,
     0,
-    HISTORY_FAST_SCAN_LIMIT,
+    scanLimit,
   );
   const fastGames = sortGames([
-    ...cachedGames,
+    ...initialGames,
     ...normalizeModeGames(fastResult?.games || [], modeKey),
   ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
   if (fastGames.length > 0) {
@@ -488,13 +493,19 @@ const loadPlayerModeHistory = async (
       source: fastResult?.source || "unavailable",
       games: fastGames,
     });
-    void hydratePlayerModeHistory(player, modeKey, fastGames);
   }
   return {
     puuid: player.puuid,
     games: new Map(fastGames.map((game) => [game.gameId, game])),
-    source: fastResult?.source || "unavailable",
-    complete: fastGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+    source:
+      fastGames.length > initialGames.length
+        ? fastResult?.source || "unavailable"
+        : cachedGames.length > 0
+          ? "PostgreSQL 本地缓存"
+          : "当前个人战绩列表",
+    complete:
+      fastGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
+      hasParticipantRoster(fastGames),
   };
 };
 
@@ -979,26 +990,7 @@ export const loadPlayerModeAnalysis = async (
   modeKey: MatchModeKey,
   requestedGames = 10,
 ): Promise<PlayerRecentAnalysis> => {
-  let snapshot = await loadPlayerModeHistory(player, modeKey, requestedGames);
-  if (requestedGames > RECENT_DEFAULT_GAME_COUNT && snapshot.games.size < requestedGames) {
-    const hydration = modeHydration.get(`${player.puuid}:${modeKey}`);
-    if (hydration) {
-      await hydration;
-      const hydratedGames = await getCachedHistory({
-        puuid: player.puuid,
-        modeKey,
-        limit: RECENT_ANALYSIS_GAME_COUNT,
-      });
-      if (hydratedGames.length > snapshot.games.size) {
-        snapshot = {
-          ...snapshot,
-          games: new Map(hydratedGames.map((game) => [game.gameId, game])),
-          source: "PostgreSQL 本地缓存",
-          complete: hydratedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
-        };
-      }
-    }
-  }
+  const snapshot = await loadPlayerModeHistory(player, modeKey, requestedGames);
   if (snapshot.games.size === 0) {
     return buildQuickPlayerAnalysis(player);
   }
@@ -1221,16 +1213,32 @@ export const loadRecentTeamAnalysis = async (
     RECENT_DEFAULT_GAME_COUNT,
   );
 
-  const hydrationRequests = players
-    .map((player) => queueHydration.get(`${player.puuid}:${queueId}`))
-    .filter((request): request is Promise<void> => request !== undefined);
-  if (hydrationRequests.length === 0) {
+  const hydrationEntries = players
+    .map((player) => {
+      const request = queueHydration.get(`${player.puuid}:${queueId}`);
+      return request ? { player, request } : null;
+    })
+    .filter(
+      (
+        entry,
+      ): entry is {
+        player: RecentSumInfo;
+        request: Promise<NormalizedHistoryGame[]>;
+      } => entry !== null,
+    );
+  if (hydrationEntries.length === 0) {
     return buildNetworkAnalysis(friendList, enemyList, snapshotMap);
   }
 
   // 第二阶段等待后台补齐；此函数由调用方 fire-and-forget，因而不会阻塞
   // 首屏，但能让顶部“100 场分析中”状态准确持续到真正完成。
-  await Promise.allSettled(hydrationRequests);
+  const hydratedGamesByPlayer = new Map<string, NormalizedHistoryGame[]>();
+  await Promise.all(
+    hydrationEntries.map(async ({ player, request }) => {
+      const games = await request;
+      hydratedGamesByPlayer.set(player.puuid, games);
+    }),
+  );
   const hydratedSnapshots = await Promise.all(
     players.map(async (player, index) => {
       const cachedGames = await getCachedHistory({
@@ -1240,14 +1248,27 @@ export const loadRecentTeamAnalysis = async (
         limit: RECENT_ANALYSIS_GAME_COUNT,
       });
       const initialSnapshot = snapshots[index];
-      if (cachedGames.length <= initialSnapshot.games.size) {
+      const hydratedGames = hydratedGamesByPlayer.get(player.puuid) || [];
+      const mergedGames = sortGames([
+        ...cachedGames,
+        ...hydratedGames,
+      ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+      if (
+        mergedGames.length <= initialSnapshot.games.size &&
+        !hasParticipantRoster(mergedGames)
+      ) {
         return initialSnapshot;
       }
       return {
         puuid: player.puuid,
-        games: new Map(cachedGames.map((game) => [game.gameId, game])),
-        source: "PostgreSQL 本地缓存",
-        complete: cachedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+        games: new Map(mergedGames.map((game) => [game.gameId, game])),
+        source:
+          hasParticipantRoster(mergedGames) && hydratedGames.length > 0
+            ? "历史接口完整参与者"
+            : "PostgreSQL 本地缓存",
+        complete:
+          mergedGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
+          hasParticipantRoster(mergedGames),
       };
     }),
   );
