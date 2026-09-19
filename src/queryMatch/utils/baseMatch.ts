@@ -29,6 +29,9 @@ export default class BaseMatch {
     public gerSummonerInfo = async (summonerId?: number) => {
         const summonerInfo = await querySummonerInfo(summonerId);
         if (summonerInfo !== null) {
+            // 查询其它玩家时也同步当前实例的目标 ID，避免把缓存归属写成
+            // 上一次打开的本地玩家。
+            this.summonerId = summonerInfo.currentId;
             return { summonerInfo };
         }
         return null;
@@ -53,11 +56,16 @@ export default class BaseMatch {
         endIndex: number,
     ): Promise<ProcessedMatchHistory | null> => {
         // 写入玩家id
-        const localSumInfo: sumInfoTypes = JSON.parse(
-            localStorage.getItem("sumInfo") as string,
-        );
+        let localSumInfo: Partial<sumInfoTypes> = {};
+        try {
+            localSumInfo = JSON.parse(
+                localStorage.getItem("sumInfo") || "{}",
+            ) as Partial<sumInfoTypes>;
+        } catch {
+            localSumInfo = {};
+        }
         if (this.summonerId === 0) {
-            this.summonerId = localSumInfo.summonerId;
+            this.summonerId = localSumInfo.summonerId || 0;
         }
 
         const requestedCount = Math.max(0, endIndex - begIndex);
@@ -110,7 +118,7 @@ export default class BaseMatch {
             void cacheHistory({
                 puuid,
                 summonerId: this.summonerId,
-                summonerName: localSumInfo.name,
+                summonerName: localSumInfo.name || "",
                 modeKey,
                 source: result.source,
                 games,

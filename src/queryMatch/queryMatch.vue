@@ -3,16 +3,41 @@ import QueryHeader from "./components/queryHeader.vue";
 import SummonerInfoView from "./components/summonerInfoView.vue";
 import MatchMain from "./components/matchMain.vue";
 import useMatchStore from "@/queryMatch/store";
-import { NCard, NResult, NDrawer, NDrawerContent, NButton } from "naive-ui";
+import {
+    NCard,
+    NResult,
+    NDrawer,
+    NDrawerContent,
+    NButton,
+    NTabs,
+    NTabPane,
+} from "naive-ui";
 import MatchErr from "@/queryMatch/components/matchErr.vue";
-import { onBeforeMount, Ref, ref } from "vue";
+import { computed, onBeforeMount, Ref, ref } from "vue";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
+import HistoryAnalyticsPanel from "@/queryMatch/components/historyAnalyticsPanel.vue";
+import { RecentSumInfo } from "@/recentMatch/utils/queryTypes";
 
 const matchStore = useMatchStore();
 const blackMatchDrawer = ref(false);
 const blackMatchDetails: Ref<[ParticipantsInfo, number] | null> = ref(null);
+const activeTab = ref<"matches" | "analytics">("matches");
+
+const analysisPlayer = computed<RecentSumInfo | null>(() => {
+    const info = matchStore.sumInfo?.info;
+    if (!info) return null;
+    return {
+        summonerId: info.currentId,
+        summonerName: info.name,
+        puuid: info.puuid,
+        championUrl: info.imgUrl,
+        champId: 0,
+        teamParticipantId: 0,
+        matchList: [],
+    };
+});
 
 onBeforeMount(() => {
     // 判断是否从其它窗口启动的此窗口
@@ -28,9 +53,10 @@ onBeforeMount(() => {
 });
 
 const handleBlackListMatch = async (isQueryRecord: string) => {
-    const locSumId = JSON.parse(
-        localStorage.getItem("sumInfo") as string,
-    ).summonerId;
+    const localSumInfo = JSON.parse(
+        localStorage.getItem("sumInfo") || "null",
+    ) as { summonerId?: number } | null;
+    const locSumId = Number(localSumInfo?.summonerId || 0);
     const queSumMatchInfo = isQueryRecord.split("-");
     if (queSumMatchInfo[1] !== "") {
         const participantsInfo = await matchStore.queryMatchDetail(
@@ -75,34 +101,60 @@ const clearBlackMatch = () => {
                     style="height: 596px"
                     content-style="padding:0 0 0 12px"
                 >
-                    <match-err
-                        v-if="matchStore.matchList === null"
-                        :message="matchStore.matchError || undefined"
-                    />
-                    <match-main
-                        v-else-if="matchStore.matchList.length !== 0"
-                        :summoner-id="matchStore.summonerId"
-                    />
-                    <div
-                        v-else-if="!matchStore.matchLoading"
-                        class="w-full h-full flex justify-center items-center"
+                    <n-tabs
+                        v-model:value="activeTab"
+                        class="match-tabs"
+                        type="line"
+                        size="small"
                     >
-                        <n-result
-                            size="large"
-                            status="404"
-                            title="没有可展示的战绩"
-                            :description="
-                                matchStore.matchError ||
-                                '此页不存在数据，请返回前一页'
-                            "
-                        >
-                            <template #footer>
-                                <n-button type="error">
-                                    生活总归带点荒谬
-                                </n-button>
-                            </template>
-                        </n-result>
-                    </div>
+                        <n-tab-pane name="matches" tab="对局详情">
+                            <match-err
+                                v-if="matchStore.matchList === null"
+                                :message="matchStore.matchError || undefined"
+                            />
+                            <match-main
+                                v-else-if="matchStore.matchList.length !== 0"
+                                :summoner-id="matchStore.summonerId"
+                            />
+                            <div
+                                v-else-if="!matchStore.matchLoading"
+                                class="w-full h-full flex justify-center items-center"
+                            >
+                                <n-result
+                                    size="large"
+                                    status="404"
+                                    title="没有可展示的战绩"
+                                    :description="
+                                        matchStore.matchError ||
+                                        '此页不存在数据，请返回前一页'
+                                    "
+                                >
+                                    <template #footer>
+                                        <n-button type="error">
+                                            生活总归带点荒谬
+                                        </n-button>
+                                    </template>
+                                </n-result>
+                            </div>
+                        </n-tab-pane>
+                        <n-tab-pane name="analytics" tab="历史分析">
+                            <history-analytics-panel
+                                v-if="analysisPlayer"
+                                :key="analysisPlayer.puuid"
+                                :player="analysisPlayer"
+                            />
+                            <div
+                                v-else
+                                class="w-full h-full flex justify-center items-center"
+                            >
+                                <n-result
+                                    status="info"
+                                    title="正在读取当前玩家"
+                                    description="查询到召唤师信息后即可开始历史分析"
+                                />
+                            </div>
+                        </n-tab-pane>
+                    </n-tabs>
                 </n-card>
                 <n-card
                     v-else
@@ -139,3 +191,19 @@ const clearBlackMatch = () => {
         </n-drawer-content>
     </n-drawer>
 </template>
+
+<style scoped>
+.match-tabs {
+    height: 100%;
+}
+
+.match-tabs :deep(.n-tabs-pane-wrapper) {
+    flex: 1;
+    min-height: 0;
+}
+
+.match-tabs :deep(.n-tab-pane) {
+    height: 100%;
+    padding: 0;
+}
+</style>
