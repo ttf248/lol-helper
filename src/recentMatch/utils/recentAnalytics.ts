@@ -15,6 +15,7 @@ import {
   MatchItemTypes,
   ModerationRecord,
   OpponentMatchupStats,
+  PartyEvidence,
   PartyGroupAnalysis,
   PartyMember,
   PlayerModerationInfo,
@@ -847,26 +848,42 @@ const buildPartyGroups = (
       let wins = 0;
       let latestGameAt = 0;
       let recentGames = 0;
+      const evidence: PartyEvidence[] = [];
       for (const gameId of commonGameIds) {
         const game = groupSnapshots[0].games.get(gameId);
         if (!game) continue;
         const participants = group.map((player) =>
           findPlayerParticipant(game, player),
         );
-        if (participants.some((participant) => participant === undefined)) continue;
+        if (
+          participants.some(
+            (participant) =>
+              participant === undefined || participant.teamId <= 0,
+          )
+        ) {
+          continue;
+        }
         const teamId = participants[0]!.teamId;
         if (participants.some((participant) => participant!.teamId !== teamId)) {
           continue;
         }
         games += 1;
         wins += participants[0]!.win ? 1 : 0;
+        evidence.push({
+          gameId: game.gameId,
+          gameCreation: game.gameCreation,
+        });
         latestGameAt = Math.max(latestGameAt, game.gameCreation);
         if (game.gameCreation >= now - RECENT_ACTIVITY_DAYS * DAY_MS) {
           recentGames += 1;
         }
       }
 
-      if (games < 2) continue;
+      // 人数越多，偶然同队的概率越高。两人两场可以作为候选，
+      // 三/四/五人组合分别至少需要三/四/五场完全相同的共同同队对局。
+      // 这样不会因为一两场交集就把整队误报成一个开黑小队。
+      const requiredGames = Math.max(2, Math.min(group.length, 5));
+      if (games < requiredGames) continue;
       const winRate = roundRate(wins, games) ?? 0;
       const lastActiveDays = latestGameAt
         ? Math.max(0, Math.floor((now - latestGameAt) / DAY_MS))
@@ -890,6 +907,7 @@ const buildPartyGroups = (
       );
       groups.push({
         members,
+        requiredGames,
         games,
         wins,
         winRate,
@@ -902,6 +920,7 @@ const buildPartyGroups = (
           games >= 5 && winRate >= 65 && stabilityScore >= 55,
         confidence: confidenceInfo(confidenceScore, [
           `共同对局 ${games} 场`,
+          `${group.length}人组合门槛 ${requiredGames} 场共同同队`,
           `近${RECENT_ACTIVITY_DAYS}天共同对局 ${recentGames} 场`,
           "组队关系由历史同队记录推断",
         ]),
@@ -910,6 +929,9 @@ const buildPartyGroups = (
         ),
         blacklistedMembers,
         reportedMembers,
+        evidence: evidence.sort(
+          (left, right) => right.gameCreation - left.gameCreation,
+        ),
       });
     }
   }

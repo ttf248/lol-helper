@@ -210,8 +210,15 @@ export interface PartyMember {
   moderation?: PlayerModerationInfo;
 }
 
+export interface PartyEvidence {
+  gameId: number;
+  gameCreation: number;
+}
+
 export interface PartyGroupAnalysis {
   members: PartyMember[];
+  /** 判定该人数规模所需的最少共同同队场次。 */
+  requiredGames: number;
   games: number;
   wins: number;
   winRate: number;
@@ -225,6 +232,8 @@ export interface PartyGroupAnalysis {
   moderationAvailable: boolean;
   blacklistedMembers: PartyMember[];
   reportedMembers: PartyMember[];
+  /** 实际参与判定的共同对局，按最近时间优先。 */
+  evidence: PartyEvidence[];
 }
 
 export interface PlayerRecentAnalysis {
