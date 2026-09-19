@@ -217,6 +217,19 @@ const findPlayerParticipant = (
     participantMatchesPlayer(participant, player),
   );
 
+const combinations = <T>(items: T[], size: number): T[][] => {
+  if (size === 0) return [[]];
+  if (items.length < size) return [];
+  if (size === 1) return items.map((item) => [item]);
+  const result: T[][] = [];
+  for (let index = 0; index <= items.length - size; index++) {
+    for (const tail of combinations(items.slice(index + 1), size - 1)) {
+      result.push([items[index], ...tail]);
+    }
+  }
+  return result;
+};
+
 /** 将 LCU/SGP 的不同 participant 结构转换成分析层使用的统一结构。 */
 export const normalizeHistoryGame = (
   game: MatchHistoryGame,
@@ -975,19 +988,6 @@ const buildPartyGroups = (
   snapshots: Map<string, PlayerHistorySnapshot>,
   moderationMap: Map<string, PlayerModerationInfo>,
 ): PartyGroupAnalysis[] => {
-  const combinations = <T>(items: T[], size: number): T[][] => {
-    if (size === 0) return [[]];
-    if (items.length < size) return [];
-    if (size === 1) return items.map((item) => [item]);
-    const result: T[][] = [];
-    for (let index = 0; index <= items.length - size; index++) {
-      for (const tail of combinations(items.slice(index + 1), size - 1)) {
-        result.push([items[index], ...tail]);
-      }
-    }
-    return result;
-  };
-
   const groups: PartyGroupAnalysis[] = [];
   const now = Date.now();
   for (let size = 2; size <= players.length; size++) {
@@ -1104,6 +1104,151 @@ const buildPartyGroups = (
       right.stabilityScore - left.stabilityScore ||
       right.games - left.games,
   );
+};
+
+/**
+ * 从当前玩家自己的完整历史逐局枚举组合。
+ *
+ * 旧实现先截取高频队友再做全排列，可能漏掉“单独看不高频、但一起出现很
+ * 稳定”的三/四人组合。这里直接取每局目标玩家所在队伍的队友，枚举该局
+ * 出现过的 2/3/4/5 人组合，再按成员集合合并，数据来源就是 PostgreSQL
+ * 缓存的完整 participants。
+ */
+const buildPlayerPartyGroups = (
+  player: RecentSumInfo,
+  snapshot: PlayerHistorySnapshot,
+  moderationMap: Map<string, PlayerModerationInfo>,
+): PartyGroupAnalysis[] => {
+  interface GroupAccumulator {
+    teammates: NormalizedHistoryParticipant[];
+    games: number;
+    wins: number;
+    latestGameAt: number;
+    recentGames: number;
+    evidence: PartyEvidence[];
+  }
+
+  const groups = new Map<string, GroupAccumulator>();
+  const now = Date.now();
+
+  for (const game of snapshot.games.values()) {
+    const ownParticipant = findPlayerParticipant(game, player);
+    if (!ownParticipant || ownParticipant.teamId <= 0) continue;
+
+    const teammates = Array.from(
+      new Map(
+        game.participants
+          .filter(
+            (participant) =>
+              participant.teamId === ownParticipant.teamId &&
+              participant.teamId > 0 &&
+              !participantMatchesPlayer(participant, player),
+          )
+          .map((participant) => [participant.puuid, participant]),
+      ).values(),
+    );
+
+    // 一局 5 人队伍最多生成 15 个组合，100 场也只有 1500 次合并，
+    // 比基于所有历史队友做全排列稳定得多。
+    for (let teammateCount = 1; teammateCount <= teammates.length; teammateCount++) {
+      for (const selectedTeammates of combinations(teammates, teammateCount)) {
+        const memberKeys = [player.puuid, ...selectedTeammates.map((item) => item.puuid)]
+          .sort();
+        const key = memberKeys.join("|");
+        const existing = groups.get(key) || {
+          teammates: selectedTeammates,
+          games: 0,
+          wins: 0,
+          latestGameAt: 0,
+          recentGames: 0,
+          evidence: [],
+        };
+        existing.games += 1;
+        existing.wins += ownParticipant.win ? 1 : 0;
+        existing.latestGameAt = Math.max(existing.latestGameAt, game.gameCreation);
+        if (game.gameCreation >= now - RECENT_ACTIVITY_DAYS * DAY_MS) {
+          existing.recentGames += 1;
+        }
+        existing.evidence.push({
+          gameId: game.gameId,
+          gameCreation: game.gameCreation,
+        });
+        groups.set(key, existing);
+      }
+    }
+  }
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const memberCount = group.teammates.length + 1;
+      const requiredGames = Math.max(2, Math.min(memberCount, 5));
+      if (group.games < requiredGames) return null;
+
+      const winRate = roundRate(group.wins, group.games) ?? 0;
+      const lastActiveDays = group.latestGameAt
+        ? Math.max(0, Math.floor((now - group.latestGameAt) / DAY_MS))
+        : null;
+      const stabilityScore = Math.round(
+        Math.min(group.games / 10, 1) * 40 +
+          Math.min(group.recentGames / 5, 1) * 30 +
+          (winRate / 100) * 30,
+      );
+      const members = [
+        toPartyMember(player, moderationMap),
+        ...group.teammates.map((participant) => ({
+          puuid: participant.puuid,
+          summonerName: participant.summonerName || participant.puuid,
+          moderation: moderationMap.get(participant.puuid) || emptyModeration(),
+        })),
+      ];
+      const blacklistedMembers = members.filter(
+        (member) => member.moderation?.marked === true,
+      );
+      const reportedMembers = members.filter(
+        (member) => (member.moderation?.reportCount || 0) > 0,
+      );
+      const confidenceScore = Math.round(
+        Math.min(group.games / 10, 1) * 70 +
+          Math.min(group.recentGames / 5, 1) * 20 +
+          (members.every((member) => member.moderation?.available) ? 10 : 0),
+      );
+
+      return {
+        members,
+        requiredGames,
+        games: group.games,
+        wins: group.wins,
+        winRate,
+        latestGameAt: group.latestGameAt,
+        recentGames: group.recentGames,
+        lastActiveDays,
+        stabilityScore,
+        stabilityLevel: confidenceLevel(stabilityScore),
+        highWinRateAlert:
+          group.games >= 5 && winRate >= 65 && stabilityScore >= 55,
+        confidence: confidenceInfo(confidenceScore, [
+          `共同对局 ${group.games} 场`,
+          `${memberCount}人组合门槛 ${requiredGames} 场共同同队`,
+          `近${RECENT_ACTIVITY_DAYS}天共同对局 ${group.recentGames} 场`,
+          "组合由 PostgreSQL 缓存中的逐局同队记录推断",
+        ]),
+        moderationAvailable: members.every(
+          (member) => member.moderation?.available === true,
+        ),
+        blacklistedMembers,
+        reportedMembers,
+        evidence: group.evidence.sort(
+          (left, right) => right.gameCreation - left.gameCreation,
+        ),
+      } satisfies PartyGroupAnalysis;
+    })
+    .filter((group): group is PartyGroupAnalysis => group !== null)
+    .sort(
+      (left, right) =>
+        right.games - left.games ||
+        right.stabilityScore - left.stabilityScore ||
+        right.winRate - left.winRate,
+    );
 };
 
 const buildPlayerAnalysis = (
@@ -1327,7 +1472,7 @@ export const loadPlayerModeAnalysis = async (
   const playerAnalysis = buildPlayerAnalysis(
     player,
     snapshot,
-    buildPartyGroups([player, ...partyPlayers], snapshots, moderationMap),
+    buildPlayerPartyGroups(player, snapshot, moderationMap),
     buildOpponentStats(player, opponentPlayers, snapshots, moderationMap),
     moderationMap.get(player.puuid) || emptyModeration(),
     requestedGames,

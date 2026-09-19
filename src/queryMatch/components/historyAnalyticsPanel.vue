@@ -28,6 +28,7 @@ import {
 import {
   PlayerRecentAnalysis,
   PlayerAnalysisProgress,
+  PartyGroupAnalysis,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
@@ -58,6 +59,33 @@ const activeTrend = computed(() =>
   analysis.value?.trends.find((item) => item.window === selectedWindow.value),
 );
 
+const partyAnalysisGames = computed(
+  () =>
+    analysis.value?.trends.find((item) => item.window === 100)?.games ||
+    analysis.value?.actualGames ||
+    0,
+);
+
+const partyRankingSections = computed(() => {
+  const groups = analysis.value?.partyGroups || [];
+  return [2, 3, 4, 5].map((size) => {
+    const allGroups = groups
+      .filter((group) => group.members.length === size)
+      .sort(
+        (left, right) =>
+          right.games - left.games ||
+          right.stabilityScore - left.stabilityScore ||
+          right.winRate - left.winRate,
+      );
+    return {
+      size,
+      label: `${size}人组合`,
+      total: allGroups.length,
+      items: allGroups.slice(0, 5) as PartyGroupAnalysis[],
+    };
+  });
+});
+
 const formatRate = (rate: number | null | undefined) =>
   rate === null || rate === undefined ? "--" : `${rate.toFixed(1)}%`;
 
@@ -83,6 +111,19 @@ const championImage = (championId: number) => {
   return alias
     ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
     : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`;
+};
+
+const partyGroupNames = (group: PartyGroupAnalysis) =>
+  group.members
+    .map((member) =>
+      member.puuid === props.player.puuid ? "我" : member.summonerName,
+    )
+    .join(" + ");
+
+const lastActiveLabel = (group: PartyGroupAnalysis) => {
+  if (group.lastActiveDays === null) return "未知";
+  if (group.lastActiveDays === 0) return "今天";
+  return `${group.lastActiveDays}天前`;
 };
 
 const loadAnalysis = async () => {
@@ -315,34 +356,62 @@ onMounted(() => {
           </n-card>
         </div>
 
-        <n-card size="small" title="组队与交手分析" :bordered="false">
-          <div v-if="analysis.partyGroups.length" class="relation-list">
+        <n-card size="small" title="我常和谁开黑 · 组合 Top 5" :bordered="false">
+          <div class="party-ranking-caption">
+            基于 PostgreSQL 当前模式最近 {{ partyAnalysisGames }} 场完整对局，按共同同队场次排序；
+            同场次数越多，越能说明是稳定组合，胜率用于评价组合效果。
+          </div>
+          <div class="party-ranking-grid">
             <div
-              v-for="group in analysis.partyGroups.slice(0, 8)"
-              :key="group.members.map((item) => item.puuid).join('-')"
-              class="relation-row"
+              v-for="section in partyRankingSections"
+              :key="section.size"
+              class="party-ranking-section"
             >
-              <div class="relation-name">
-                {{ group.members.map((item) => item.summonerName).join(' + ') }}
-                <n-tag v-if="group.highWinRateAlert" size="tiny" type="warning">
-                  高胜率开黑队
-                </n-tag>
-                <n-tag v-if="group.blacklistedMembers.length" size="tiny" type="error">
-                  含黑名单
-                </n-tag>
-                <n-tag v-if="group.reportedMembers.length" size="tiny" type="info">
-                  含举报记录
-                </n-tag>
+              <div class="party-ranking-heading">
+                <span>{{ section.label }}</span>
+                <span class="text-gray-500">{{ section.total }} 组</span>
               </div>
-              <div class="text-xs text-gray-500">
-                共同 {{ group.games }} 场 · 胜率 {{ formatRate(group.winRate) }} · 稳定度
-                {{ group.stabilityScore }} · 置信度 {{ confidenceLabel(group.confidence.level) }}
+              <div v-if="section.items.length" class="party-ranking-list">
+                <div
+                  v-for="(group, index) in section.items"
+                  :key="group.members.map((item) => item.puuid).join('-')"
+                  class="party-ranking-row"
+                >
+                  <span class="party-rank">{{ index + 1 }}</span>
+                  <div class="party-ranking-main">
+                    <div class="party-ranking-name" :title="partyGroupNames(group)">
+                      {{ partyGroupNames(group) }}
+                      <n-tag v-if="group.highWinRateAlert" size="tiny" type="warning">
+                        高胜率
+                      </n-tag>
+                      <n-tag v-if="group.blacklistedMembers.length" size="tiny" type="error">
+                        黑名单
+                      </n-tag>
+                      <n-tag v-if="group.reportedMembers.length" size="tiny" type="info">
+                        有举报
+                      </n-tag>
+                    </div>
+                    <div class="party-ranking-metrics">
+                      共同 {{ group.games }} 场 · {{ group.wins }} 胜 ·
+                      胜率 {{ formatRate(group.winRate) }} · 稳定度 {{ group.stabilityScore }}
+                    </div>
+                    <div class="party-ranking-submetrics">
+                      近30天 {{ group.recentGames }} 场 · 最近 {{ lastActiveLabel(group) }} ·
+                      置信度 {{ confidenceLabel(group.confidence.level) }}
+                    </div>
+                  </div>
+                </div>
               </div>
+              <div v-else class="empty-note">暂无达到门槛的组合</div>
             </div>
           </div>
-          <div v-else class="empty-note">当前窗口还没有可确认的共同对局组合。</div>
+          <div class="party-ranking-note">
+            判定门槛：双人至少共同同队 2 场，三/四/五人组合至少 3/4/5 场；
+            只按同一局的 gameId、队伍归属和完整参与者判断，不按英雄或 KDA 猜测。
+          </div>
 
           <div v-if="analysis.opponents.length" class="opponent-list">
+            <div class="relation-subtitle">历史交手</div>
             <div
               v-for="item in analysis.opponents.slice(0, 8)"
               :key="item.opponent.puuid"
@@ -554,6 +623,107 @@ onMounted(() => {
   line-height: 1.5;
 }
 
+.party-ranking-caption,
+.party-ranking-note,
+.party-ranking-submetrics {
+  color: #888;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.party-ranking-caption {
+  margin-bottom: 0.45rem;
+}
+
+.party-ranking-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.party-ranking-section {
+  min-width: 0;
+  padding: 0.35rem;
+  border: 1px solid rgba(128, 128, 128, 0.14);
+  border-radius: 0.35rem;
+}
+
+.party-ranking-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding-bottom: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.party-ranking-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.party-ranking-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.party-ranking-row:last-child {
+  border-bottom: 0;
+}
+
+.party-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  color: #666;
+  background: rgba(128, 128, 128, 0.12);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.party-ranking-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.party-ranking-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.party-ranking-metrics {
+  color: #333;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.party-ranking-note {
+  margin-top: 0.45rem;
+}
+
+.relation-subtitle {
+  margin-top: 0.55rem;
+  margin-bottom: 0.15rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .opponent-list {
   margin-top: 0.4rem;
 }
@@ -579,7 +749,8 @@ onMounted(() => {
 }
 
 @media (max-width: 760px) {
-  .two-columns {
+  .two-columns,
+  .party-ranking-grid {
     grid-template-columns: 1fr;
   }
 }
