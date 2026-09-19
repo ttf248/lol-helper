@@ -389,14 +389,15 @@ const queryMatchHistoryWithSourceInternalUncached = async (
 			return result;
 		}
 
-		// 去重操作
-		// const uniqueGames = Array.from(
-		// 	new Map(allGames.map((game) => [game.gameId, game])).values(),
-		// );
+		// 分页接口偶尔会在边界重复返回同一局；重复数据会同时污染
+		// 胜率样本、趋势和开黑共同场次，因此在统一出口去重。
+		const uniqueGames = Array.from(
+			new Map(result.games.map((game) => [game.gameId, game])).values(),
+		);
 
 		// 按游戏创建时间降序排序
 		return {
-			games: result.games.sort((a, b) => b.gameCreation - a.gameCreation),
+			games: uniqueGames.sort((a, b) => b.gameCreation - a.gameCreation),
 			source: result.source,
 		};
 	} catch (error) {

@@ -334,6 +334,9 @@ const hydratePlayerQueueHistory = (
     return existingGames;
   });
   queueHydration.set(key, request);
+  // 任务结果保留在当前面板生命周期内，保证极快返回的完整历史也能被
+  // loadRecentTeamAnalysis 捕获并刷新 UI。新一局开始时由
+  // clearRecentAnalysisCache 一并清理，避免跨对局复用。
   return request;
 };
 
@@ -1521,18 +1524,17 @@ export const loadRecentTeamAnalysis = async (
   }
 
   await hydratedGamesPromise;
-  const hydratedSnapshots = await Promise.all(
-    players.map(async (player, index) => {
-      const cachedGames = await getCachedHistory({
-        puuid: player.puuid,
-        queueId,
-        modeKey: modeForQueue(queueId),
-        limit: RECENT_ANALYSIS_GAME_COUNT,
-      });
+  const hydratedSnapshots = players.map((player, index) => {
       const initialSnapshot = snapshots[index];
-      const hydratedGames = hydratedGamesByPlayer.get(player.puuid) || [];
+      const hydratedGames = hydratedGamesByPlayer.get(player.puuid);
+      // hydratePlayerQueueHistory 已经返回了合并后的完整结果，并负责写入
+      // PostgreSQL。这里直接复用结果，避免补全结束后再为每个玩家重复读
+      // 一次数据库（十名玩家会额外产生十次串行 SQL）。
+      if (!hydratedGames) {
+        return initialSnapshot;
+      }
       const mergedGames = sortGames([
-        ...cachedGames,
+        ...initialSnapshot.games.values(),
         ...hydratedGames,
       ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
       if (
@@ -1552,8 +1554,7 @@ export const loadRecentTeamAnalysis = async (
           mergedGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
           hasParticipantRoster(mergedGames),
       };
-    }),
-  );
+    });
   const hydratedSnapshotMap = new Map(
     players.map((player, index) => [player.puuid, hydratedSnapshots[index]]),
   );
@@ -1574,4 +1575,7 @@ export const loadRecentTeamAnalysis = async (
   return network;
 };
 
-export const clearRecentAnalysisCache = () => historyCache.clear();
+export const clearRecentAnalysisCache = () => {
+  historyCache.clear();
+  queueHydration.clear();
+};

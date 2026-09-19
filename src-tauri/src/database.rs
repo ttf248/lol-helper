@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
@@ -371,15 +370,45 @@ impl DatabaseState {
             .ok_or_else(|| "数据库连接不可用".to_string())?;
         let limit = request.limit.clamp(1, 300);
         let offset = request.offset.max(0);
-        let game_rows = client
+        let rows = client
             .query(
-                "SELECT DISTINCT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
-                 FROM matches m
-                 JOIN match_participants p ON p.game_id = m.game_id
-                 WHERE p.puuid = $1
-                   AND ($2::TEXT IS NULL OR m.mode_key = $2)
-                   AND ($3::INTEGER IS NULL OR m.queue_id = $3)
-                 ORDER BY m.game_creation DESC LIMIT $4 OFFSET $5",
+                "WITH selected_matches AS (
+                     SELECT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
+                     FROM matches m
+                     JOIN match_participants target
+                       ON target.game_id = m.game_id
+                      AND target.puuid = $1
+                     WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                       AND ($3::INTEGER IS NULL OR m.queue_id = $3)
+                     ORDER BY m.game_creation DESC
+                     LIMIT $4 OFFSET $5
+                 )
+                 SELECT selected_matches.game_id, selected_matches.game_creation,
+                        selected_matches.queue_id, selected_matches.mode_key,
+                        selected_matches.source,
+                        COALESCE(
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'puuid', p.puuid,
+                                    'summonerId', p.summoner_id,
+                                    'summonerName', p.summoner_name,
+                                    'teamId', p.team_id,
+                                    'championId', p.champion_id,
+                                    'position', p.position,
+                                    'kills', p.kills,
+                                    'deaths', p.deaths,
+                                    'assists', p.assists,
+                                    'win', p.win
+                                ) ORDER BY p.puuid
+                            ) FILTER (WHERE p.puuid IS NOT NULL),
+                            '[]'::jsonb
+                        ) AS participants
+                 FROM selected_matches
+                 JOIN match_participants p ON p.game_id = selected_matches.game_id
+                 GROUP BY selected_matches.game_id, selected_matches.game_creation,
+                          selected_matches.queue_id, selected_matches.mode_key,
+                          selected_matches.source
+                 ORDER BY selected_matches.game_creation DESC",
                 &[
                     &request.puuid,
                     &request.mode_key,
@@ -391,59 +420,21 @@ impl DatabaseState {
             .await
         .map_err(|error| error.to_string())?;
 
-        if game_rows.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let game_ids: Vec<i64> = game_rows.iter().map(|row| row.get("game_id")).collect();
-        let participant_rows = client
-            .query(
-                "SELECT game_id, puuid, summoner_id, summoner_name, team_id,
-                        champion_id, position, kills, deaths, assists, win
-                 FROM match_participants
-                 WHERE game_id = ANY($1)",
-                &[&game_ids],
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let mut games = HashMap::<i64, CachedMatchGame>::new();
-        for row in game_rows {
-            let game_id = row.get("game_id");
-            games.insert(
-                game_id,
-                CachedMatchGame {
-                    game_id,
+        rows.into_iter()
+            .map(|row| {
+                let participants_value: Value = row.get("participants");
+                let participants = serde_json::from_value(participants_value)
+                    .map_err(|error| format!("缓存参与者解析失败: {error}"))?;
+                Ok(CachedMatchGame {
+                    game_id: row.get("game_id"),
                     game_creation: row.get("game_creation"),
                     queue_id: row.get("queue_id"),
                     mode_key: row.get("mode_key"),
                     source: row.get("source"),
-                    participants: Vec::new(),
-                },
-            );
-        }
-        for row in participant_rows {
-            let game_id: i64 = row.get("game_id");
-            if let Some(game) = games.get_mut(&game_id) {
-                game.participants.push(CachedParticipant {
-                    puuid: row.get("puuid"),
-                    summoner_id: row.get("summoner_id"),
-                    summoner_name: row.get("summoner_name"),
-                    team_id: row.get("team_id"),
-                    champion_id: row.get("champion_id"),
-                    position: row.get("position"),
-                    kills: row.get("kills"),
-                    deaths: row.get("deaths"),
-                    assists: row.get("assists"),
-                    win: row.get("win"),
-                });
-            }
-        }
-
-        Ok(game_ids
-            .into_iter()
-            .filter_map(|game_id| games.remove(&game_id))
-            .collect())
+                    participants,
+                })
+            })
+            .collect()
     }
 
     pub async fn summary(&self) -> Result<DatabaseSummary, String> {

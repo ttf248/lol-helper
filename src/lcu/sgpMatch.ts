@@ -56,29 +56,28 @@ export class SgpMatchHistoryService {
 		url: string,
 		options: Parameters<typeof fetch>[1],
 	): Promise<{ response: Response; body: string; data: T }> => {
+		const controller = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			// SGP 的 SUMMARY 响应可能使用 chunked transfer。超时必须覆盖
-			// 建立连接、读取完整 body 和 JSON 解析，而不能只包住 fetch()。
-			const request = (async () => {
-				const response = await fetch(url, options);
-				const body = await response.text();
-				return {
-					response,
-					body,
-					data: JSON.parse(body) as T,
-				};
-			})();
-
-			return await Promise.race([
-				request,
-				new Promise<never>((_, reject) => {
-					timer = setTimeout(
-						() => reject(new Error(`SGP request timed out after ${this.TIMEOUT}ms`)),
-						this.TIMEOUT,
-					);
-				}),
-			]);
+			// 建立连接、读取完整 body 和 JSON 解析，并真正中止底层请求，
+			// 避免多名玩家并发分析时积累已经失效的网络任务。
+			timer = setTimeout(() => controller.abort(), this.TIMEOUT);
+			const response = await fetch(url, {
+				...options,
+				signal: controller.signal,
+			});
+			const body = await response.text();
+			return {
+				response,
+				body,
+				data: JSON.parse(body) as T,
+			};
+		} catch (error) {
+			if (controller.signal.aborted) {
+				throw new Error(`SGP request timed out after ${this.TIMEOUT}ms`);
+			}
+			throw error;
 		} finally {
 			if (timer !== undefined) {
 				clearTimeout(timer);

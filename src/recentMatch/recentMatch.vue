@@ -24,6 +24,7 @@ import ChampInfo from "@/recentMatch/components/champInfo.vue";
 import { requestFetch } from "@/main/utils/request.ts";
 import {
     applyFastRecentAnalysis,
+    clearRecentAnalysisCache,
     loadRecentTeamAnalysis,
     RecentAnalysisProgress,
 } from "@/recentMatch/utils/recentAnalytics";
@@ -116,6 +117,8 @@ const commitHistoryResult = (
 
 const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
     // 面板刷新时清理上一轮结果，避免胜场和进度重复累计。
+    // 历史分析缓存也必须在新一局重新建立，避免复用上一局的玩家快照。
+    clearRecentAnalysisCache();
     friendList.value = [];
     enemyList.value = [];
     winCount.value = { friend: [0, 0], enemy: [0, 0] };
