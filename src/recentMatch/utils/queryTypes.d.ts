@@ -82,6 +82,14 @@ export interface TeamData {
   teamParticipantId: number;
 }
 
+// 游戏内 Live Client Data API 返回的玩家基础信息。
+export interface LiveGamePlayer {
+  championName: string;
+  rawChampionName: string;
+  summonerName: string;
+  team: string;
+}
+
 export interface GameDataTypes {
   gameId: number;
   gameName: string;

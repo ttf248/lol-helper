@@ -3,8 +3,8 @@ mod lol_window_tracker;
 mod shaco;
 use lcu::{
     check_borderless_mode, get_lol_region, get_match_list, init_keyboard, invoke_lcu,
-    is_game_start, launch_lol, listen_for_client_start, set_borderless_mode, start_champ_select,
-    start_current_champ_select, start_listener,
+    get_ingame_players, is_game_start, launch_lol, listen_for_client_start, set_borderless_mode,
+    start_champ_select, start_current_champ_select, start_listener,
 };
 use lol_window_tracker::{start_tracking_loop, sync_tracker_config};
 use std::sync::atomic::AtomicBool;
@@ -33,6 +33,7 @@ pub async fn run() {
             invoke_lcu,
             get_match_list,
             is_game_start,
+            get_ingame_players,
             init_keyboard,
             listen_for_client_start,
             start_current_champ_select,

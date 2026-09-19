@@ -58,9 +58,28 @@ onMounted(() => {
     });
 });
 
+const queryAllSumInfo = async (): Promise<RecentAllSumInfo | null> => {
+    let latestResult: RecentAllSumInfo | null = null;
+
+    // 首次查询仍可能发生在加载画面中，未满十人时重新拉取整场玩家列表。
+    for (let attempt = 0; attempt < 3; attempt++) {
+        latestResult = await querySummoner.fromLcuQuery();
+        if (latestResult === null) {
+            return null;
+        }
+        if (latestResult.friendList.length + latestResult.enemyList.length >= 10) {
+            return latestResult;
+        }
+        if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+    }
+
+    return latestResult;
+};
+
 const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
-    querySummoner
-        .fromLcuQuery()
+    queryAllSumInfo()
         .then(async (allSumInfo: RecentAllSumInfo | null) => {
             if (allSumInfo === null) {
                 isLcuErr.value = true;
@@ -116,6 +135,7 @@ const getCompleteSumInfo = async (
             summoner.puuid,
             queueId,
             summoner.summonerState.label,
+            summoner.summonerId,
         );
         summoner.matchList = resultList[0];
         // 判断是否为小代

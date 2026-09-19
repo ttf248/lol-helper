@@ -38,7 +38,11 @@ export const useTeammateStore = defineStore('useTeammate', {
     },
     async getMatchList(summonerInfo: SummonerInfoList[],isReGet:boolean) {
       for (const [index, summoner] of summonerInfo.entries()) {
-        const matchList = await useMatch.getMatchHis(summoner.puuid,isReGet)
+        const matchList = await useMatch.getMatchHis(
+          summoner.puuid,
+          isReGet,
+          Number(summoner.summonerId),
+        )
         if (matchList === null) {
           // 查询最近战绩出错
           this.recentMatchList = []
@@ -70,7 +74,12 @@ export const useTeammateStore = defineStore('useTeammate', {
         const matchHis20: SimpleMatchTypes[] = JSON.parse(JSON.stringify(this.recentMatchList[index]))
 
         if (queueId === 420 || queueId === 440) {
-          const matchList = await useMatch.getSpecialMatchHis(summoner.puuid, matchHis20, queueId)
+          const matchList = await useMatch.getSpecialMatchHis(
+            summoner.puuid,
+            matchHis20,
+            queueId,
+            Number(summoner.summonerId),
+          )
           const cacheList = matchList.length === 0 ? matchHis20.slice(0, 10) : matchList
           this.cacheMatchList[summoner.summonerId] = cacheList
         } else {

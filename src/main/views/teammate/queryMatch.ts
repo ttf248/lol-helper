@@ -5,6 +5,45 @@ import { querySummonerPosition } from "@/lcu/utils";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 
 export class QueryMatch {
+    private findParticipant = (
+        match: Games | GamesBySgp,
+        targetPuuid?: string,
+        targetSummonerId?: number,
+    ) => {
+        const participants = match.participants ?? [];
+        const directParticipant = participants.find((participant: any) =>
+            (targetPuuid !== undefined && participant.puuid === targetPuuid) ||
+            (targetSummonerId !== undefined &&
+                participant.summonerId === targetSummonerId),
+        );
+        if (directParticipant !== undefined) {
+            return directParticipant;
+        }
+
+        if ("participantIdentities" in match) {
+            const identity = match.participantIdentities?.find((item) => {
+                const player = item.player as any;
+                return (
+                    (targetPuuid !== undefined && player.puuid === targetPuuid) ||
+                    (targetSummonerId !== undefined &&
+                        player.summonerId === targetSummonerId)
+                );
+            });
+            if (identity !== undefined) {
+                const identityParticipant = participants.find(
+                    (participant: any) =>
+                        participant.participantId === identity.participantId,
+                );
+                if (identityParticipant !== undefined) {
+                    return identityParticipant;
+                }
+            }
+        }
+
+        // SGP SUMMARY 通常只保留目标玩家；旧数据没有身份字段时保留兼容回退。
+        return participants[0];
+    };
+
     public timestampToDate = (timestamp: number) => {
         const date = new Date(timestamp);
         return (
@@ -36,9 +75,16 @@ export class QueryMatch {
         return "其它";
     };
 
-    public getSimpleMatch = (match: Games | GamesBySgp): SimpleMatchTypes => {
-        // 1. 获取第一个参与者对象
-        const p0 = match.participants[0];
+    public getSimpleMatch = (
+        match: Games | GamesBySgp,
+        targetPuuid?: string,
+        targetSummonerId?: number,
+    ): SimpleMatchTypes => {
+        // LCU PUUID 接口返回十名玩家，不能固定取 participants[0]。
+        const p0 = this.findParticipant(match, targetPuuid, targetSummonerId);
+        if (p0 === undefined) {
+            throw new Error(`Match ${match.gameId} has no participants`);
+        }
 
         // 2. 统一战斗数据源 (LCU 嵌套在 stats 中，SGP 直接在 p0 中)
         const statsSource = "stats" in p0 ? p0.stats : p0;
@@ -102,6 +148,7 @@ export class QueryMatch {
         puuid: string,
         begIndex: number,
         endIndex: number,
+        targetSummonerId?: number,
     ): Promise<SimpleMatchTypes[] | null> => {
         const matchList = await queryMatchHistory(puuid, begIndex, endIndex);
         if (matchList === null) {
@@ -109,7 +156,11 @@ export class QueryMatch {
         }
 
         return matchList.map((matchListElement) => {
-            return this.getSimpleMatch(matchListElement);
+            return this.getSimpleMatch(
+                matchListElement,
+                puuid,
+                targetSummonerId,
+            );
         });
     };
     // query the record of a specific mode
@@ -117,6 +168,7 @@ export class QueryMatch {
         puuid: string,
         matchHis20: SimpleMatchTypes[],
         queueId: number,
+        targetSummonerId?: number,
     ) => {
         const specialList = matchHis20
             .filter((matchList) => matchList.queueId === queueId)
@@ -126,7 +178,12 @@ export class QueryMatch {
         if (speListLen === 10 || matchHis20.length < 20) {
             return specialList;
         } else {
-            const matchHis40 = await this.dealMatchHistory(puuid, 20, 40);
+            const matchHis40 = await this.dealMatchHistory(
+                puuid,
+                20,
+                40,
+                targetSummonerId,
+            );
             if (matchHis40 === null) {
                 return specialList;
             }
@@ -139,17 +196,27 @@ export class QueryMatch {
         }
     };
 
-    public getMatchHis = async (puuid: string, isReGet: boolean) => {
+    public getMatchHis = async (
+        puuid: string,
+        isReGet: boolean,
+        targetSummonerId?: number,
+    ) => {
         if (isReGet) {
-            return await this.dealMatchHistory(puuid, 0, 10);
+            return await this.dealMatchHistory(puuid, 0, 10, targetSummonerId);
         }
-        return await this.dealMatchHistory(puuid, 0, 20);
+        return await this.dealMatchHistory(puuid, 0, 20, targetSummonerId);
     };
     public getSpecialMatchHis = async (
         puuid: string,
         matchHis20: SimpleMatchTypes[],
         queueId: number,
+        targetSummonerId?: number,
     ) => {
-        return await this.querySpecialMatch(puuid, matchHis20, queueId);
+        return await this.querySpecialMatch(
+            puuid,
+            matchHis20,
+            queueId,
+            targetSummonerId,
+        );
     };
 }

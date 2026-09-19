@@ -143,6 +143,17 @@ pub async fn is_game_start() -> bool {
     client.active_game_loadingscreen().await
 }
 
+/// 获取游戏内实际加载的全部玩家。gameflow session 在加载阶段可能只返回部分队伍。
+#[tauri::command]
+pub async fn get_ingame_players(
+) -> Result<Vec<crate::shaco::model::ingame::Player>, String> {
+    let client = ingame::IngameClient::new().map_err(|error| error.to_string())?;
+    client
+        .player_list(None)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn init_keyboard(app: AppHandle) {
     tokio::spawn(async move { init_global_keyboard(app) });

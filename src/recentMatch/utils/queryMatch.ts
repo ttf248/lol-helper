@@ -7,19 +7,62 @@ import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 class QueryMatch {
     public winCount = 0;
 
+    private findParticipant = (
+        match: Games | GamesBySgp,
+        targetPuuid?: string,
+        targetSummonerId?: number,
+    ) => {
+        const participants = match.participants ?? [];
+        const directParticipant = participants.find((participant: any) =>
+            (targetPuuid !== undefined && participant.puuid === targetPuuid) ||
+            (targetSummonerId !== undefined &&
+                participant.summonerId === targetSummonerId),
+        );
+        if (directParticipant !== undefined) {
+            return directParticipant;
+        }
+
+        if ("participantIdentities" in match) {
+            const identity = match.participantIdentities?.find((item) => {
+                const player = item.player as any;
+                return (
+                    (targetPuuid !== undefined && player.puuid === targetPuuid) ||
+                    (targetSummonerId !== undefined &&
+                        player.summonerId === targetSummonerId)
+                );
+            });
+            if (identity !== undefined) {
+                const identityParticipant = participants.find(
+                    (participant: any) =>
+                        participant.participantId === identity.participantId,
+                );
+                if (identityParticipant !== undefined) {
+                    return identityParticipant;
+                }
+            }
+        }
+
+        return participants[0];
+    };
+
     public queryMatchHistory = async (
         puuid: string,
         queueId: number,
         summonerState: string,
+        targetSummonerId?: number,
     ): Promise<[MatchItemTypes[], number, boolean]> => {
         try {
             let matchList: MatchItemTypes[] = [];
 
             // Get match list based on queue type
             if (queueId === 420 || queueId === 440) {
-                matchList = await this.findSpecialMatch(puuid, queueId);
+                matchList = await this.findSpecialMatch(
+                    puuid,
+                    queueId,
+                    targetSummonerId,
+                );
             } else {
-                matchList = await this.findMatch(puuid);
+                matchList = await this.findMatch(puuid, targetSummonerId);
             }
 
             // Remove duplicate matches by gameId
@@ -50,8 +93,15 @@ class QueryMatch {
         }
     };
 
-    public parseMatch = (games: Games | GamesBySgp): MatchItemTypes => {
-        const p0 = games.participants[0];
+    public parseMatch = (
+        games: Games | GamesBySgp,
+        targetPuuid?: string,
+        targetSummonerId?: number,
+    ): MatchItemTypes => {
+        const p0 = this.findParticipant(games, targetPuuid, targetSummonerId);
+        if (p0 === undefined) {
+            throw new Error(`Match ${games.gameId} has no participants`);
+        }
 
         // 1. 统一战斗数据源 (LCU 嵌套在 stats，SGP 就在 p0)
         const statsSource = "stats" in p0 ? p0.stats : p0;
@@ -105,10 +155,15 @@ class QueryMatch {
         return excellentCount >= 3;
     };
 
-    public findMatch = async (puuid: string): Promise<MatchItemTypes[]> => {
+    public findMatch = async (
+        puuid: string,
+        targetSummonerId?: number,
+    ): Promise<MatchItemTypes[]> => {
         const matchList = await queryMatchHistory(puuid, 0, 10);
         if (matchList !== null) {
-            return matchList.map((games) => this.parseMatch(games));
+            return matchList.map((games) =>
+                this.parseMatch(games, puuid, targetSummonerId),
+            );
         } else {
             return [];
         }
@@ -117,6 +172,7 @@ class QueryMatch {
     public findSpecialMatch = async (
         puuid: string,
         queueId: number,
+        targetSummonerId?: number,
     ): Promise<MatchItemTypes[]> => {
         const latestMatch = await queryMatchHistory(puuid, 0, 10);
         const specialList: MatchItemTypes[] = [];
@@ -135,7 +191,9 @@ class QueryMatch {
             );
 
             for (const game of filterMatch) {
-                specialList.push(this.parseMatch(game));
+                specialList.push(
+                    this.parseMatch(game, puuid, targetSummonerId),
+                );
                 if (specialList.length === 10) {
                     return specialList;
                 }
@@ -144,7 +202,9 @@ class QueryMatch {
             offset += 10;
         }
         if (specialList.length === 0 && latestMatch !== null) {
-            return latestMatch.map((games) => this.parseMatch(games));
+            return latestMatch.map((games) =>
+                this.parseMatch(games, puuid, targetSummonerId),
+            );
         } else return specialList;
     };
 }
