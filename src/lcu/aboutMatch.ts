@@ -8,12 +8,18 @@ import {
 
 import { GamesBySgp } from "./types/queryMatchSgpGameTypes";
 
-export type MatchHistorySource = "lcu-current" | "lcu-puuid" | "sgp" | "mixed";
+export type MatchHistorySource =
+	| "lcu-current"
+	| "lcu-puuid"
+	| "sgp"
+	| "postgres"
+	| "mixed";
 
 export const MATCH_HISTORY_SOURCE_LABELS: Record<MatchHistorySource, string> = {
 	"lcu-current": "LCU（当前召唤师）",
 	"lcu-puuid": "LCU（PUUID）",
 	sgp: "SGP（区域服务）",
+	postgres: "PostgreSQL 本地缓存",
 	mixed: "LCU + SGP（混合）",
 };
 

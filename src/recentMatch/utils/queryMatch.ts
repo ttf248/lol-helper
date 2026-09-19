@@ -1,12 +1,62 @@
 import { MatchItemTypes } from "@/recentMatch/utils/queryTypes";
 import { champDict } from "@/resources/champList";
-import { queryMatchHistory } from "@/lcu/aboutMatch";
+import { queryMatchHistoryWithSource } from "@/lcu/aboutMatch";
 import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
-import { getCachedHistory } from "@/recentMatch/utils/databaseCache";
-import { modeForQueue } from "@/recentMatch/utils/matchMode";
+import {
+    cacheHistory,
+    getCachedHistory,
+} from "@/recentMatch/utils/databaseCache";
+import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
+import {
+    normalizeHistoryGame,
+    NormalizedHistoryGame,
+} from "@/recentMatch/utils/recentAnalytics";
 
 class QueryMatch {
+    private cacheRawGames = async (
+        puuid: string,
+        games: (Games | GamesBySgp)[],
+        source: string,
+    ) => {
+        const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
+        for (const rawGame of games) {
+            const normalized = normalizeHistoryGame(rawGame);
+            if (!normalized) continue;
+            const modeKey = modeForQueue(normalized.queueId);
+            const modeGames = gamesByMode.get(modeKey) || [];
+            modeGames.push(normalized);
+            gamesByMode.set(modeKey, modeGames);
+        }
+        await Promise.all(
+            Array.from(gamesByMode.entries()).map(([modeKey, modeGames]) =>
+                cacheHistory({
+                    puuid,
+                    modeKey,
+                    source,
+                    games: modeGames,
+                }),
+            ),
+        );
+    };
+
+    private queryRawHistory = async (
+        puuid: string,
+        begIndex: number,
+        endIndex: number,
+    ): Promise<(Games | GamesBySgp)[]> => {
+        const result = await queryMatchHistoryWithSource(
+            puuid,
+            begIndex,
+            endIndex,
+        );
+        if (!result || result.games.length === 0) return [];
+        // 只缓存当前请求返回的 participant；写库在首屏请求内完成，
+        // 后续完整分析即可直接读取这批最近数据，不会立即重复拉取 100 场。
+        await this.cacheRawGames(puuid, result.games, result.source);
+        return result.games;
+    };
+
     private findParticipant = (
         match: Games | GamesBySgp,
         targetPuuid?: string,
@@ -57,7 +107,7 @@ class QueryMatch {
                 modeKey: modeForQueue(queueId),
                 limit: 10,
             });
-            if (cachedMatches.length > 0) {
+            if (cachedMatches.length >= 10) {
                 const matches = cachedMatches.map((game) => {
                     const participant = game.participants.find(
                         (item) =>
@@ -157,8 +207,8 @@ class QueryMatch {
         puuid: string,
         targetSummonerId?: number,
     ): Promise<MatchItemTypes[]> => {
-        const matchList = await queryMatchHistory(puuid, 0, 10);
-        if (matchList !== null) {
+        const matchList = await this.queryRawHistory(puuid, 0, 10);
+        if (matchList.length > 0) {
             return matchList.map((games) =>
                 this.parseMatch(games, puuid, targetSummonerId),
             );
@@ -172,38 +222,22 @@ class QueryMatch {
         queueId: number,
         targetSummonerId?: number,
     ): Promise<MatchItemTypes[]> => {
-        const latestMatch = await queryMatchHistory(puuid, 0, 10);
+        const latestMatch = await this.queryRawHistory(puuid, 0, 10);
         const specialList: MatchItemTypes[] = [];
 
-        let offset = 0;
-        while (offset < 30) {
-            const matchHistory =
-                offset === 0
-                    ? latestMatch
-                    : await queryMatchHistory(puuid, offset, offset + 10);
-            if (!matchHistory || matchHistory.length === 0) {
-                break;
-            }
-            const filterMatch = matchHistory.filter(
-                (games) => queueId === games.queueId,
-            );
-
-            for (const game of filterMatch) {
-                specialList.push(
-                    this.parseMatch(game, puuid, targetSummonerId),
-                );
-                if (specialList.length === 10) {
-                    return specialList;
-                }
-            }
-
-            offset += 10;
+        for (const game of latestMatch.filter(
+            (item) => queueId === item.queueId,
+        )) {
+            specialList.push(this.parseMatch(game, puuid, targetSummonerId));
         }
-        if (specialList.length === 0 && latestMatch !== null) {
+        // 首屏只读取最近一页；完整模式历史由后台分析任务按需补齐。
+        // 这样排位/大乱斗混合历史不会阻塞整个对局面板几十秒。
+        if (specialList.length === 0) {
             return latestMatch.map((games) =>
                 this.parseMatch(games, puuid, targetSummonerId),
             );
-        } else return specialList;
+        }
+        return specialList;
     };
 }
 

@@ -5,8 +5,9 @@ import { MatchModeKey } from "./matchMode";
 export interface CachedHistoryQuery {
   puuid: string;
   queueId?: number;
-  modeKey: MatchModeKey;
+  modeKey?: MatchModeKey;
   limit: number;
+  offset?: number;
 }
 
 interface CachedParticipant {

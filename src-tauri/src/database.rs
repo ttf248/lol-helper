@@ -97,8 +97,10 @@ pub struct CacheHistoryRequest {
 pub struct CachedHistoryQuery {
     pub puuid: String,
     pub queue_id: Option<i32>,
-    pub mode_key: String,
+    pub mode_key: Option<String>,
     pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,29 +325,25 @@ impl DatabaseState {
             .as_ref()
             .ok_or_else(|| "数据库连接不可用".to_string())?;
         let limit = request.limit.clamp(1, 300);
-        let game_rows = if let Some(queue_id) = request.queue_id {
-            client
-                .query(
-                    "SELECT DISTINCT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
-                     FROM matches m
-                     JOIN match_participants p ON p.game_id = m.game_id
-                     WHERE p.puuid = $1 AND m.queue_id = $2 AND m.mode_key = $3
-                     ORDER BY m.game_creation DESC LIMIT $4",
-                    &[&request.puuid, &queue_id, &request.mode_key, &limit],
-                )
-                .await
-        } else {
-            client
-                .query(
-                    "SELECT DISTINCT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
-                     FROM matches m
-                     JOIN match_participants p ON p.game_id = m.game_id
-                     WHERE p.puuid = $1 AND m.mode_key = $2
-                     ORDER BY m.game_creation DESC LIMIT $3",
-                    &[&request.puuid, &request.mode_key, &limit],
-                )
-                .await
-        }
+        let offset = request.offset.max(0);
+        let game_rows = client
+            .query(
+                "SELECT DISTINCT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
+                 FROM matches m
+                 JOIN match_participants p ON p.game_id = m.game_id
+                 WHERE p.puuid = $1
+                   AND ($2::TEXT IS NULL OR m.mode_key = $2)
+                   AND ($3::INTEGER IS NULL OR m.queue_id = $3)
+                 ORDER BY m.game_creation DESC LIMIT $4 OFFSET $5",
+                &[
+                    &request.puuid,
+                    &request.mode_key,
+                    &request.queue_id,
+                    &limit,
+                    &offset,
+                ],
+            )
+            .await
         .map_err(|error| error.to_string())?;
 
         if game_rows.is_empty() {

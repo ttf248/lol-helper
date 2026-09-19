@@ -271,6 +271,50 @@ const uniqueGames = (
 
 const historyCache = new Map<string, Promise<PlayerHistorySnapshot>>();
 
+const sortGames = (games: NormalizedHistoryGame[]) =>
+  Array.from(new Map(games.map((game) => [game.gameId, game])).values()).sort(
+    (left, right) => right.gameCreation - left.gameCreation,
+  );
+
+const queueHydration = new Map<string, Promise<void>>();
+
+const hydratePlayerQueueHistory = (
+  player: RecentSumInfo,
+  queueId: number,
+  existingGames: NormalizedHistoryGame[],
+) => {
+  const key = `${player.puuid}:${queueId}`;
+  const existing = queueHydration.get(key);
+  if (existing) return existing;
+
+  const request = (async () => {
+    const result = await queryMatchHistoryFullWithSource(
+      player.puuid,
+      0,
+      HISTORY_SCAN_LIMIT,
+    );
+    const fetchedGames = uniqueGames(result?.games ?? [], queueId, player);
+    const games = sortGames([
+      ...existingGames,
+      ...Array.from(fetchedGames.values()),
+    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+    if (games.length > 0) {
+      await cacheHistory({
+        puuid: player.puuid,
+        summonerId: player.summonerId,
+        summonerName: player.summonerName,
+        modeKey: modeForQueue(queueId),
+        source: result?.source || "unavailable",
+        games,
+      });
+    }
+  })().catch((error) => {
+    console.warn("Failed to hydrate full queue history", error);
+  });
+  queueHydration.set(key, request);
+  return request;
+};
+
 const loadPlayerHistory = async (
   player: RecentSumInfo,
   queueId: number,
@@ -290,6 +334,9 @@ const loadPlayerHistory = async (
       limit: RECENT_ANALYSIS_GAME_COUNT,
     });
     if (cachedGames.length > 0) {
+      if (cachedGames.length < RECENT_ANALYSIS_GAME_COUNT) {
+        void hydratePlayerQueueHistory(player, queueId, cachedGames);
+      }
       const limitedGames = new Map(
         cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
           game.gameId,
@@ -301,6 +348,21 @@ const loadPlayerHistory = async (
         games: limitedGames,
         source: "PostgreSQL 本地缓存",
         complete: limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT,
+      };
+    }
+
+    // PostgreSQL 不可用或首次缓存尚未写入时，直接复用首屏已取得的
+    // 最近 10 场。完整历史只在后台补齐，不能阻塞对局面板的首屏分析。
+    const quickGames = (Array.isArray(player.matchList) ? player.matchList : [])
+      .slice(0, RECENT_DEFAULT_GAME_COUNT)
+      .map((match, index) => quickMatchToGame(match, player, index));
+    if (quickGames.length > 0) {
+      void hydratePlayerQueueHistory(player, queueId, quickGames);
+      return {
+        puuid: player.puuid,
+        games: new Map(quickGames.map((game) => [game.gameId, game])),
+        source: "当前面板已加载的最近战绩",
+        complete: false,
       };
     }
 
@@ -336,11 +398,6 @@ const loadPlayerHistory = async (
 };
 
 const modeHydration = new Map<string, Promise<void>>();
-
-const sortGames = (games: NormalizedHistoryGame[]) =>
-  Array.from(new Map(games.map((game) => [game.gameId, game])).values()).sort(
-    (left, right) => right.gameCreation - left.gameCreation,
-  );
 
 const normalizeModeGames = (
   games: MatchHistoryGame[],
@@ -1144,6 +1201,7 @@ export const loadRecentTeamAnalysis = async (
         ),
         buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
         moderationMap.get(player.puuid) || emptyModeration(),
+        RECENT_DEFAULT_GAME_COUNT,
       );
     }
   }
