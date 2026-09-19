@@ -32,9 +32,14 @@ export class SgpMatchHistoryService {
 	}
 
 	private getBaseUrl() {
-		const localSumInfo: sumInfoTypes | null = JSON.parse(
-			localStorage.getItem("sumInfo") as string,
-		);
+		let localSumInfo: sumInfoTypes | null;
+		try {
+			localSumInfo = JSON.parse(
+				localStorage.getItem("sumInfo") || "null",
+			) as sumInfoTypes | null;
+		} catch {
+			return null;
+		}
 
 		if (!localSumInfo) {
 			return null;
@@ -47,45 +52,69 @@ export class SgpMatchHistoryService {
 		return sgpServer.matchHistory;
 	}
 
+	private fetchJsonWithTimeout = async <T = unknown>(
+		url: string,
+		options: Parameters<typeof fetch>[1],
+	): Promise<{ response: Response; body: string; data: T }> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			// SGP 的 SUMMARY 响应可能使用 chunked transfer。超时必须覆盖
+			// 建立连接、读取完整 body 和 JSON 解析，而不能只包住 fetch()。
+			const request = (async () => {
+				const response = await fetch(url, options);
+				const body = await response.text();
+				return {
+					response,
+					body,
+					data: JSON.parse(body) as T,
+				};
+			})();
+
+			return await Promise.race([
+				request,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() => reject(new Error(`SGP request timed out after ${this.TIMEOUT}ms`)),
+						this.TIMEOUT,
+					);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) {
+				clearTimeout(timer);
+			}
+		}
+	};
+
+	private isUnauthorizedError = (error: unknown): boolean =>
+		error instanceof Error && error.message.includes("SGP_HTTP_ERROR_401");
+
 	/**
 	 * 公开的查询方法：具备自动重试机制
 	 */
 	async getMatchHistory(params: SgpRequestParams): Promise<GamesBySgp[]> {
+		if (!this._cachedToken) {
+			const token = await this._tokenProvider();
+			if (!token) {
+				throw new Error("Failed to fetch SGP entitlement token");
+			}
+			this._cachedToken = token;
+		}
+
 		try {
-			// 1. 如果没有缓存的 Token，先获取一个
-			if (!this._cachedToken) {
-				const token = await this._tokenProvider();
-				if (!token) {
-					throw new Error("Failed to fetch token");
-				}
-				this._cachedToken = token;
-			}
-
-			// 2. 尝试第一次请求
 			return await this._doRequest(params, this._cachedToken);
-		} catch (error: any) {
-			// 3. 如果失败，尝试检查是否需要重试（通常是 401 Unauthorized）
-			console.warn(
-				"First SGP request failed, attempting to refresh token...",
-				error.message,
-			);
-
-			try {
-				// 4. 重新调用接口获取 Token 并更新缓存
-				const tokenSecond = await this._tokenProvider();
-				if (!tokenSecond) {
-					throw new Error("Failed to fetch token second");
-				}
-				this._cachedToken = tokenSecond;
-
-				// 5. 使用新 Token 进行第二次尝试
-				console.log("Retrying with new token...");
-				return await this._doRequest(params, this._cachedToken);
-			} catch (retryError) {
-				// 6. 如果第二次也失败了，抛出错误给上层
-				console.error("SGP request failed after token refresh.");
-				throw retryError;
+		} catch (error) {
+			// 只有令牌过期才刷新重试；网络超时等错误应尽快交给界面处理。
+			if (!this.isUnauthorizedError(error)) {
+				throw error;
 			}
+
+			const refreshedToken = await this._tokenProvider();
+			if (!refreshedToken) {
+				throw new Error("Failed to refresh SGP entitlement token");
+			}
+			this._cachedToken = refreshedToken;
+			return await this._doRequest(params, refreshedToken);
 		}
 	}
 
@@ -118,24 +147,27 @@ export class SgpMatchHistoryService {
 			: this.sgpBaseUrl;
 		const url = `${baseUrl}/match-history-query/v1/products/lol/player/${playerPuuid}/SUMMARY?${query.toString()}`;
 
-		const response = await fetch(url, {
+		const { response, body, data } = await this.fetchJsonWithTimeout<{
+			games?: unknown;
+		}>(url, {
 			method: "GET",
 			headers: {
 				"User-Agent": this.USER_AGENT,
 				Authorization: `Bearer ${token}`,
 				Accept: "application/json",
+				// 与 LeagueAkari 的 SGP 适配层保持一致：告知中间层收集
+				// chunked 响应，并声明 entitlements token 类型。
+				"x-akari-force-stream-collect": "true",
+				"x-akari-token-type": "entitlements",
 			},
 			connectTimeout: this.TIMEOUT,
 		});
 
 		if (!response.ok) {
 			// 如果状态码是 401，说明 Token 过期，此处抛出错误触发 catch 块中的重试
-			const errorText = await response.text();
-			throw new Error(`SGP_HTTP_ERROR_${response.status}: ${errorText}`);
+			throw new Error(`SGP_HTTP_ERROR_${response.status}: ${body.slice(0, 500)}`);
 		}
 
-		// 解析数据
-		const data = await response.json();
 		if (!Array.isArray(data?.games)) {
 			throw new Error("SGP match history response has no games array");
 		}

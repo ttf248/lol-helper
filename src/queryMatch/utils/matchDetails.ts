@@ -13,7 +13,7 @@ import {
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
-import { getCachedSgpMatch } from "@/lcu/aboutMatch";
+import { getCachedLcuMatch, getCachedSgpMatch } from "@/lcu/aboutMatch";
 import {
     GamesBySgp,
     Participant as SgpParticipant,
@@ -53,6 +53,38 @@ export default class MatchDetails {
             );
             if (sgpResult !== null) {
                 return sgpResult;
+            }
+        }
+
+        // 外部召唤师的 LCU PUUID 接口也可能直接返回完整十人对局。
+        // 优先复用缓存，避免客户端拒绝再次调用 /games/{gameId}。
+        const cachedLcuMatch = getCachedLcuMatch(gameId);
+        if (
+            cachedLcuMatch !== null &&
+            Array.isArray(cachedLcuMatch.participants) &&
+            Array.isArray(cachedLcuMatch.participantIdentities)
+        ) {
+            const lcuResult =
+                cachedLcuMatch.queueId === 1700
+                    ? this.getFighterParticipantsDetails(
+                          cachedLcuMatch as unknown as GameDetailedInfo,
+                          cachedLcuMatch.participants,
+                          cachedLcuMatch.participantIdentities as unknown as ParticipantIdentity[],
+                          gameId,
+                          sumId,
+                          cachedLcuMatch.queueId,
+                      )
+                    : this.getParticipantsDetails(
+                          cachedLcuMatch as unknown as GameDetailedInfo,
+                          cachedLcuMatch.participants,
+                          cachedLcuMatch.participantIdentities as unknown as ParticipantIdentity[],
+                          sumId,
+                          cachedLcuMatch.queueId,
+                          gameId,
+                          sumPuuid,
+                      );
+            if (lcuResult !== null) {
+                return lcuResult;
             }
         }
 

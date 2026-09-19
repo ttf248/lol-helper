@@ -3,6 +3,7 @@ import MatchList from "./matchList.vue";
 import MatchContent from "../common/matchContent.vue";
 import useMatchStore from "@/queryMatch/store";
 import {NResult} from "naive-ui";
+import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
 
 const matchStore = useMatchStore()
 const searchSum = (summonerId: number) => {
@@ -14,7 +15,7 @@ const searchSum = (summonerId: number) => {
   <div class="flex h-full box-border">
     <match-list/>
     <div class="flex-grow p-3 ml-7"
-         :key="matchStore.participantsInfo.gameId"
+         :key="matchStore.participantsInfo?.gameId ?? 'match-detail-loading'"
          v-if="matchStore.participantsInfo !== null">
       <match-content
         :header-info="matchStore.participantsInfo.headerInfo"
@@ -28,12 +29,17 @@ const searchSum = (summonerId: number) => {
       />
     </div>
     <div class="w-full flex justify-center items-center"
+         style="height: 594px;"
+         v-else-if="matchStore.detailLoading">
+      <loading-anime />
+    </div>
+    <div class="w-full flex justify-center items-center"
          style="height: 594px;" v-else-if="!matchStore.matchLoading&&matchStore.participantsInfo===null">
       <n-result
         size="large"
         status="418"
         title="获取当前战绩数据异常"
-        description="请在左侧切换其它战绩, 尝试再次获取数据..."
+        :description="matchStore.matchError || '请在左侧切换其它战绩，尝试再次获取数据。'"
       >
       </n-result>
     </div>

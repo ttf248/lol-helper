@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Ref, ref } from "vue";
-import { NDrawer } from "naive-ui";
+import { NDrawer, NDrawerContent, NResult, NSpin } from "naive-ui";
 import MatchDetails from "./matchDetails.vue";
 import MatchConHeader from "./matchConHeader.vue";
 import { queryRankPoint } from "@/lcu/aboutSummoner";
@@ -24,6 +24,8 @@ const rotatedIndex = ref(0);
 const isMatchDra = ref(false);
 const isAllowAdd = ref(true);
 const curMatchDraData: Ref<null | SumDetail> = ref(null);
+const drawerLoading = ref(false);
+const drawerError = ref<string | null>(null);
 const titleArr = [
     ["totalDamageDealtToChampions", "输出伤害"],
     ["totalDamageTaken", "承受伤害"],
@@ -41,17 +43,31 @@ const openMatchDra = async (summonerId: number) => {
         // 如果是游戏里面的窗口显示此页面，不让打开抽屉窗口
         return;
     }
-    const allTeam = teamOne.concat(teamTwo);
-    const summonerInfo = allTeam.find((v) => v.accountId === summonerId);
-    isAllowAdd.value =
-        allTeam.find(
-            (v) =>
-                v.accountId ===
-                JSON.parse(localStorage.getItem("sumInfo") as string)
-                    .summonerId,
-        ) !== undefined;
-    curMatchDraData.value = await getDrawerData(summonerInfo);
+    drawerLoading.value = true;
+    drawerError.value = null;
+    curMatchDraData.value = null;
     isMatchDra.value = true;
+    try {
+        const allTeam = teamOne.concat(teamTwo);
+        const summonerInfo = allTeam.find((v) => v.accountId === summonerId);
+        if (summonerInfo === undefined) {
+            throw new Error("当前对局没有该玩家的完整身份数据");
+        }
+        isAllowAdd.value =
+            allTeam.find(
+                (v) =>
+                    v.accountId ===
+                    JSON.parse(localStorage.getItem("sumInfo") as string)
+                        .summonerId,
+            ) !== undefined;
+        curMatchDraData.value = await getDrawerData(summonerInfo);
+    } catch (error) {
+        console.error("Failed to load player match details", error);
+        drawerError.value =
+            "该玩家的召唤师信息或排位接口没有返回数据，请稍后重试。";
+    } finally {
+        drawerLoading.value = false;
+    }
 };
 
 const getDrawerData = async (
@@ -86,6 +102,10 @@ const getDrawerData = async (
 };
 
 const searchSummoner = () => {
+    if (curMatchDraData.value === null) {
+        drawerError.value = "当前没有可用的玩家数据，无法查询详细战绩。";
+        return;
+    }
     isMatchDra.value = false;
     emits("changeSum", curMatchDraData.value?.summonerId);
 };
@@ -136,8 +156,21 @@ const searchSummoner = () => {
         :width="265"
         placement="left"
     >
+        <n-drawer-content v-if="drawerLoading" body-content-style="padding: 24px 12px">
+            <div class="h-full flex flex-col justify-center items-center gap-3">
+                <n-spin size="large" />
+                <span>正在查询玩家数据...</span>
+            </div>
+        </n-drawer-content>
+        <n-drawer-content v-else-if="drawerError" body-content-style="padding: 12px">
+            <n-result
+                status="warning"
+                title="玩家数据不可用"
+                :description="drawerError"
+            />
+        </n-drawer-content>
         <match-drawer
-            v-if="curMatchDraData !== null"
+            v-else-if="curMatchDraData !== null"
             :search-summoner="searchSummoner"
             :is-allow-add="isAllowAdd"
             :game-id="gameId"

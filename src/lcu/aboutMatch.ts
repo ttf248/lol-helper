@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { invokeLcu } from "./index";
 import { SgpMatchHistoryService } from "./sgpMatch";
 import {
@@ -22,6 +21,18 @@ const tokenFetcher = async (): Promise<string | null> => {
 };
 
 const sgpService = new SgpMatchHistoryService(tokenFetcher);
+const lcuMatchCache = new Map<number, Games>();
+
+const cacheLcuGames = (games: Games[]) => {
+	for (const game of games) {
+		if (typeof game?.gameId === "number") {
+			lcuMatchCache.set(game.gameId, game);
+		}
+	}
+};
+
+export const getCachedLcuMatch = (gameId: number): Games | null =>
+	lcuMatchCache.get(gameId) ?? null;
 
 const isCurrentSummoner = (puuid: string): boolean => {
 	try {
@@ -43,14 +54,46 @@ const fetchCurrentSummonerMatchHistory = async (
 	count: number,
 ): Promise<Games[] | null> => {
 	try {
-		const matchList = await invoke<LcuMatchList | null>("get_match_list", {
-			uri: "/lol-match-history/v1/products/lol/current-summoner/matches",
-		});
+		const matchList = await invokeLcu<LcuMatchList>(
+			"get",
+			"/lol-match-history/v1/products/lol/current-summoner/matches",
+		);
 		const games = matchList?.games?.games;
 		if (!Array.isArray(games)) {
 			return null;
 		}
+		cacheLcuGames(games);
 		return games.slice(begIndex, begIndex + count);
+	} catch {
+		return null;
+	}
+};
+
+/**
+ * LCU 仍然提供按 PUUID 查询历史记录的接口。它不应和
+ * current-summoner endpoint 混用：前者可查询同区其它召唤师，后者只代表
+ * 当前登录用户。腾讯服客户端对这个接口的兼容性通常比 SGP 更好，优先尝试。
+ */
+const fetchSummonerMatchHistoryFromLcu = async (
+	puuid: string,
+	begIndex: number,
+	count: number,
+): Promise<Games[] | null> => {
+	try {
+		const query = new URLSearchParams({
+			begIndex: String(begIndex),
+			endIndex: String(begIndex + count),
+		});
+		const matchList = await invokeLcu<LcuMatchList>(
+			"get",
+			`/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches?${query.toString()}`,
+		);
+		const games = matchList?.games?.games;
+		if (!Array.isArray(games)) {
+			return null;
+		}
+		cacheLcuGames(games);
+		return games;
 	} catch {
 		return null;
 	}
@@ -72,11 +115,16 @@ const fetchMatchHistory = async (
 		}
 	}
 
-	// const uri = `/lol-match-history/v1/products/lol/${puuid}/matches`;
-	// const matchList = await invoke<LcuMatchList | null>("get_match_list", {
-	// 	uri,
-	// });
-	// console.log(matchList);
+	// 先走 LCU 的 PUUID endpoint。对于腾讯服，它通常能直接返回他人的
+	// 简要战绩；只有客户端拒绝或返回空结果时才需要 SGP。
+	const lcuGames = await fetchSummonerMatchHistoryFromLcu(
+		puuid,
+		begIndex,
+		endIndex,
+	);
+	if (lcuGames !== null && lcuGames.length > 0) {
+		return lcuGames;
+	}
 
 	try {
 		return await sgpService.getMatchHistory({
@@ -84,17 +132,17 @@ const fetchMatchHistory = async (
 			start: begIndex,
 			count: endIndex,
 		});
-	} catch (err) {
-		const query = new URLSearchParams({
-			begIndex: String(begIndex),
-			endIndex: String(begIndex + endIndex),
-		});
-		const uri = `/lol-match-history/v1/products/lol/${puuid}/matches?${query.toString()}`;
-		const matchList = await invoke<LcuMatchList | null>("get_match_list", {
-			uri,
-		});
-		if (matchList === null) return [];
-		return matchList.games.games || [];
+	} catch (sgpError) {
+		console.warn("SGP match history request failed, trying LCU fallback", sgpError);
+		const fallbackGames = await fetchSummonerMatchHistoryFromLcu(
+			puuid,
+			begIndex,
+			endIndex,
+		);
+		if (fallbackGames === null) {
+			throw new Error("Match history interfaces returned no data");
+		}
+		return fallbackGames;
 	}
 };
 

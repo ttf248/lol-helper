@@ -38,7 +38,9 @@ export default class BaseMatch {
         }
 
         return matchList
-            .map((matchListElement) => this.getSimpleMatch(matchListElement))
+            .map((matchListElement) =>
+                this.getSimpleMatch(matchListElement, puuid),
+            )
             .filter(
                 (match): match is SimpleMatchDetailsTypes => match !== null,
             );
@@ -46,9 +48,22 @@ export default class BaseMatch {
 
     public getSimpleMatch = (
         match: Games | GamesBySgp,
+        targetPuuid?: string,
     ): SimpleMatchDetailsTypes | null => {
         // 1. 确定参与者数据源
-        const participant = match.participants?.[0];
+        const participant = match.participants?.find((item: any) => {
+            if (item?.puuid === targetPuuid) {
+                return true;
+            }
+            if (targetPuuid && "participantIdentities" in match) {
+                return match.participantIdentities?.some(
+                    (identity) =>
+                        identity.participantId === item?.participantId &&
+                        (identity.player as any).puuid === targetPuuid,
+                );
+            }
+            return false;
+        }) ?? match.participants?.[0];
         if (!participant || typeof match.gameId !== "number") {
             return null;
         }
@@ -99,7 +114,9 @@ export default class BaseMatch {
         );
 
         return specialList
-            .map((matchListElement) => this.getSimpleMatch(matchListElement))
+            .map((matchListElement) =>
+                this.getSimpleMatch(matchListElement, puuid),
+            )
             .filter(
                 (match): match is SimpleMatchDetailsTypes => match !== null,
             );

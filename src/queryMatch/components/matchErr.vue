@@ -2,6 +2,8 @@
 import {NResult,NButton} from "naive-ui"
 import {open} from "@tauri-apps/plugin-shell";
 
+const props = defineProps<{ message?: string }>();
+
 const openWeb = () => {
    open('https://www.yuque.com/java-s/frank/bug')
 }
@@ -13,7 +15,7 @@ const openWeb = () => {
       size="large"
       status="500"
       title="查询战绩数据失败"
-      description="或许这与英雄联盟服务器有关"
+      :description="props.message || '或许这与英雄联盟服务器有关'"
     >
       <template #footer>
         <n-button @click="openWeb" type="error">查看详情</n-button>

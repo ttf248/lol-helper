@@ -74,11 +74,9 @@ const searchSum = async () => {
       return
     }
 
-    if (sumInfo.privacy && sumInfo.privacy !== 'PUBLIC') {
-      message.error('当前召唤师战绩为隐藏状态')
-      return
-    }
-
+    // privacy 只表示召唤师资料的可见性，不等于 SGP 战绩接口的访问权限。
+    // LCU 已经返回了有效的 summonerId/PUUID，交由 matchStore 选择正确的
+    // 当前用户 LCU 或他人 SGP 数据源，不在这里提前拦截查询。
     await matchStore.init(sumInfo.currentId)
     clearVal()
   } finally {

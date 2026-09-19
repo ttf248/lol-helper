@@ -75,7 +75,10 @@ const clearBlackMatch = () => {
                     style="height: 596px"
                     content-style="padding:0 0 0 12px"
                 >
-                    <match-err v-if="matchStore.matchList === null" />
+                    <match-err
+                        v-if="matchStore.matchList === null"
+                        :message="matchStore.matchError || undefined"
+                    />
                     <match-main
                         v-else-if="matchStore.matchList.length !== 0"
                         :summoner-id="matchStore.summonerId"
@@ -87,8 +90,11 @@ const clearBlackMatch = () => {
                         <n-result
                             size="large"
                             status="404"
-                            title="召唤师数据为空"
-                            description="此页数不存在数据，请返回前一页"
+                            title="没有可展示的战绩"
+                            :description="
+                                matchStore.matchError ||
+                                '此页不存在数据，请返回前一页'
+                            "
                         >
                             <template #footer>
                                 <n-button type="error">
@@ -128,6 +134,7 @@ const clearBlackMatch = () => {
                 :team-two="blackMatchDetails[0].teamTwo"
                 :summoner-id="blackMatchDetails[1]"
                 :is-game-in="true"
+                :game-id="blackMatchDetails[0].gameId"
                 :team-one="blackMatchDetails[0].teamOne"
             />
         </n-drawer-content>
