@@ -28,6 +28,7 @@ import {
   RecentNetworkEdge,
   RecentNetworkNode,
   RecentSumInfo,
+  TeammateSynergyStats,
   WinRateTrendPoint,
 } from "@/recentMatch/utils/queryTypes";
 import {
@@ -1293,6 +1294,73 @@ const buildPlayerPartyGroups = (
     );
 };
 
+const buildTeammateSynergy = (
+  player: RecentSumInfo,
+  snapshot: PlayerHistorySnapshot,
+  moderationMap: Map<string, PlayerModerationInfo>,
+): TeammateSynergyStats[] => {
+  const teammateGames = new Map<
+    string,
+    { player: RecentSumInfo; games: NormalizedHistoryGame[] }
+  >();
+
+  for (const game of snapshot.games.values()) {
+    const ownParticipant = findPlayerParticipant(game, player);
+    if (!ownParticipant || ownParticipant.teamId <= 0) continue;
+
+    for (const participant of game.participants) {
+      if (
+        participant.teamId !== ownParticipant.teamId ||
+        participant.teamId <= 0 ||
+        participantMatchesPlayer(participant, player)
+      ) {
+        continue;
+      }
+
+      const existing = teammateGames.get(participant.puuid) || {
+        player: {
+          summonerId: participant.summonerId || 0,
+          summonerName: participant.summonerName || participant.puuid,
+          puuid: participant.puuid,
+          championUrl: "",
+          champId: participant.championId,
+          teamParticipantId: 0,
+          matchList: [],
+        },
+        games: [],
+      };
+      existing.games.push(game);
+      teammateGames.set(participant.puuid, existing);
+    }
+  }
+
+  return Array.from(teammateGames.values())
+    .map(({ player: teammate, games }) => {
+      const ownParticipants = games
+        .map((game) => findPlayerParticipant(game, player))
+        .filter(
+          (participant): participant is NormalizedHistoryParticipant =>
+            participant !== undefined,
+        );
+      const wins = ownParticipants.filter((participant) => participant.win).length;
+      return {
+        teammate: toPartyMember(teammate, moderationMap),
+        games: ownParticipants.length,
+        wins,
+        winRate: roundRate(wins, ownParticipants.length) ?? 0,
+        champions: buildChampionStats(games, player),
+        positions: buildPositionStats(games, player),
+        latestGameAt: Math.max(...games.map((game) => game.gameCreation)),
+      } satisfies TeammateSynergyStats;
+    })
+    .sort(
+      (left, right) =>
+        right.games - left.games ||
+        right.winRate - left.winRate ||
+        right.latestGameAt - left.latestGameAt,
+    );
+};
+
 const buildPlayerAnalysis = (
   player: RecentSumInfo,
   snapshot: PlayerHistorySnapshot,
@@ -1519,6 +1587,11 @@ export const loadPlayerModeAnalysis = async (
     buildOpponentStats(player, opponentPlayers, snapshots, moderationMap),
     moderationMap.get(player.puuid) || emptyModeration(),
     requestedGames,
+  );
+  playerAnalysis.teammateSynergy = buildTeammateSynergy(
+    player,
+    snapshot,
+    moderationMap,
   );
   playerAnalysis.network = buildNetworkAnalysis(
     [player, ...partyPlayers.slice(0, 5)],

@@ -273,6 +273,16 @@ export interface PartyGroupAnalysis {
   evidence: PartyEvidence[];
 }
 
+export interface TeammateSynergyStats {
+  teammate: PartyMember;
+  games: number;
+  wins: number;
+  winRate: number;
+  champions: ChampionRecentStats[];
+  positions: PositionRecentStats[];
+  latestGameAt: number;
+}
+
 export interface PlayerRecentAnalysis {
   requestedGames: number;
   actualGames: number;
@@ -284,6 +294,7 @@ export interface PlayerRecentAnalysis {
   positions: PositionRecentStats[];
   opponents: OpponentMatchupStats[];
   partyGroups: PartyGroupAnalysis[];
+  teammateSynergy?: TeammateSynergyStats[];
   confidence: ConfidenceInfo;
   moderation: PlayerModerationInfo;
   source: string;

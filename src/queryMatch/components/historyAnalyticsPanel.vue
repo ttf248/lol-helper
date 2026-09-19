@@ -30,6 +30,7 @@ import {
   PlayerAnalysisProgress,
   PartyGroupAnalysis,
   RecentSumInfo,
+  TeammateSynergyStats,
 } from "@/recentMatch/utils/queryTypes";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
@@ -140,6 +141,20 @@ const lastActiveLabel = (group: PartyGroupAnalysis) => {
   if (group.lastActiveDays === null) return "未知";
   if (group.lastActiveDays === 0) return "今天";
   return `${group.lastActiveDays}天前`;
+};
+
+const synergyChampionSummary = (item: TeammateSynergyStats) => {
+  const champion = item.champions[0];
+  return champion
+    ? `${championName(champion.championId)} ${formatRate(champion.winRate)}`
+    : "暂无英雄数据";
+};
+
+const synergyPositionSummary = (item: TeammateSynergyStats) => {
+  const position = item.positions[0];
+  return position
+    ? `${positionName(position.position)} ${formatRate(position.winRate)}`
+    : "暂无位置数据";
 };
 
 const loadAnalysis = async () => {
@@ -383,6 +398,39 @@ onMounted(() => {
           </n-card>
         </div>
 
+        <n-card size="small" title="队友协同表现" :bordered="false">
+          <div class="party-ranking-caption">
+            统计我与每名队友实际同队的对局；英雄和位置展示的是我在这些共同对局中的表现。
+          </div>
+          <div v-if="analysis.teammateSynergy?.length" class="synergy-list">
+            <div
+              v-for="item in analysis.teammateSynergy.slice(0, 8)"
+              :key="item.teammate.puuid"
+              class="synergy-row"
+            >
+              <div class="synergy-name" :title="item.teammate.summonerName">
+                {{ item.teammate.summonerName }}
+                <n-tag v-if="item.teammate.moderation?.marked" size="tiny" type="error">
+                  黑名单
+                </n-tag>
+                <n-tag
+                  v-else-if="item.teammate.moderation?.reportCount"
+                  size="tiny"
+                  type="info"
+                >
+                  有举报
+                </n-tag>
+              </div>
+              <div class="text-xs text-gray-500">
+                一起 {{ item.games }} 场 · 我胜率 {{ formatRate(item.winRate) }} ·
+                常用英雄 {{ synergyChampionSummary(item) }} ·
+                常用位置 {{ synergyPositionSummary(item) }}
+              </div>
+            </div>
+          </div>
+          <n-empty v-else size="small" description="暂无完整队友协同数据" />
+        </n-card>
+
         <n-card size="small" title="我常和谁开黑 · 组合 Top 5" :bordered="false">
           <div class="party-ranking-caption">
             基于 PostgreSQL 当前模式最近 {{ partyAnalysisGames }} 场完整对局；
@@ -607,7 +655,8 @@ onMounted(() => {
 .hero-list,
 .position-list,
 .relation-list,
-.opponent-list {
+.opponent-list,
+.synergy-list {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -620,6 +669,24 @@ onMounted(() => {
 .opponent-row {
   gap: 0.35rem;
   font-size: 0.72rem;
+}
+
+.synergy-row {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.synergy-row:last-child {
+  border-bottom: 0;
+}
+
+.synergy-name {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .trend-row :deep(.n-progress),
