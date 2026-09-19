@@ -127,6 +127,7 @@ const fetchMatchHistory = async (
 	puuid: string,
 	begIndex: number,
 	endIndex: number,
+	fullParticipants = false,
 ): Promise<MatchHistoryBatchResult> => {
 	if (isCurrentSummoner(puuid)) {
 		const currentGames = await fetchCurrentSummonerMatchHistory(
@@ -150,11 +151,14 @@ const fetchMatchHistory = async (
 	}
 
 	try {
-		const sgpGames = await sgpService.getMatchHistory({
+		const sgpRequest = {
 			playerPuuid: puuid,
 			start: begIndex,
 			count: endIndex,
-		});
+		};
+		const sgpGames = fullParticipants
+			? await sgpService.getFullMatchHistory(sgpRequest)
+			: await sgpService.getMatchHistory(sgpRequest);
 		return { games: sgpGames, source: "sgp" };
 	} catch (sgpError) {
 		console.warn("SGP match history request failed, trying LCU fallback", sgpError);
@@ -181,8 +185,9 @@ const splitRequests = async (
 	puuid: string,
 	begIndex: number,
 	endIndex: number,
+	fullParticipants = false,
 ): Promise<MatchHistoryBatchResult> => {
-	const step = 10; // 每次请求 10 条
+	const step = 20; // 接口单次最多请求 20 条
 	let allGames: MatchHistoryGame[] = [];
 	const sources: MatchHistorySource[] = [];
 
@@ -202,11 +207,15 @@ const splitRequests = async (
 			puuid,
 			currentStartIndex,
 			currentCount,
+			fullParticipants,
 		);
 		sources.push(result.source);
 
 		if (result.games.length > 0) {
 			allGames = allGames.concat(result.games);
+		} else {
+			// 已经到达历史末尾，避免为不存在的分页继续请求。
+			break;
 		}
 
 		// 4. 频率限制：如果还有下一页，则延迟
@@ -224,15 +233,34 @@ export const queryMatchHistoryWithSource = async (
 	begIndex: number,
 	endIndex: number,
 ): Promise<MatchHistoryQueryResult | null> => {
+	return queryMatchHistoryWithSourceInternal(puuid, begIndex, endIndex, false);
+};
+
+const queryMatchHistoryWithSourceInternal = async (
+	puuid: string,
+	begIndex: number,
+	endIndex: number,
+	fullParticipants: boolean,
+): Promise<MatchHistoryQueryResult | null> => {
 	try {
 		let result: MatchHistoryBatchResult;
 		const MAX_REQUEST_SIZE = 20;
 
 		// 如果请求范围超过最大限制，拆分请求
 		if (endIndex - begIndex > MAX_REQUEST_SIZE) {
-			result = await splitRequests(puuid, begIndex, endIndex);
+			result = await splitRequests(
+				puuid,
+				begIndex,
+				endIndex,
+				fullParticipants,
+			);
 		} else {
-			result = await fetchMatchHistory(puuid, begIndex, endIndex - begIndex);
+			result = await fetchMatchHistory(
+				puuid,
+				begIndex,
+				endIndex - begIndex,
+				fullParticipants,
+			);
 		}
 
 		// 如果没有获取到游戏数据，返回空数组
@@ -255,6 +283,14 @@ export const queryMatchHistoryWithSource = async (
 		return null;
 	}
 };
+
+/** 查询完整 participant 列表，供对局内近期胜率和开黑分析使用。 */
+export const queryMatchHistoryFullWithSource = async (
+	puuid: string,
+	begIndex: number,
+	endIndex: number,
+): Promise<MatchHistoryQueryResult | null> =>
+	queryMatchHistoryWithSourceInternal(puuid, begIndex, endIndex, true);
 
 // 兼容其它页面原有的数组返回格式。
 export const queryMatchHistory = async (

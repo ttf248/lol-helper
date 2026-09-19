@@ -120,6 +120,7 @@ export interface RecentSumInfo {
   champId:number;
   teamParticipantId: number;
   matchList: MatchItemTypes[];
+  recentAnalysis?: PlayerRecentAnalysis;
 }
 
 export interface RecentAllSumInfo {
@@ -136,6 +137,127 @@ export interface MatchItemTypes {
   isWin: boolean;
   gameId: number;
   queueId: number;
+}
+
+export interface ChampionRecentStats {
+  championId: number;
+  games: number;
+  wins: number;
+  winRate: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+
+export type ConfidenceLevel = "high" | "medium" | "low";
+
+export interface ConfidenceInfo {
+  level: ConfidenceLevel;
+  score: number;
+  reasons: string[];
+}
+
+export interface WinRateTrendPoint {
+  window: 20 | 50 | 100;
+  games: number;
+  wins: number;
+  winRate: number | null;
+}
+
+export interface PositionRecentStats {
+  position: string;
+  games: number;
+  wins: number;
+  winRate: number;
+  champions: ChampionRecentStats[];
+}
+
+export interface ModerationRecord {
+  tag: string;
+  content: string;
+  isShow: boolean;
+  updatedAt: string;
+  playerSumName: string;
+}
+
+export interface PlayerModerationInfo {
+  available: boolean;
+  marked: boolean;
+  reportCount: number;
+  blacklistCount: number;
+  positiveCount: number;
+  records: ModerationRecord[];
+}
+
+export interface PartyMember {
+  puuid: string;
+  summonerName: string;
+  moderation?: PlayerModerationInfo;
+}
+
+export interface PartyGroupAnalysis {
+  members: PartyMember[];
+  games: number;
+  wins: number;
+  winRate: number;
+  latestGameAt: number;
+  recentGames: number;
+  lastActiveDays: number | null;
+  stabilityScore: number;
+  stabilityLevel: ConfidenceLevel;
+  highWinRateAlert: boolean;
+  confidence: ConfidenceInfo;
+  moderationAvailable: boolean;
+  blacklistedMembers: PartyMember[];
+  reportedMembers: PartyMember[];
+}
+
+export interface PlayerRecentAnalysis {
+  requestedGames: number;
+  actualGames: number;
+  wins: number;
+  winRate: number | null;
+  currentChampion: ChampionRecentStats | null;
+  champions: ChampionRecentStats[];
+  trends: WinRateTrendPoint[];
+  positions: PositionRecentStats[];
+  opponents: OpponentMatchupStats[];
+  partyGroups: PartyGroupAnalysis[];
+  confidence: ConfidenceInfo;
+  moderation: PlayerModerationInfo;
+  source: string;
+  historyComplete: boolean;
+}
+
+export interface OpponentMatchupStats {
+  opponent: PartyMember;
+  games: number;
+  wins: number;
+  opponentWins: number;
+  winRate: number;
+}
+
+export interface RecentNetworkNode {
+  puuid: string;
+  summonerName: string;
+  team: "friend" | "enemy";
+  teamIndex: number;
+}
+
+export interface RecentNetworkEdge {
+  source: string;
+  target: string;
+  sharedGames: number;
+  sameTeamGames: number;
+  opposedGames: number;
+  sourceWins: number;
+  targetWins: number;
+}
+
+export interface RecentNetworkAnalysis {
+  nodes: RecentNetworkNode[];
+  edges: RecentNetworkEdge[];
+  availableGames: number;
 }
 
 export interface SuperChampTypes {

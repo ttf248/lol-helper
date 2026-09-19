@@ -7,6 +7,9 @@ interface Player {
 	profileIcon: number;
 	summonerId: number;
 	summonerName: string;
+	puuid?: string;
+	gameName?: string;
+	tagLine?: string;
 }
 
 interface ParticipantIdentity {

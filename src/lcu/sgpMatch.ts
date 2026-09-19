@@ -93,6 +93,21 @@ export class SgpMatchHistoryService {
 	 * 公开的查询方法：具备自动重试机制
 	 */
 	async getMatchHistory(params: SgpRequestParams): Promise<GamesBySgp[]> {
+		return this.requestMatchHistory(params, false);
+	}
+
+	/**
+	 * 返回 SUMMARY 中的完整对局。普通历史列表只需要目标玩家，
+	 * 但组队/开黑分析必须保留同局的全部 participants。
+	 */
+	async getFullMatchHistory(params: SgpRequestParams): Promise<GamesBySgp[]> {
+		return this.requestMatchHistory(params, true);
+	}
+
+	private async requestMatchHistory(
+		params: SgpRequestParams,
+		fullParticipants: boolean,
+	): Promise<GamesBySgp[]> {
 		if (!this._cachedToken) {
 			const token = await this._tokenProvider();
 			if (!token) {
@@ -102,7 +117,7 @@ export class SgpMatchHistoryService {
 		}
 
 		try {
-			return await this._doRequest(params, this._cachedToken);
+			return await this._doRequest(params, this._cachedToken, fullParticipants);
 		} catch (error) {
 			// 只有令牌过期才刷新重试；网络超时等错误应尽快交给界面处理。
 			if (!this.isUnauthorizedError(error)) {
@@ -114,7 +129,7 @@ export class SgpMatchHistoryService {
 				throw new Error("Failed to refresh SGP entitlement token");
 			}
 			this._cachedToken = refreshedToken;
-			return await this._doRequest(params, refreshedToken);
+			return await this._doRequest(params, refreshedToken, fullParticipants);
 		}
 	}
 
@@ -124,6 +139,7 @@ export class SgpMatchHistoryService {
 	private async _doRequest(
 		params: SgpRequestParams,
 		token: string,
+		fullParticipants = false,
 	): Promise<GamesBySgp[]> {
 		if (this.sgpBaseUrl === null) {
 			const baseUrl = this.getBaseUrl();
@@ -190,7 +206,11 @@ export class SgpMatchHistoryService {
 				);
 
 				if (participant) {
-					result.push({ ...games, participants: [participant] });
+					result.push(
+						fullParticipants
+							? games
+							: { ...games, participants: [participant] },
+					);
 				}
 				return result;
 			},

@@ -7,6 +7,7 @@ import {
     ChampInfoTypes,
     ChampTinyTypes,
     RecentAllSumInfo,
+    RecentNetworkAnalysis,
     RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 import QueryMatch from "@/recentMatch/utils/queryMatch";
@@ -20,6 +21,8 @@ import { emitTo, once } from "@tauri-apps/api/event";
 import { window } from "@tauri-apps/api";
 import ChampInfo from "@/recentMatch/components/champInfo.vue";
 import { requestFetch } from "@/main/utils/request.ts";
+import { loadRecentTeamAnalysis } from "@/recentMatch/utils/recentAnalytics";
+import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 
 const querySummoner = new QuerySummoner();
 const queryMatch = new QueryMatch();
@@ -32,6 +35,9 @@ const eScoreMax = ref(0);
 const queueId: Ref<number> = ref(0);
 const winCount = ref({ friend: [0, 0], enemy: [0, 0] });
 const isFriCount = ref(true);
+const recentAnalysisLoading = ref(false);
+const isNetworkModal = ref(false);
+const networkAnalysis: Ref<RecentNetworkAnalysis | null> = ref(null);
 
 const currentId = ref(0);
 const matchDetials = new MatchDetails();
@@ -121,6 +127,23 @@ const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
                 winCount.value.friend[0] >= winCount.value.enemy[0];
             fScoreMax.value = getMaxSummonerStateScore(friendList.value);
             eScoreMax.value = getMaxSummonerStateScore(enemyList.value);
+
+            // 基础卡片先展示，完整 100 场分析在后台按 3 名玩家并发加载。
+            recentAnalysisLoading.value = true;
+            void loadRecentTeamAnalysis(
+                friendList.value,
+                enemyList.value,
+                allSumInfo.queueId,
+            )
+                .then((analysis) => {
+                    networkAnalysis.value = analysis;
+                })
+                .catch((error) => {
+                    console.error("Failed to load recent team analysis", error);
+                })
+                .finally(() => {
+                    recentAnalysisLoading.value = false;
+                });
         });
 };
 
@@ -265,9 +288,11 @@ const getMaxSummonerStateScore = (
 <template>
     <div class="main bg-neutral-100 dark:bg-neutral-900">
         <dashboard
+            @open-network="isNetworkModal = true"
             :win-count="winCount"
             :is-fri-count="isFriCount"
             :queue-id="queueId"
+            :analysis-loading="recentAnalysisLoading"
         />
 
         <null-page v-if="isLcuErr" />
@@ -279,6 +304,7 @@ const getMaxSummonerStateScore = (
                 :sum-list="friendList"
                 :queue-id="queueId"
                 :is-fri="true"
+                :analysis-loading="recentAnalysisLoading"
             />
             <recent-match-list
                 @show-detail="openDetailDrawer"
@@ -286,6 +312,7 @@ const getMaxSummonerStateScore = (
                 :sum-list="enemyList"
                 :queue-id="queueId"
                 :is-fri="false"
+                :analysis-loading="recentAnalysisLoading"
             />
         </div>
     </div>
@@ -334,6 +361,19 @@ const getMaxSummonerStateScore = (
                 >
                 </n-result>
             </div>
+        </div>
+    </n-drawer>
+
+    <n-drawer
+        v-model:show="isNetworkModal"
+        placement="bottom"
+        height="420px"
+        :auto-focus="false"
+    >
+        <div
+            class="bg-white text-neutral-900 p-4 h-full box-border dark:bg-zinc-900 dark:text-neutral-200"
+        >
+            <recent-network-graph :analysis="networkAnalysis" />
         </div>
     </n-drawer>
 </template>

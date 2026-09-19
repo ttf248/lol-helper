@@ -29,11 +29,13 @@ import { HexInfoTypes } from "@/main/views/rune/runeTypes";
 import { champDict } from "@/resources/champList";
 import BrandLockup from "@/components/BrandLockup.vue";
 
-const { winCount, isFriCount, queueId } = defineProps<{
+const { winCount, isFriCount, queueId, analysisLoading } = defineProps<{
 	winCount: { friend: number[]; enemy: number[] };
 	isFriCount: boolean;
 	queueId: number;
+	analysisLoading: boolean;
 }>();
+const emits = defineEmits<{ openNetwork: [] }>();
 const config: ConfigSettingTypes = reactive(
 	JSON.parse(<string>localStorage.getItem("configSetting")),
 );
@@ -161,6 +163,14 @@ const changeConfig = () => {
 				>
 					显示•隐藏&nbsp;&nbsp;&nbsp;&nbsp;Shift + Tab
 				</n-tag>
+				<n-tag
+					class="h-10 ml-2"
+					:bordered="false"
+					:type="analysisLoading ? 'warning' : 'success'"
+					style="cursor: default !important"
+				>
+					{{ analysisLoading ? "近期100场分析中" : "近期100场分析已完成" }}
+				</n-tag>
 			</div>
 		</div>
 
@@ -184,6 +194,14 @@ const changeConfig = () => {
 					<template #icon>
 						<N-icon :size="20" :component="Bulb" />
 					</template>
+				</n-button>
+				<n-button
+					:focusable="false"
+					@click="emits('openNetwork')"
+					style="padding: 12px"
+					type="default"
+				>
+					关系图
 				</n-button>
 				<n-button
 					:focusable="false"
@@ -251,12 +269,13 @@ const changeConfig = () => {
 			<p class="my-1 text-red-500">
 				0：在游戏中显示，请将游戏窗口模式设置成【无边框】
 			</p>
-			<p class="my-1">1：Score：英雄熟练度分数, 右上角：英雄熟练度等级</p>
-			<p class="my-1">2：段位下方的标签颜色相同时，代表：【开黑玩家】</p>
+			<p class="my-1">1：熟练度：英雄熟练度分数，右上角：英雄熟练度等级</p>
+			<p class="my-1">2：展开分析中的“疑似开黑”表示最近100场至少2次历史同队</p>
 			<p class="my-1">3：游戏模式为单双 / 灵活排位时，只显示排位数据</p>
 			<p class="my-1">4：标签含义 【S : 小代】【A : 绝活】【B : 熟练】</p>
 			<p class="my-1">5：点击下方战绩标签，即可查看此局详细数据</p>
 			<p class="my-1">6：点击英雄头像，可查看此英雄的技能信息</p>
+			<p class="my-1">7：展开分析可查看最近100场胜率、英雄胜率和疑似开黑组合</p>
 
 			<n-divider style="margin: 22px 0 20px 0" />
 
