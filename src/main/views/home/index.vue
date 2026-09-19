@@ -171,6 +171,8 @@ onMounted(async () => {
         <div class="font-medium truncate">{{ player.summonerName }}</div>
         <div class="text-xs text-gray-500">{{ selectedModeLabel }} · {{ analysis?.source || "等待历史数据" }}</div>
       </div>
+      <n-tag v-if="analysis?.moderation.marked" size="tiny" type="error">当前玩家黑名单</n-tag>
+      <n-tag v-else-if="analysis?.moderation.reportCount" size="tiny" type="warning">有举报记录</n-tag>
       <n-button size="small" secondary @click="refresh">刷新</n-button>
     </div>
 
@@ -273,6 +275,8 @@ onMounted(async () => {
               <div class="relation-name">
                 {{ group.members.map((item) => item.summonerName).join(' + ') }}
                 <n-tag v-if="group.highWinRateAlert" size="tiny" type="warning">高胜率开黑队</n-tag>
+                <n-tag v-if="group.blacklistedMembers.length" size="tiny" type="error">含黑名单</n-tag>
+                <n-tag v-if="group.reportedMembers.length" size="tiny" type="info">含举报记录</n-tag>
               </div>
               <div class="text-xs text-gray-500">
                 {{ group.games }} 场共同对局 · {{ formatRate(group.winRate) }} · 稳定度 {{ group.stabilityScore }} · 置信度 {{ confidenceName(group.confidence.level) }}
@@ -283,6 +287,8 @@ onMounted(async () => {
           <div v-if="analysis.opponents.length" class="opponent-list">
             <div v-for="item in analysis.opponents.slice(0, 5)" :key="item.opponent.puuid" class="opponent-row">
               <span>{{ item.opponent.summonerName }}</span>
+              <n-tag v-if="item.opponent.moderation?.marked" size="tiny" type="error">黑名单</n-tag>
+              <n-tag v-else-if="item.opponent.moderation?.reportCount" size="tiny" type="info">有举报</n-tag>
               <span>{{ item.games }} 次交手 · 对手胜率 {{ formatRate(item.opponentWins / item.games * 100) }}</span>
             </div>
           </div>
