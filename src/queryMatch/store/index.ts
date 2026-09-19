@@ -6,6 +6,7 @@ import { SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
 import { RencentDataAnalysisTypes } from "@/main/views/teammate/teammateTypes";
 import { findTopChamp } from "@/main/views/teammate/utils";
+import { MatchHistorySource } from "@/lcu/aboutMatch";
 
 const baseMatch = new BaseMatch();
 const matchDetials = new MatchDetails();
@@ -23,6 +24,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			matchLoading: true,
 			detailLoading: false,
 			matchError: null as string | null,
+			matchSource: null as MatchHistorySource | null,
 			analysisData: null as RencentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
@@ -37,6 +39,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchLoading = true;
 			this.detailLoading = false;
 			this.matchError = null;
+			this.matchSource = null;
 			this.participantsInfo = null;
 			try {
 				const sumResult = await baseMatch.gerSummonerInfo(summonerId);
@@ -109,11 +112,15 @@ const useMatchStore = defineStore("useMatchStore", {
 			requestId?: number,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
-			const matchResults = await baseMatch.dealMatchHistory(puuid, 0, 20);
+			const matchResult = await baseMatch.dealMatchHistoryWithSource(
+				puuid,
+				0,
+				20,
+			);
 			if (queryRequestId !== this.queryRequestId) {
 				return false;
 			}
-			if (matchResults === null) {
+			if (matchResult === null) {
 				this.matchList = null;
 				this.recentMatchList20 = [];
 				this.analysisData = null;
@@ -122,6 +129,8 @@ const useMatchStore = defineStore("useMatchStore", {
 				return false;
 			}
 
+			this.matchSource = matchResult.source;
+			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
 			this.matchList = this.recentMatchList20.slice(0, 9);
 			this.analysisData =
@@ -145,7 +154,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			requestId?: number,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
-			const matchItems = await baseMatch.dealMatchHistory(
+			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				(page - 1) * 9,
 				page * 9,
@@ -154,8 +163,13 @@ const useMatchStore = defineStore("useMatchStore", {
 				return false;
 			}
 
+			if (matchResult !== null) {
+				this.matchSource = matchResult.source;
+			}
+			const matchItems = matchResult?.matches ?? [];
+
 			// 获取战绩详细数据
-			if (matchItems === null) {
+			if (matchResult === null) {
 				this.matchList = null;
 				this.matchError = "该页战绩接口没有返回数据，请稍后重试。";
 				return false;
@@ -185,10 +199,12 @@ const useMatchStore = defineStore("useMatchStore", {
 				return;
 			}
 
-			const matchSpecialList = await baseMatch.querySpecialMatch(
+			const matchSpecialResult = await baseMatch.querySpecialMatchWithSource(
 				<string>puuid,
 				queueId,
 			);
+			const matchSpecialList = matchSpecialResult.matches;
+			this.matchSource = matchSpecialResult.source;
 			if (matchSpecialList.length !== 0) {
 				this.specialMatchList = matchSpecialList;
 				this.fromSpecialToMatchList();

@@ -1,10 +1,18 @@
 import { queryRankPoint, querySummonerInfo } from "@/lcu/aboutSummoner";
 import { Games, SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
-import { queryMatchHistory } from "@/lcu/aboutMatch";
+import {
+    MatchHistorySource,
+    queryMatchHistoryWithSource,
+} from "@/lcu/aboutMatch";
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
+
+export interface ProcessedMatchHistory {
+    matches: SimpleMatchDetailsTypes[];
+    source: MatchHistorySource | null;
+}
 
 export default class BaseMatch {
     public summonerId = 0;
@@ -23,6 +31,19 @@ export default class BaseMatch {
         begIndex: number,
         endIndex: number,
     ): Promise<SimpleMatchDetailsTypes[] | null> => {
+        const result = await this.dealMatchHistoryWithSource(
+            puuid,
+            begIndex,
+            endIndex,
+        );
+        return result?.matches ?? null;
+    };
+
+    public dealMatchHistoryWithSource = async (
+        puuid: string,
+        begIndex: number,
+        endIndex: number,
+    ): Promise<ProcessedMatchHistory | null> => {
         // 写入玩家id
         if (this.summonerId === 0) {
             const localSumInfo: sumInfoTypes = JSON.parse(
@@ -31,19 +52,25 @@ export default class BaseMatch {
             this.summonerId = localSumInfo.summonerId;
         }
 
-        const matchList = await queryMatchHistory(puuid, begIndex, endIndex);
+        const result = await queryMatchHistoryWithSource(
+            puuid,
+            begIndex,
+            endIndex,
+        );
 
-        if (matchList === null) {
+        if (result === null) {
             return null;
         }
 
-        return matchList
+        const matches = result.games
             .map((matchListElement) =>
                 this.getSimpleMatch(matchListElement, puuid),
             )
             .filter(
                 (match): match is SimpleMatchDetailsTypes => match !== null,
             );
+
+        return { matches, source: result.source };
     };
 
     public getSimpleMatch = (
@@ -105,21 +132,31 @@ export default class BaseMatch {
     };
 
     public querySpecialMatch = async (puuid: string, queueId: number) => {
-        const matchList = await queryMatchHistory(puuid, 0, 60);
-        if (matchList === null) {
-            return [];
+        const result = await this.querySpecialMatchWithSource(puuid, queueId);
+        return result.matches;
+    };
+
+    public querySpecialMatchWithSource = async (
+        puuid: string,
+        queueId: number,
+    ): Promise<ProcessedMatchHistory> => {
+        const result = await queryMatchHistoryWithSource(puuid, 0, 60);
+        if (result === null) {
+            return { matches: [], source: null };
         }
-        const specialList = matchList.filter(
+        const specialList = result.games.filter(
             (matchList) => matchList.queueId === queueId,
         );
 
-        return specialList
+        const matches = specialList
             .map((matchListElement) =>
                 this.getSimpleMatch(matchListElement, puuid),
             )
             .filter(
                 (match): match is SimpleMatchDetailsTypes => match !== null,
             );
+
+        return { matches, source: result.source };
     };
 
     public timestampToDate = (timestamp: number): [string, string] => {
