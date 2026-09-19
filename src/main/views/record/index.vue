@@ -26,7 +26,7 @@ const closeDrawer = () => {
             title="啊嗷~~~"
             type="error"
         >
-            <text>连接服务器异常，请重启Frank!</text>
+            <text>连接服务异常，请重启本地试验台!</text>
             <br />
             <text>多次尝试无果，请等待作者修复！</text>
             <br />

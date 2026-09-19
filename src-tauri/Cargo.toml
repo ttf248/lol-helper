@@ -1,8 +1,7 @@
 [package]
-name = "Frank"
+name = "local-test-lab"
 version = "0.1.0"
-description = "League of Legends Assistant On Frank"
-authors = ["Java_S"]
+description = "Local test utility for the League of Legends client"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +10,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "frank_lib"
+name = "local_test_lab_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -20,10 +19,8 @@ tauri-build = { version = "2.2.0", features = [] }
 [dependencies]
 tauri = { version = "2.5.1", features = ["tray-icon"] }
 tauri-plugin = "2.2.0"
-tauri-plugin-opener = "2.2.7"
 tauri-plugin-process = "2.2.1"
 tauri-plugin-http = "2.4.4"
-tauri-plugin-shell = "2.2.1"
 tauri-plugin-window-state = "2.2.2"
 tauri-plugin-single-instance = "2.2.4"
 

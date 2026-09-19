@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import {NButton, NInput, NSelect, NPagination,
+import {NButton, NInput, NSelect, NPagination, NTag,
   useMessage, NIcon, NSpace, MessageReactive} from "naive-ui"
 import {ref, watch} from "vue";
 import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
 import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
 import {getCurrentWindow} from "@tauri-apps/api/window";
-import { open } from '@tauri-apps/plugin-shell';
+import BrandLockup from "@/components/BrandLockup.vue";
 
 const matchStore = useMatchStore()
 const inputVal = ref('')
@@ -88,9 +88,6 @@ const clearVal = () => {
   selectVal.value = 0
   pageVal.value = 1
 }
-const openWeb = () => {
-  open('https://lolfrank.cn')
-}
 const handleMin = async () => {
   await getCurrentWindow().minimize()
 }
@@ -116,15 +113,14 @@ const pageChange = (page: number) => {
 <template>
   <header class="flex">
     <div class="flex gap-x-2 items-center mr-3">
-      <img src="@/assets/icon/app-icon.png" class="h-10" draggable="false">
-      <img src="@/assets/icon/Frank.png" draggable="false">
-      <n-button
+      <BrandLockup compact />
+      <n-tag
         v-if="matchStore.summonerId===matchStore.localSumId"
-        @click="openWeb"
-        size="small" style="margin-left: 30px;color: #666666;width: 90.41px"
-        secondary type="tertiary">
-        lolfrank.cn
-      </n-button>
+        :bordered="false"
+        type="info"
+        style="margin-left: 22px">
+        本地数据
+      </n-tag>
       <n-button
         v-else
         @click="backSelf"

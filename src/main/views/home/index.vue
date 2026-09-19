@@ -10,7 +10,6 @@ import {
 	NListItem,
 	NButton,
 	NEllipsis,
-	NModal,
 } from "naive-ui";
 import { getCurrentSummonerAllInfo } from "./getHomeData";
 import { onActivated, onMounted, reactive, ref } from "vue";
@@ -18,7 +17,6 @@ import {
 	SummonerData,
 	sumInfoTypes,
 	summonerInfo,
-	TaskTrackerTypes,
 } from "@/lcu/types/SummonerTypes";
 import StartGame from "./startGame.vue";
 import { useRecordStore } from "@/main/store/useRecord";
@@ -26,7 +24,6 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import SummonerMasteryChamp from "@/main/common/summonerMasteryChamp.vue";
 import { QueryMatchWindow } from "@/background/utils/creatWindow.ts";
-import Sponsor from "@/main/common/sponsor.vue";
 import CheckMode from "./checkMode.vue";
 import { TencentRsoPlatformId } from "@/resources/areaList";
 
@@ -36,7 +33,6 @@ const summonerData: SummonerData = reactive({
 	champLevel: null,
 });
 const recordStore = useRecordStore();
-const taskCompleted = ref(false);
 const curRegion = ref<string | null>(null);
 
 onMounted(() => {
@@ -63,7 +59,6 @@ const init = async (isFirst: boolean) => {
 	}
 	if (isFirst) {
 		await writeSumInfo(summonerAllInfo.summonerInfo);
-		taskCheck();
 	}
 
 	summonerData.summonerInfo = summonerAllInfo.summonerInfo;
@@ -113,16 +108,6 @@ const openWin = () => {
 	new QueryMatchWindow();
 };
 
-const taskCheck = () => {
-	const data: TaskTrackerTypes = JSON.parse(
-		localStorage.getItem("taskTracker") as string,
-	);
-	if (data.taskCount === 24) {
-		taskCompleted.value = true;
-		data.taskCount = 25;
-		localStorage.setItem("taskTracker", JSON.stringify(data));
-	}
-};
 </script>
 
 <template>
@@ -276,7 +261,4 @@ const taskCheck = () => {
 		<start-game />
 	</div>
 
-	<n-modal style="margin: 8px; max-width: 334px" v-model:show="taskCompleted">
-		<Sponsor :is-completed="true"></Sponsor>
-	</n-modal>
 </template>

@@ -40,7 +40,7 @@ class Background {
 		});
 	}
 
-	private initFrank() {
+	private initLocalTestLab() {
 		const TIME_LIMIT = 30000;
 		let elapsedTime = 0;
 		const intervalTime = 3000;
@@ -85,7 +85,7 @@ class Background {
 	private handleClientStatus(status: string) {
 		switch (status) {
 			case "ClientStarted":
-				this.initFrank();
+				this.initLocalTestLab();
 				break;
 			case "ChampSelect":
 				this.preChampId = 0;

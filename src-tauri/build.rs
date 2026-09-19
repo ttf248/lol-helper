@@ -1,5 +1,5 @@
 fn main() {
-    // Frank reads the League client process command line to obtain the LCU
+    // Local Test Lab reads the League client process command line to obtain the LCU
     // port and authentication token. Windows may deny that access unless the
     // application runs elevated, including in debug builds.
     let execution_level = "requireAdministrator";

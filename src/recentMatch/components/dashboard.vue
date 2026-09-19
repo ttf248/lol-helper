@@ -27,6 +27,7 @@ import { emitTo, once } from "@tauri-apps/api/event";
 import { requestFetch } from "@/main/utils/request";
 import { HexInfoTypes } from "@/main/views/rune/runeTypes";
 import { champDict } from "@/resources/champList";
+import BrandLockup from "@/components/BrandLockup.vue";
 
 const { winCount, isFriCount, queueId } = defineProps<{
 	winCount: { friend: number[]; enemy: number[] };
@@ -117,7 +118,7 @@ const changeConfig = () => {
 	<header class="flex w-full h-10 relative">
 		<div data-tauri-drag-region class="dragDiv"></div>
 		<div class="flex w-1/2 gap-x-4">
-			<img src="@/assets/icon/siteLogo.png" draggable="false" />
+			<BrandLockup compact />
 			<div class="flex">
 				<div class="flex flex-col gap-y-0.5 mr-4">
 					<text class="text-gray-400 text-xs">友方胜利次数</text>

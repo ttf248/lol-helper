@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 
-pub struct FrankState {
+pub struct LocalTestState {
     pub is_enabled: Arc<AtomicBool>,
     pub is_running: Arc<AtomicBool>,   // 防止重复启动的锁
     pub dock_side: Arc<Mutex<String>>, // "Left" 或 "Right"
@@ -21,7 +21,7 @@ pub struct FrankState {
 #[tokio::main]
 pub async fn run() {
     tauri::Builder::default()
-        .manage(FrankState {
+        .manage(LocalTestState {
             is_enabled: Arc::new(AtomicBool::new(false)), // 初始设为 false，等前端同步
             is_running: Arc::new(AtomicBool::new(false)), // 初始为未运行
             dock_side: Arc::new(Mutex::new("Right".to_string())),
@@ -44,8 +44,6 @@ pub async fn run() {
             check_borderless_mode,
         ])
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 当尝试启动新实例时，聚焦主窗口

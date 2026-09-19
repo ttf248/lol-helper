@@ -10,7 +10,7 @@ const { runeList } = defineProps<{ runeList: Rune[] }>();
 // 应用符文&装备
 const applyRune = async (data: any) => {
     const tempData = JSON.parse(JSON.stringify(data));
-    tempData.name = mapNameFromUrl[data.alias].name + " lolfrank.cn";
+    tempData.name = mapNameFromUrl[data.alias].name + " 本地测试";
 
     handleRunesWrite(tempData).then((writeRes) => {
         if (writeRes) {

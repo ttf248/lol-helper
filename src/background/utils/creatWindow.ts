@@ -5,7 +5,7 @@ import { ConfigSettingTypes } from "../types";
 export class MainWindow {
 	constructor() {
 		const webview = new WebviewWindow("mainWindow", {
-			title: "Frank",
+			title: "本地试验台",
 			url: "src/main/index.html",
 			width: 320,
 			height: 720,

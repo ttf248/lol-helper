@@ -2,7 +2,7 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Frank: Tauri Dev (auto UAC)",
+			"name": "Local Test Lab: Tauri Dev (auto UAC)",
 			"type": "node-terminal",
 			"request": "launch",
 			"command": ".\\.vscode\\tauri-msvc.cmd tauri dev",
@@ -18,13 +18,13 @@
 			}
 		},
 		{
-			"name": "Frank: Rust Backend (MSVC, Administrator)",
+			"name": "Local Test Lab: Rust Backend (MSVC, Administrator)",
 			"type": "cppvsdbg",
 			"request": "launch",
-			"program": "${workspaceFolder}\\src-tauri\\target\\debug\\Frank.exe",
+			"program": "${workspaceFolder}\\src-tauri\\target\\debug\\local-test-lab.exe",
 			"args": [],
 			"cwd": "${workspaceFolder}\\src-tauri",
-			"preLaunchTask": "Frank: build debug",
+			"preLaunchTask": "Local Test Lab: build debug",
 			"stopAtEntry": false,
 			"externalConsole": false,
 			"environment": [

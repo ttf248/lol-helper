@@ -3,5 +3,5 @@
 #[allow(unused)]
 
 fn main() {
-    frank_lib::run();
+    local_test_lab_lib::run();
 }

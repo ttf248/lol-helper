@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { NCard, NSpace, NTag, useMessage, NButton, NTable } from "naive-ui";
-import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 
 const message = useMessage();
@@ -14,13 +13,6 @@ const startGame = async () => {
         message.loading("英雄联盟客户端启动中...");
     }
 };
-const openGuideSite = () => {
-    open("https://www.yuque.com/java-s/frank");
-};
-const openIntro = () => {
-    open("https://www.yuque.com/java-s/frank/introduction");
-};
-
 const tableData = [
     ["排位笔记", "✅", "✅"],
     ["自动接收对局", "✅", "✅"],
@@ -40,9 +32,7 @@ const tableData = [
         </div>
         <n-space vertical>
             <n-space justify="space-between">
-                <n-button type="success" @click="openGuideSite" secondary
-                    >使用手册</n-button
-                >
+                <n-tag type="info" :bordered="false">本地测试模式</n-tag>
                 <n-button type="success" @click="startGame">开始游戏</n-button>
             </n-space>
             <n-tag
@@ -51,7 +41,7 @@ const tableData = [
                 style="width: 203px; justify-content: center"
                 :bordered="false"
             >
-                <p>进入LOL大厅后•自动获取数据</p>
+                <p>进入 LOL 大厅后 · 仅在本机获取数据</p>
             </n-tag>
         </n-space>
     </n-card>
@@ -59,9 +49,9 @@ const tableData = [
         <n-table :bordered="false" :single-line="false">
             <thead>
                 <tr>
-                    <th>Software Introduction</th>
-                    <th style="width: 28px">完全</th>
-                    <th style="width: 28px">免费</th>
+                    <th>Local Test Lab</th>
+                    <th style="width: 28px">本机</th>
+                    <th style="width: 28px">测试</th>
                 </tr>
             </thead>
             <tbody>
@@ -73,14 +63,8 @@ const tableData = [
             </tbody>
         </n-table>
         <n-space style="margin-top: 21px" justify="space-between">
-            <n-tag type="success" :bordered="false">Frank 部分功能介绍</n-tag>
-            <n-button
-                @click="openIntro"
-                size="small"
-                type="success"
-                :bordered="false"
-                >全部功能</n-button
-            >
+            <n-tag type="success" :bordered="false">本地试验台功能概览</n-tag>
+            <n-tag type="info" :bordered="false">不对外发布</n-tag>
         </n-space>
     </n-card>
 </template>

@@ -24,7 +24,7 @@ if not defined VSINSTALL (
 if /I "%1"=="tauri" if /I "%2"=="dev" (
 	fltmc >nul 2>&1
 	if errorlevel 1 (
-		echo Tauri Dev requires an elevated Frank process to read League client credentials.
+		echo Tauri Dev requires an elevated Local Test Lab process to read League client credentials.
 		echo Requesting elevation for the Tauri development process...
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0elevate-tauri.ps1" -Wrapper "%~f0" -Arguments "%*"
 		exit /b !ERRORLEVEL!

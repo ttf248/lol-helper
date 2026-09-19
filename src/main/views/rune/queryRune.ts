@@ -98,7 +98,7 @@ export class QueryRune {
 				mapNameFromUrl[champ.alias].label +
 				"-" +
 				mapNameFromUrl[champ.alias].name;
-			buildItems.title = name + " 推荐出装 " + "lolfrank.cn";
+			buildItems.title = name + " 推荐出装";
 			buildItems.blocks = this.handleBlocks(buildItems.blocks);
 			return {
 				position: position as string,

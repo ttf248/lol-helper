@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import {NButton, NIcon, NSpace, useMessage} from "naive-ui";
 import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
-import {open} from "@tauri-apps/plugin-shell";
 import {getCurrentWindow} from "@tauri-apps/api/window";
+import BrandLockup from "@/components/BrandLockup.vue";
 
 const {showType,changeShowType} = defineProps<{showType:boolean,changeShowType:() => void}>()
 
 const message = useMessage()
 
-const openWeb = () => {
-  open('https://lolfrank.cn')
-}
 const handleMin = async () => {
   await getCurrentWindow().minimize()
 }
@@ -27,8 +24,7 @@ const handleSet = () => {
   <header class="flex relative">
     <div data-tauri-drag-region class="dragDiv"></div>
     <div class="flex gap-x-3.5 items-center">
-      <img @click="openWeb"
-           src="@/assets/icon/siteLogo.png" class="h-10 cursor-pointer" draggable="false">
+      <BrandLockup compact />
       <n-button @click="changeShowType" :focusable="false"
                 :type="showType?'success':'tertiary'">
         最近战绩

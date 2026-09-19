@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {NMessageProvider, NConfigProvider, zhCN, darkTheme,NDialogProvider} from 'naive-ui'
 import {themeOverrides} from "./utils/theme";
-import Frank from "./index.vue"
+import LocalTestLab from "./index.vue"
 
 const theme = localStorage.getItem('theme')  || 'light'
 
@@ -18,7 +18,7 @@ if (theme === 'dark') {
   >
       <n-dialog-provider>
         <n-message-provider :placement="'bottom'">
-            <Frank/>
+            <LocalTestLab/>
         </n-message-provider>
       </n-dialog-provider>
   </n-config-provider>

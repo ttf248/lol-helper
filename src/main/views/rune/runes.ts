@@ -102,7 +102,7 @@ const getCurrentRune = async (champName:string) => {
   const current = currentRuneList.find((i:any) => i.current)
   if (current !== undefined){
     return  {
-      name:champName+ " lolfrank.cn",
+      name:champName+ " 本地测试",
       primaryStyleId:current.primaryStyleId,
       subStyleId:current.subStyleId,
       selectedPerkIds:current.selectedPerkIds

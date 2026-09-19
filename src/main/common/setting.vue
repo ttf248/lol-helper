@@ -4,7 +4,6 @@ import { ConfigSettingTypes } from "@/background/types/";
 import { optionsChampion, keywordsList } from "@/resources/champList";
 import {
 	NDrawerContent,
-	NModal,
 	NTag,
 	NButton,
 	NSelect,
@@ -17,8 +16,6 @@ import {
 	useDialog,
 } from "naive-ui";
 import { relaunch } from "@tauri-apps/plugin-process";
-import Sponsor from "./sponsor.vue";
-import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 
 const config: Ref<ConfigSettingTypes> = ref(
@@ -26,7 +23,6 @@ const config: Ref<ConfigSettingTypes> = ref(
 );
 const theme = localStorage.getItem("theme") || "light";
 const dialog = useDialog();
-const showModal = ref(false);
 declare const __APP_VERSION__: string;
 const version = __APP_VERSION__;
 
@@ -37,7 +33,7 @@ const saveConfig = () => {
 const handleThemeChange = () => {
 	dialog.warning({
 		title: "Tips",
-		content: "主题切换将重启Frank, 是否执行操作o.O?",
+		content: "主题切换将重启本地试验台, 是否执行操作o.O?",
 		showIcon: true,
 		positiveText: "确认",
 		negativeText: "取消",
@@ -106,19 +102,8 @@ const searchChamp = (
 		}
 	}
 };
-const openWeb = (isSYJ: boolean) => {
-	if (isSYJ) {
-		open("https://syjun.vip");
-	} else {
-		open("https://www.yuque.com/java-s/frank/introduction");
-	}
-};
 const restart = async () => {
 	await relaunch();
-};
-
-const sponsor = () => {
-	showModal.value = true;
 };
 </script>
 
@@ -134,17 +119,10 @@ const sponsor = () => {
 			>
 				<n-list-item style="padding-top: 0px">
 					<div class="gap-x-5 flex justify-between items-center">
-						<n-tag :bordered="false">鼓励开发</n-tag>
-						<n-button
-							@click="sponsor"
-							style="width: 206px"
-							size="small"
-							secondary
-							:bordered="false"
-							type="warning"
-						>
-							赞助 Frank 英雄联盟助手
-						</n-button>
+						<n-tag :bordered="false">运行模式</n-tag>
+						<n-tag type="info" :bordered="false">
+							本地测试 · 内部使用
+						</n-tag>
 					</div>
 				</n-list-item>
 				<!--        切换主题-->
@@ -354,22 +332,12 @@ const sponsor = () => {
 
 				<n-list-item style="padding-bottom: 0px">
 					<div class="flex justify-between items-center">
-						<n-button
-							size="small"
-							secondary
-							type="tertiary"
-							@click="openWeb(false)"
-						>
-							版本 {{ version }}
-						</n-button>
-						<n-button
-							size="small"
-							secondary
-							type="tertiary"
-							@click="openWeb(true)"
-						>
-							By Java_S
-						</n-button>
+						<n-tag :bordered="false" size="small">
+							测试版本 {{ version }}
+						</n-tag>
+						<n-tag type="info" :bordered="false" size="small">
+							仅本机运行
+						</n-tag>
 						<n-button
 							size="small"
 							secondary
@@ -382,8 +350,5 @@ const sponsor = () => {
 				</n-list-item>
 			</n-scrollbar>
 		</n-list>
-		<n-modal style="margin: 8px; max-width: 334px" v-model:show="showModal">
-			<Sponsor :is-completed="false"></Sponsor>
-		</n-modal>
 	</n-drawer-content>
 </template>

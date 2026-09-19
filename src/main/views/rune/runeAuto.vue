@@ -2,7 +2,6 @@
 import {NPopconfirm, NCard, NButton, NSpace,useMessage} from "naive-ui"
 import {onMounted, Ref, ref} from "vue"
 import {invokeLcu} from "@/lcu";
-import {open} from "@tauri-apps/plugin-shell";
 import {writeAutoRune} from "@/main/views/rune/runes.ts";
 
 const {champ,champName,openTips} = defineProps<{champ:string,champName:string,openTips:() => void}>()
@@ -33,7 +32,7 @@ const initRuneData = async () => {
   const current = currentRuneList.find((i:any) => i.current)
   if (current !== undefined){
     runeData.value = {
-      name:champName+ " lolfrank.cn",
+      name:champName+ " 本地测试",
       primaryStyleId:current.primaryStyleId,
       subStyleId:current.subStyleId,
       selectedPerkIds:current.selectedPerkIds
@@ -60,9 +59,6 @@ const getImgUrl = (imgId: any) => {
   return new URL(`/src/assets/runes/${imgId}.png`, import.meta.url).href
 }
 
-const openWeb = () => {
-  open('https://www.yuque.com/java-s/frank/introduction#Lmsmu')
-}
 </script>
 
 <template>
@@ -113,9 +109,6 @@ const openWeb = () => {
           <n-button
             @click="openTips"
             secondary size="small" type="default">查看弹窗提示</n-button>
-          <n-button
-            @click="openWeb"
-            secondary size="small" type="tertiary">功能使用介绍</n-button>
         </n-space>
       </div>
     </n-space>

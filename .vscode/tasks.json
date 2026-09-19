@@ -2,7 +2,7 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Frank: build debug",
+			"label": "Local Test Lab: build debug",
 			"type": "shell",
 			"command": ".\\.vscode\\tauri-msvc.cmd",
 			"args": ["tauri", "build", "--debug", "--no-bundle"],
@@ -17,7 +17,7 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "Frank: Tauri dev",
+			"label": "Local Test Lab: Tauri dev",
 			"type": "shell",
 			"command": ".\\.vscode\\tauri-msvc.cmd",
 			"args": ["tauri", "dev"],

@@ -7,39 +7,25 @@ import {
 	NDrawer,
 	useDialog,
 } from "naive-ui";
-import { CircleMinus, Settings, CircleX, Bulb } from "@vicons/tabler";
-import { onMounted, ref, h } from "vue";
+import { CircleMinus, Settings, CircleX } from "@vicons/tabler";
+import { ref, h } from "vue";
 import Setting from "@/main/common/setting.vue";
-import { Notice } from "@/main/utils/notice";
 import { exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ConfigSettingTypes } from "@/background/types/";
 import { invokeLcu } from "@/lcu";
+import BrandLockup from "@/components/BrandLockup.vue";
 
 const { configSetting } = defineProps<{
 	configSetting: ConfigSettingTypes;
 }>();
 
-const notice = new Notice();
 const isShowDrawer = ref(false);
-const isShowNoticeIcon = ref(false);
 const dialog = useDialog();
 const shouldCloseLOL = ref(configSetting.shouldCloseLOL);
 
-onMounted(() => {
-	notice.init().then((v) => {
-		if (v) {
-			isShowNoticeIcon.value = true;
-		}
-	});
-});
-
 const handleMin = async () => {
 	await getCurrentWindow().minimize();
-};
-
-const showDialog = () => {
-	notice.showDialog();
 };
 
 const handleConfirm = () => {
@@ -55,7 +41,7 @@ const handleConfirm = () => {
 						h(
 							"div",
 							{ style: { lineHeight: "1.5", minHeight: "24px" } },
-							"是否退出 Frank?",
+							"是否退出本地试验台?",
 						),
 						h(
 							NCheckbox,
@@ -106,34 +92,9 @@ const handleConfirm = () => {
 	<header class="flex justify-between items-center h-8 mb-2 relative">
 		<div data-tauri-drag-region class="dragDiv"></div>
 		<div class="flex items-center">
-			<img
-				src="../../assets/icon/app-icon.png"
-				class="h-8"
-				draggable="false"
-			/>
-			<img
-				src="../../assets/icon/Frank.png"
-				draggable="false"
-				class="pl-1 h-[25px]"
-			/>
+			<BrandLockup compact />
 		</div>
 		<div class="flex mt-0.5 gap-x-2">
-			<!-- <n-button :focusable="false" @click="test" text>
-				<n-icon size="20" :color="'#f0a020'">
-					<bulb />
-				</n-icon>
-			</n-button> -->
-
-			<n-button
-				v-if="isShowNoticeIcon"
-				:focusable="false"
-				@click="showDialog"
-				text
-			>
-				<n-icon size="20" :color="'#f0a020'">
-					<bulb />
-				</n-icon>
-			</n-button>
 			<n-button :focusable="false" @click="handleMin" text>
 				<n-icon size="20">
 					<circle-minus />

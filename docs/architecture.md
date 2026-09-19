@@ -1,16 +1,16 @@
-# Frank 架构与开发运行说明
+# 本地试验台架构与开发运行说明
 
-> 本文用于维护 Frank 的前端、Tauri/Rust 后端、窗口和开发启动方式。
+> 本文用于维护本地试验台的前端、Tauri/Rust 后端、窗口和开发启动方式。
 
 ## 1. 总体结构
 
-Frank 是一个 Tauri 2 桌面应用。项目在职责上分为前端和后端，但开发时不应把它理解成两个需要分别手动启动的网络服务。
+本地试验台是一个 Tauri 2 桌面应用。项目在职责上分为前端和后端，但开发时不应把它理解成两个需要分别手动启动的网络服务。
 
 ```text
 Vite / Node.js（仅开发环境）
         │  http://localhost:1420、HMR
         ▼
-Tauri / Frank.exe（Rust 宿主与后端）
+Tauri / local-test-lab.exe（Rust 宿主与后端）
         │  Tauri IPC：invoke / emit
         ▼
 Vue WebView 页面
@@ -25,11 +25,11 @@ League Client（LCU 服务）
 | --- | --- | --- |
 | Vite / Node.js | 是 | 提供前端页面、TypeScript/Vue 构建和热更新，监听 `http://localhost:1420` |
 | Tauri CLI | 是 | 启动 `pnpm dev`、编译并运行 Rust 应用，负责开发编排 |
-| `Frank.exe` | 否 | Tauri 宿主、Rust 后端、系统能力和 LCU 通信 |
+| `local-test-lab.exe` | 否 | Tauri 宿主、Rust 后端、系统能力和 LCU 通信 |
 | WebView2 | 否 | 在桌面窗口中渲染 Vue 页面；具体实现可能包含 WebView2 子进程 |
-| League Client | 外部程序 | 提供 Frank 使用的 LCU REST/WebSocket 接口 |
+| League Client | 外部程序 | 提供本地试验台使用的 LCU REST/WebSocket 接口 |
 
-生产环境不会启动 Vite。前端先构建到 `dist`，然后由 `Frank.exe` 加载；WebView2 仍负责渲染页面。
+打包环境不会启动 Vite。前端先构建到 `dist`，然后由 `local-test-lab.exe` 加载；WebView2 仍负责渲染页面。
 
 ## 2. 前端职责
 
@@ -64,7 +64,7 @@ Tauri 配置中的 `background` 是初始隐藏窗口。后台页面随后通过
 | `matchAnalysisWindow` | `src/matchAnalysis/index.html` | 战绩分析 |
 | `recentMatchWindow` | `src/recentMatch/index.html` | 最近对局 |
 
-这些页面是多个前端 WebView 窗口，不是多个独立的 Rust 后端服务。它们共享同一个 `Frank.exe` 进程中的 Tauri/Rust 后端状态。
+这些页面是多个前端 WebView 窗口，不是多个独立的 Rust 后端服务。它们共享同一个 `local-test-lab.exe` 进程中的 Tauri/Rust 后端状态。
 
 相关代码：
 
@@ -74,13 +74,13 @@ Tauri 配置中的 `background` 是初始隐藏窗口。后台页面随后通过
 
 ## 4. Rust 后端职责
 
-Rust 代码位于 `src-tauri/src/`，由 `Frank.exe` 承载，主要负责：
+Rust 代码位于 `src-tauri/src/`，由 `local-test-lab.exe` 承载，主要负责：
 
 - 读取 `LeagueClientUx.exe` 的启动参数，获取 LCU 端口、Token 和区域；
 - 通过 LCU REST/WebSocket 接口查询召唤师、对局和游戏状态；
 - 监听 League Client 启动以及游戏流程事件；
 - 监听全局键盘事件；
-- 查找并跟踪 LOL 窗口位置，调整 Frank 窗口停靠位置；
+- 查找并跟踪 LOL 窗口位置，调整本地试验台窗口停靠位置；
 - 启动 LOL；
 - 读取和修改游戏配置，例如窗口模式；
 - 管理跨窗口共享状态，并把事件发送回前端。
@@ -126,8 +126,8 @@ Riot ID（`GameName#TagLine`）或客户端仍兼容的旧召唤师名。该流�
 
 VS Code 中使用：
 
-- `Frank: Tauri Dev (auto UAC)`：启动 Vite、Tauri 和 Rust 后端，普通 VS Code 可用；包装脚本会自动请求 UAC，并支持前端热更新；
-- `Frank: Rust Backend (MSVC, Administrator)`：使用 MSVC 调试器启动 Rust 后端，前端使用预先构建的 `dist`，适合定位 Rust 代码；由于目标程序自身要求提权，建议以管理员身份运行 VS Code。
+- `Local Test Lab: Tauri Dev (auto UAC)`：启动 Vite、Tauri 和 Rust 后端，普通 VS Code 可用；包装脚本会自动请求 UAC，并支持前端热更新；
+- `Local Test Lab: Rust Backend (MSVC, Administrator)`：使用 MSVC 调试器启动 Rust 后端，前端使用预先构建的 `dist`，适合定位 Rust 代码；由于目标程序自身要求提权，建议以管理员身份运行 VS Code。
 
 ### 只启动前端
 
@@ -135,7 +135,7 @@ VS Code 中使用：
 pnpm dev
 ```
 
-这只能验证 Vue/Vite 页面。页面中的 Tauri `invoke()`、窗口创建和 Rust 功能不会正常工作，因为没有 `Frank.exe` 宿主。
+这只能验证 Vue/Vite 页面。页面中的 Tauri `invoke()`、窗口创建和 Rust 功能不会正常工作，因为没有 `local-test-lab.exe` 宿主。
 
 ### 正式构建
 
