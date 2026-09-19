@@ -12,6 +12,11 @@ import {
 } from "naive-ui";
 import { champDict } from "@/resources/champList";
 import {
+  DatabaseSummary,
+  getDatabaseStatus,
+  getDatabaseSummary,
+} from "@/recentMatch/utils/databaseCache";
+import {
   MATCH_MODES,
   MatchModeKey,
   modeLabel,
@@ -35,6 +40,17 @@ const analysis = ref<PlayerRecentAnalysis | null>(null);
 const loading = ref(false);
 const errorMessage = ref("");
 let requestId = 0;
+const databaseStatus = ref({
+  available: false,
+  message: "正在检查 PostgreSQL",
+  checkedAt: 0,
+});
+const databaseSummary = ref<DatabaseSummary>({
+  totalMatches: 0,
+  totalParticipants: 0,
+  totalPlayers: 0,
+  modes: [],
+});
 
 const activeTrend = computed(() =>
   analysis.value?.trends.find((item) => item.window === selectedWindow.value),
@@ -87,6 +103,28 @@ const loadAnalysis = async () => {
   }
 };
 
+const loadDatabaseInfo = async () => {
+  const [status, summary] = await Promise.all([
+    getDatabaseStatus(),
+    getDatabaseSummary(),
+  ]);
+  databaseStatus.value = status;
+  databaseSummary.value = summary;
+};
+
+const refresh = async () => {
+  await Promise.all([loadDatabaseInfo(), loadAnalysis()]);
+};
+
+const formatNumber = (value: number) => value.toLocaleString("zh-CN");
+
+const cacheModeSummary = (modeKey: string) => {
+  const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
+  return mode
+    ? `${formatNumber(mode.matches)} 场 · ${formatNumber(mode.participants)} 人次`
+    : "暂无缓存";
+};
+
 watch([selectedMode, selectedWindow], () => {
   void loadAnalysis();
 });
@@ -100,6 +138,7 @@ watch(
 );
 
 onMounted(() => {
+  void loadDatabaseInfo();
   void loadAnalysis();
 });
 </script>
@@ -113,9 +152,12 @@ onMounted(() => {
           {{ props.player.summonerName }} · {{ modeLabel(selectedMode) }} · 默认最近 10 场
         </div>
       </div>
-      <n-tag v-if="analysis" size="small" type="info" :bordered="false">
-        {{ analysis.source }}
-      </n-tag>
+      <div class="flex items-center gap-2">
+        <n-tag size="small" :type="databaseStatus.available ? 'success' : 'warning'" :bordered="false">
+          {{ databaseStatus.available ? "PostgreSQL 已连接" : "实时数据模式" }}
+        </n-tag>
+        <n-button size="small" secondary @click="refresh">刷新</n-button>
+      </div>
     </div>
 
     <div class="analytics-controls">
@@ -284,6 +326,21 @@ onMounted(() => {
         <n-card size="small" title="历史对局关系图" :bordered="false">
           <recent-network-graph :analysis="analysis.network || null" />
         </n-card>
+
+        <n-card size="small" title="本地缓存汇总" :bordered="false">
+          <div class="cache-overview">
+            <span>对局 {{ formatNumber(databaseSummary.totalMatches) }}</span>
+            <span>参赛记录 {{ formatNumber(databaseSummary.totalParticipants) }}</span>
+            <span>玩家 {{ formatNumber(databaseSummary.totalPlayers) }}</span>
+          </div>
+          <div class="cache-mode-list">
+            <div v-for="mode in MATCH_MODES" :key="mode.key" class="cache-mode-row">
+              <span>{{ mode.label }}</span>
+              <span>{{ cacheModeSummary(mode.key) }}</span>
+            </div>
+          </div>
+          <div class="text-xs text-gray-500 mt-2">{{ databaseStatus.message }}</div>
+        </n-card>
       </div>
 
       <n-empty v-else-if="!loading" description="暂无可用历史战绩" />
@@ -427,6 +484,21 @@ onMounted(() => {
 
 .opponent-list {
   margin-top: 0.4rem;
+}
+
+.cache-overview,
+.cache-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.cache-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
 }
 
 .empty-note {
