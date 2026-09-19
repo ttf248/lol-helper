@@ -56,38 +56,6 @@ const summonerSpellIconMap: Record<number, string> = {
 
 type QueueId = keyof typeof gameTypeMap;
 
-// 英文段位昵称转中文
-export const englishToChinese = (tier: string) => {
-    switch (tier) {
-        case "CHALLENGER":
-            return "王者";
-        case "GRANDMASTER":
-            return "宗师";
-        case "MASTER":
-            return "大师";
-        case "DIAMOND":
-            return "钻石";
-        case "EMERALD":
-            return "翡翠";
-        case "PLATINUM":
-            return "铂金";
-        case "GOLD":
-            return "黄金";
-        case "SILVER":
-            return "白银";
-        case "BRONZE":
-            return "青铜";
-        case "IRON":
-            return "黑铁";
-        default:
-            return "未定级";
-    }
-};
-// 处理段位数据
-export const dealDivsion = (divsion: string) => {
-    return divsion === "NA" ? "" : divsion;
-};
-
 // 根据游戏模式ID判断 游戏模式
 export const queryGameType = (queueId: number) => {
     return gameTypeMap[queueId as QueueId] ?? "其它模式";

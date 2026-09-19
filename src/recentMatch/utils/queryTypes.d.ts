@@ -112,10 +112,8 @@ export interface SessionTypes {
 
 export interface RecentSumInfo {
   summonerId: number;
-  rankPoint: string[];
   summonerName: string;
   puuid: string;
-  summonerState: { label: string, lv: number, score: number };
   championUrl: string;
   champId:number;
   teamParticipantId: number;

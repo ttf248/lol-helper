@@ -14,13 +14,10 @@ import {
 const {
   sumList,
   isFri,
-  maxScore,
   analysisLoading,
 } = defineProps<{
   sumList: RecentSumInfo[];
-  queueId: number;
   isFri: boolean;
-  maxScore: number;
   analysisLoading: boolean;
 }>();
 
@@ -46,22 +43,11 @@ const toggleAnalysis = (puuid: string) => {
   selectedPuuid.value = selectedPuuid.value === puuid ? null : puuid;
 };
 
-const teamColors = [
-  "#2080f0",
-  "#f0a020",
-  "#18a058",
-  "#d03050",
-  "#9333ea",
-];
-
 const getChampionName = (championId: number) =>
   champDict[String(championId)]?.label || `英雄 ${championId}`;
 
 const formatRate = (rate: number | null | undefined) =>
   rate === null || rate === undefined ? "--" : `${rate.toFixed(1)}%`;
-
-const formatScore = (score: number) =>
-  score >= 0 ? score.toLocaleString("zh-CN") : "暂无";
 
 const groupNames = (group: PartyGroupAnalysis) =>
   group.members.map((member) => member.summonerName).join(" + ");
@@ -101,8 +87,6 @@ const positionHeroSummary = (position: PositionRecentStats) =>
     )
     .join(" · ");
 
-const isMaxScore = (player: RecentSumInfo) =>
-  player.summonerState.score >= 0 && player.summonerState.score === maxScore;
 </script>
 
 <template>
@@ -127,23 +111,6 @@ const isMaxScore = (player: RecentSumInfo) =>
               :src="summoner.championUrl"
               fallback-src="https://wegame.gtimg.com/g.26-r.c2d3c/helper/lol/assis/images/resources/usericon/4027.png"
             />
-            <n-tag
-              type="info"
-              :bordered="false"
-              style="width: 50px; height: 55px; justify-content: center"
-            >
-              <div class="flex justify-center flex-col gap-y-1 text-xs">
-                <span>{{ summoner.rankPoint[0] }}</span>
-                <span>{{ summoner.rankPoint[1] }}</span>
-              </div>
-            </n-tag>
-            <div
-              v-if="summoner.summonerState.label !== 'Z'"
-              class="absolute text-xs bg-red-500 text-neutral-50 rounded-sm box-border"
-              style="bottom: 0; left: 39px; width: 16px; height: 16px; text-align: center"
-            >
-              {{ summoner.summonerState.label }}
-            </div>
           </div>
 
           <div class="text-xs text-center truncate" :title="summoner.summonerName">
@@ -152,17 +119,11 @@ const isMaxScore = (player: RecentSumInfo) =>
 
           <n-tag
             class="p-0"
-            :type="isMaxScore(summoner) ? 'info' : 'default'"
+            :bordered="false"
+            type="default"
             style="height: 30px; width: 100%; font-size: 12px; justify-content: center; margin: 0"
           >
-            熟练度 {{ formatScore(summoner.summonerState.score) }}
-            <div
-              class="absolute text-xs text-neutral-50 z-10 rounded-tr-md rounded-bl-md"
-              style="bottom: 22px; right: 0; width: 30px; height: 16px; text-align: center"
-              :style="{ backgroundColor: teamColors[(summoner.teamParticipantId - 1) % 5] }"
-            >
-              {{ summoner.summonerState.lv >= 0 ? summoner.summonerState.lv : "-" }}
-            </div>
+            {{ getChampionName(summoner.champId) }}
           </n-tag>
 
           <div v-if="summoner.recentAnalysis" class="text-xs leading-5">

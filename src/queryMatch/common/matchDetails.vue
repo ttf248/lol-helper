@@ -17,6 +17,12 @@ const emits = defineEmits(["openDrawer"]);
 const showSumDetails = (summonerId: number) => {
     emits("openDrawer", summonerId);
 };
+
+const getMetric = (summoner: SummonerDetailInfo, key: string) =>
+    (summoner as unknown as Record<string, unknown>)[key] ?? "";
+
+const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
+    (summoner.showDataDict as unknown as Record<string, string>)[key] ?? "0%";
 </script>
 
 <template>
@@ -38,7 +44,7 @@ const showSumDetails = (summonerId: number) => {
                     :bordered="false"
                     class="text-gray-400"
                 >
-                    {{ summoner[showMode] }}
+                    {{ getMetric(summoner, showMode) }}
                 </n-tag>
                 <div class="flex-grow flex flex-col h-full justify-between">
                     <div class="matchIconImgDiv">
@@ -69,7 +75,7 @@ const showSumDetails = (summonerId: number) => {
                         </n-popover>
                     </div>
                     <p
-                        :style="'width:' + summoner.showDataDict[showMode]"
+                        :style="'width:' + getMetricWidth(summoner, showMode)"
                         :key="showMode"
                         :class="
                             isOne

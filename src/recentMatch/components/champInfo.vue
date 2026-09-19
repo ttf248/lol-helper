@@ -16,7 +16,7 @@ const handleIndex = (index:number) => {
   }
 }
 
-const rules =   {
+const rules: Record<string, string> =   {
   fighter:'战士',
   tank:'坦克',
   mage:'法师',

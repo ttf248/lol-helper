@@ -3,7 +3,7 @@ import {defaultWindowIcon} from '@tauri-apps/api/app';
 import {Menu} from '@tauri-apps/api/menu';
 import {exit} from "@tauri-apps/plugin-process";
 import {window} from "@tauri-apps/api";
-import {QueryMatchWindow, RecentMatchWindow} from "./creatWindow.ts";
+import { QueryMatchWindow, RecentMatchWindow } from "./creatWindow.ts";
 import {Image} from "@tauri-apps/api/image";
 
 const showMain = (isHide:boolean) => {

@@ -1,4 +1,4 @@
-import { queryRankPoint, querySummonerInfo } from "@/lcu/aboutSummoner";
+import { querySummonerInfo } from "@/lcu/aboutSummoner";
 import { Games, SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import {
     MatchHistorySource,
@@ -20,8 +20,7 @@ export default class BaseMatch {
     public gerSummonerInfo = async (summonerId?: number) => {
         const summonerInfo = await querySummonerInfo(summonerId);
         if (summonerInfo !== null) {
-            const rankList = await queryRankPoint(summonerInfo.puuid);
-            return { summonerInfo, rankList };
+            return { summonerInfo };
         }
         return null;
     };

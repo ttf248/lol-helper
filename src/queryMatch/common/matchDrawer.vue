@@ -10,18 +10,11 @@ import {
 } from "naive-ui";
 import { SumDetail } from "@/queryMatch/utils/MatchDetail";
 import { getspellImgUrl, gerNoneImg } from "@/lcu/utils";
-import { window } from "@tauri-apps/api";
-import { emitTo } from "@tauri-apps/api/event";
 
-const { personalDetails, gameId, searchSummoner, isAllowAdd } = defineProps<{
+const { personalDetails, searchSummoner } = defineProps<{
     personalDetails: SumDetail;
-    gameId: number;
-    isAllowAdd: boolean;
     searchSummoner: () => void;
 }>();
-
-const subscribe = localStorage.getItem("subscribe");
-const remainWin = localStorage.getItem("remainWin");
 
 const getImgUrl = (rune: number) => {
     if (rune === 0) {
@@ -30,19 +23,6 @@ const getImgUrl = (rune: number) => {
     return new URL(`/src/assets/runes/${rune}.png`, import.meta.url).href;
 };
 
-const addBlackList = async () => {
-    window.Window.getByLabel("mainWindow").then(async (win) => {
-        if (win !== null) {
-            if (!(await win.isVisible())) {
-                await win.show();
-            }
-            emitTo("mainWindow", "clientStatus", {
-                messageId: "AddBlackList",
-                content: gameId,
-            });
-        }
-    });
-};
 </script>
 
 <template>
@@ -99,45 +79,6 @@ const addBlackList = async () => {
             />
         </div>
 
-        <!--    排位数据-->
-        <n-list>
-            <n-list-item>
-                <n-space justify="space-between">
-                    <n-tag :bordered="false" type="success"> 单双排位 </n-tag>
-                    <n-tag
-                        type="warning"
-                        :bordered="false"
-                        style="width: 70px; justify-content: center"
-                    >
-                        {{ personalDetails.rankData[0] }}
-                    </n-tag>
-                </n-space>
-            </n-list-item>
-            <n-list-item>
-                <n-space justify="space-between">
-                    <n-tag :bordered="false" type="success"> 灵活排位 </n-tag>
-                    <n-tag
-                        type="warning"
-                        :bordered="false"
-                        style="width: 70px; justify-content: center"
-                    >
-                        {{ personalDetails.rankData[1] }}
-                    </n-tag>
-                </n-space>
-            </n-list-item>
-            <n-list-item>
-                <n-space justify="space-between">
-                    <n-tag :bordered="false" type="success"> 云顶排位 </n-tag>
-                    <n-tag
-                        type="warning"
-                        :bordered="false"
-                        style="width: 70px; justify-content: center"
-                    >
-                        {{ personalDetails.rankData[2] }}
-                    </n-tag>
-                </n-space>
-            </n-list-item>
-        </n-list>
         <!--    其他数据-->
         <n-list style="margin-top: 7px" :show-divider="false">
             <n-list-item
@@ -177,14 +118,6 @@ const addBlackList = async () => {
                 查看详细信息
             </n-button>
 
-            <n-button
-                type="warning"
-                :bordered="false"
-                :disabled="isAllowAdd === false"
-                @click="addBlackList"
-            >
-                新增排位笔记
-            </n-button>
         </div>
     </n-drawer-content>
 </template>

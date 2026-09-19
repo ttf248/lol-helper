@@ -6,7 +6,6 @@
 		"background",
 		"mainWindow",
 		"queryMatchWindow",
-		"matchAnalysisWindow",
 		"recentMatchWindow"
 	],
 	"permissions": [

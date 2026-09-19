@@ -1,35 +1,12 @@
-import { ConfigRank, ConfigSettingTypes } from "../types";
+import { ConfigSettingTypes } from "../types";
 import { invokeLcu } from "@/lcu";
 
 const configSetting: ConfigSettingTypes = {
-	autoPickChampion: {
-		championId: "157",
-		isAuto: false,
-	},
-	autoBanChampion: {
-		championId: "101",
-		isAuto: false,
-	},
-	autoIsOne: true,
-	autoAccept: 50,
 	theme: "light",
 	isGameInWindow: true,
 	isGameInTips: false,
-	autoWriteBlock: true,
-	inWinOpacity: 100,
-	warmTips: {
-		autoRune: false,
-		rankTips: false,
-		teamTips: false,
-	},
 	lolTracker: 0,
 	shouldCloseLOL: true,
-};
-
-const configRank: ConfigRank = {
-	tier: 200,
-	lane: "mid",
-	is101: true,
 };
 
 const addConfig = (configName: string, configObj: any) => {
@@ -50,10 +27,8 @@ const addConfig = (configName: string, configObj: any) => {
 export const configInit = () => {
 	if (localStorage.getItem("configSetting") === null) {
 		localStorage.setItem("configSetting", JSON.stringify(configSetting));
-		localStorage.setItem("configRank", JSON.stringify(configRank));
 	} else {
 		addConfig("configSetting", configSetting);
-		addConfig("configRank", configRank);
 	}
 };
 

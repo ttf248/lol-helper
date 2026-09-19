@@ -5,12 +5,11 @@ mod matchlisthanle;
 use matchlisthanle::MatchListDetails;
 
 use crate::lcu::global_key::init_global_keyboard;
-use crate::lcu::listener::listen_current_champ_select;
 use crate::shaco::ingame;
 use crate::shaco::rest::RESTClient;
 use crate::shaco::utils::process_info::{get_auth_info, AuthResponse};
 use configparser::ini::Ini;
-use listener::{listen_champ_select, listen_client};
+use listener::listen_client;
 use once_cell::sync::OnceCell;
 use serde_json::{from_value, Value};
 use std::fs;
@@ -120,20 +119,6 @@ pub fn listen_for_client_start(app: AppHandle) {
 pub async fn start_listener(app: AppHandle) {
     tokio::spawn(async move {
         listen_client(app).await;
-    });
-}
-
-#[tauri::command]
-pub async fn start_champ_select(app: AppHandle) {
-    tokio::spawn(async move {
-        listen_champ_select(app).await;
-    });
-}
-
-#[tauri::command]
-pub async fn start_current_champ_select(app: AppHandle) {
-    tokio::spawn(async move {
-        listen_current_champ_select(app).await;
     });
 }
 

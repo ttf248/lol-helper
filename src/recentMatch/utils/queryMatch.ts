@@ -3,10 +3,10 @@ import { champDict } from "@/resources/champList";
 import { queryMatchHistory } from "@/lcu/aboutMatch";
 import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
+import { getCachedHistory } from "@/recentMatch/utils/databaseCache";
+import { modeForQueue } from "@/recentMatch/utils/matchMode";
 
 class QueryMatch {
-    public winCount = 0;
-
     private findParticipant = (
         match: Games | GamesBySgp,
         targetPuuid?: string,
@@ -48,10 +48,40 @@ class QueryMatch {
     public queryMatchHistory = async (
         puuid: string,
         queueId: number,
-        summonerState: string,
         targetSummonerId?: number,
-    ): Promise<[MatchItemTypes[], number, boolean]> => {
+    ): Promise<[MatchItemTypes[], number]> => {
         try {
+            const cachedMatches = await getCachedHistory({
+                puuid,
+                queueId,
+                modeKey: modeForQueue(queueId),
+                limit: 10,
+            });
+            if (cachedMatches.length > 0) {
+                const matches = cachedMatches.map((game) => {
+                    const participant = game.participants.find(
+                        (item) =>
+                            item.puuid === puuid ||
+                            item.summonerId === targetSummonerId,
+                    ) || game.participants[0];
+                    const championId = participant?.championId || 0;
+                    const alias = champDict[String(championId)]?.alias;
+                    return {
+                        champImg: alias
+                            ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
+                            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`,
+                        championId,
+                        kills: participant?.kills || 0,
+                        deaths: participant?.deaths || 0,
+                        assists: participant?.assists || 0,
+                        isWin: Boolean(participant?.win),
+                        gameId: game.gameId,
+                        queueId: game.queueId,
+                    } satisfies MatchItemTypes;
+                });
+                return [matches, matches.filter((match) => match.isWin).length];
+            }
+
             let matchList: MatchItemTypes[] = [];
 
             // Get match list based on queue type
@@ -76,20 +106,13 @@ class QueryMatch {
                 [],
             );
 
-            // Calculate win count (assuming this.winCount is updated in findMatch/findSpecialMatch)
-            const winCount = matchList.length > 0 ? this.winCount : 0;
+            const winCount = matchList.filter((match) => match.isWin).length;
 
-            // Determine if player is excellent based on their state and match performance
-            const isExcel = this.isExcelPlayer(summonerState, uniqueMatches);
-
-            // Reset win count for future calls
-            this.winCount = 0;
-
-            return [uniqueMatches, winCount, isExcel];
+            return [uniqueMatches, winCount];
         } catch (error) {
             console.error("Error in queryMatchHistory:", error);
             // Return default values in case of error
-            return [[], 0, false];
+            return [[], 0];
         }
     };
 
@@ -110,11 +133,6 @@ class QueryMatch {
         const { win, kills, deaths, assists } = statsSource;
         const { championId } = p0; // championId 始终在参与者根节点
 
-        // 3. 更新胜率统计 (使用简写)
-        if (win) {
-            this.winCount++;
-        }
-
         // 4. 获取英雄别名
 
         const champAlias = champDict[String(championId)]?.alias;
@@ -133,27 +151,6 @@ class QueryMatch {
             gameId: games.gameId,
             queueId: games.queueId,
         };
-    };
-
-    public isExcelPlayer = (
-        summonerState: string,
-        matchList: MatchItemTypes[],
-    ) => {
-        // 判断是否为小代
-        if (summonerState !== "Y") {
-            return false;
-        }
-        let excellentCount = 0;
-        for (let match of matchList.slice(0, 5)) {
-            const kda =
-                match.deaths === 0
-                    ? (match.kills + match.assists) * 2
-                    : ((match.kills + match.assists) / match.deaths) * 3;
-            if (kda >= 12) {
-                excellentCount += 1;
-            }
-        }
-        return excellentCount >= 3;
     };
 
     public findMatch = async (

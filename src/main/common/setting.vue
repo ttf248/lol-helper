@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { Ref, ref } from "vue";
 import { ConfigSettingTypes } from "@/background/types/";
-import { optionsChampion, keywordsList } from "@/resources/champList";
 import {
 	NDrawerContent,
 	NTag,
 	NButton,
-	NSelect,
 	NSwitch,
-	NSlider,
 	NRadio,
 	NList,
 	NListItem,
@@ -51,23 +48,6 @@ const handleThemeChange = () => {
 		},
 	});
 };
-const commoneChnageSecond = (option: string, second: string) => {
-	if (config.value[option][second] !== true) {
-		config.value[option][second] = false;
-		saveConfig();
-	} else {
-		config.value[option][second] = true;
-		saveConfig();
-	}
-};
-// 设置是否自动选择英雄
-const changePick = () => {
-	commoneChnageSecond("autoPickChampion", "isAuto");
-};
-// 设置是否自动禁用英雄
-const changeBan = () => {
-	commoneChnageSecond("autoBanChampion", "isAuto");
-};
 // 设置自动吸附配置
 const changeAutoAdhere = async (key: number) => {
 	config.value.lolTracker = key;
@@ -79,29 +59,6 @@ const changeAutoAdhere = async (key: number) => {
 	await invoke("sync_tracker_config", { enabled, side });
 };
 
-// 搜索英雄
-const searchChamp = (
-	pattern: string,
-	option: { value: string; label: string },
-) => {
-	if (pattern === "" || pattern === null) {
-		return false;
-	}
-	const keyword = pattern.toLowerCase();
-	const renderList = keywordsList.filter((item) =>
-		item.keywords.toLowerCase().includes(keyword),
-	);
-
-	if (renderList.length === 0) {
-		return false;
-	}
-
-	for (const renderListElement of renderList) {
-		if (renderListElement.name === option.label) {
-			return true;
-		}
-	}
-};
 const restart = async () => {
 	await relaunch();
 };
@@ -184,91 +141,6 @@ const restart = async () => {
 				</n-list-item>
 				<!--        窗口吸附-->
 
-				<!--        秒选英雄-->
-				<n-list-item>
-					<div class="gap-x-5 flex justify-between">
-						<n-tag :bordered="false">秒选英雄</n-tag>
-						<div
-							class="flex flex-grow items-center justify-between"
-						>
-							<n-select
-								v-model:value="
-									config.autoPickChampion.championId
-								"
-								filterable
-								spellcheck="false"
-								size="small"
-								:filter="searchChamp"
-								:options="optionsChampion"
-								:disabled="!config.autoPickChampion.isAuto"
-								@update:value="saveConfig"
-								placeholder="选择英雄"
-								style="width: 126px"
-							/>
-							<n-switch
-								v-model:value="config.autoPickChampion.isAuto"
-								@click="changePick"
-							/>
-						</div>
-					</div>
-				</n-list-item>
-				<!--        秒禁英雄-->
-				<n-list-item>
-					<div class="flex gap-x-5 justify-between">
-						<n-tag :bordered="false">秒禁英雄</n-tag>
-						<div
-							class="flex flex-grow items-center justify-between"
-						>
-							<n-select
-								v-model:value="
-									config.autoBanChampion.championId
-								"
-								filterable
-								spellcheck="false"
-								size="small"
-								:filter="searchChamp"
-								:options="optionsChampion"
-								:disabled="!config.autoBanChampion.isAuto"
-								@update:value="saveConfig"
-								placeholder="选择英雄"
-								style="width: 126px"
-							/>
-							<n-switch
-								v-model:value="config.autoBanChampion.isAuto"
-								@click="changeBan"
-							/>
-						</div>
-					</div>
-				</n-list-item>
-				<!--        秒选/秒禁英雄 是否使用一次关闭-->
-				<n-list-item>
-					<div class="gap-x-5 flex justify-between">
-						<n-tag :bordered="false">昙花一现</n-tag>
-						<div
-							class="flex flex-grow items-center justify-between"
-						>
-							<n-tag
-								:disabled="!config.autoIsOne"
-								:type="config.autoIsOne ? 'success' : 'default'"
-							>
-								使用一次后会禁用</n-tag
-							>
-							<n-switch
-								v-model:value="config.autoIsOne"
-								@click="saveConfig"
-								style="margin-top: 0px"
-							/>
-						</div>
-					</div>
-					<n-tag
-						class="mt-1.5 w-full justify-center"
-						:disabled="true"
-						:bordered="false"
-						size="small"
-					>
-						秒选/秒禁英雄 功能使用一次后关闭</n-tag
-					>
-				</n-list-item>
 				<!--        游戏窗口-->
 				<n-list-item>
 					<div class="gap-x-5 flex justify-between">
@@ -309,27 +181,6 @@ const restart = async () => {
 						关闭自动打开后，进入游戏需点击右下角图标</n-tag
 					>
 				</n-list-item>
-				<!--        秒接对局-->
-				<n-list-item>
-					<div class="gap-x-5 flex justify-between items-center">
-						<n-tag :bordered="false">秒接对局</n-tag>
-						<n-slider
-							v-model:value="config.autoAccept"
-							:step="10"
-							@update:value="saveConfig"
-						/>
-					</div>
-					<n-tag
-						class="mt-1.5 w-full justify-center"
-						:disabled="true"
-						:bordered="false"
-						size="small"
-						>数值: [ {{ "<" }}50 关闭 ] [ =50 开启 ] [ {{ "=" }}60
-						延迟两秒 ]</n-tag
-					>
-				</n-list-item>
-				<!--        秒接对局-->
-
 				<n-list-item style="padding-bottom: 0px">
 					<div class="flex justify-between items-center">
 						<n-tag :bordered="false" size="small">

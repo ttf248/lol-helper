@@ -3,13 +3,12 @@ import { Ref, ref } from "vue";
 import { NDrawer, NDrawerContent, NResult, NSpin } from "naive-ui";
 import MatchDetails from "./matchDetails.vue";
 import MatchConHeader from "./matchConHeader.vue";
-import { queryRankPoint } from "@/lcu/aboutSummoner";
 import MatchDrawer from "@/queryMatch/common/matchDrawer.vue";
 import MatchDetailsFighter from "@/queryMatch/common/matchDetailsFighter.vue";
 import { SumDetail, SummonerDetailInfo } from "@/queryMatch/utils/MatchDetail";
 
 const emits = defineEmits(["changeSum"]);
-const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn, gameId } =
+const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn } =
     defineProps<{
         teamOne: SummonerDetailInfo[];
         teamTwo: SummonerDetailInfo[];
@@ -17,12 +16,10 @@ const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn, gameId } =
         queueId: number;
         summonerId: number;
         isGameIn: boolean;
-        gameId: number;
     }>();
 
 const rotatedIndex = ref(0);
 const isMatchDra = ref(false);
-const isAllowAdd = ref(true);
 const curMatchDraData: Ref<null | SumDetail> = ref(null);
 const drawerLoading = ref(false);
 const drawerError = ref<string | null>(null);
@@ -53,18 +50,11 @@ const openMatchDra = async (summonerId: number) => {
         if (summonerInfo === undefined) {
             throw new Error("当前对局没有该玩家的完整身份数据");
         }
-        isAllowAdd.value =
-            allTeam.find(
-                (v) =>
-                    v.accountId ===
-                    JSON.parse(localStorage.getItem("sumInfo") as string)
-                        .summonerId,
-            ) !== undefined;
         curMatchDraData.value = await getDrawerData(summonerInfo);
     } catch (error) {
         console.error("Failed to load player match details", error);
         drawerError.value =
-            "该玩家的召唤师信息或排位接口没有返回数据，请稍后重试。";
+            "该玩家的对局数据没有返回完整信息，请稍后重试。";
     } finally {
         drawerLoading.value = false;
     }
@@ -73,7 +63,6 @@ const openMatchDra = async (summonerId: number) => {
 const getDrawerData = async (
     summonerInfo: SummonerDetailInfo,
 ): Promise<SumDetail> => {
-    const rankList = await queryRankPoint(summonerInfo.puuid);
     const listItemData = [
         ["输出伤害", summonerInfo.totalDamageDealtToChampions],
         ["物理伤害", summonerInfo.physicalDamageDealtToChampions],
@@ -93,7 +82,6 @@ const getDrawerData = async (
         kda: `${summonerInfo.kills}-${summonerInfo.deaths}-${summonerInfo.assists}`,
         champLevel: summonerInfo.champLevel,
         listItemData: listItemData,
-        rankData: rankList,
         runesList: summonerInfo.runesList,
         spell1Id: summonerInfo.spell1Id,
         spell2Id: summonerInfo.spell2Id,
@@ -172,8 +160,6 @@ const searchSummoner = () => {
         <match-drawer
             v-else-if="curMatchDraData !== null"
             :search-summoner="searchSummoner"
-            :is-allow-add="isAllowAdd"
-            :game-id="gameId"
             :personal-details="curMatchDraData"
         />
     </n-drawer>

@@ -1,10 +1,15 @@
 mod lcu;
+mod database;
 mod lol_window_tracker;
 mod shaco;
+use database::{
+    cache_match_history, database_status, database_summary, get_cached_match_history,
+    DatabaseState,
+};
 use lcu::{
     check_borderless_mode, get_lol_region, get_match_list, init_keyboard, invoke_lcu,
     get_ingame_players, is_game_start, launch_lol, listen_for_client_start, set_borderless_mode,
-    start_champ_select, start_current_champ_select, start_listener,
+    start_listener,
 };
 use lol_window_tracker::{start_tracking_loop, sync_tracker_config};
 use std::sync::atomic::AtomicBool;
@@ -20,7 +25,10 @@ pub struct LocalTestState {
 
 #[tokio::main]
 pub async fn run() {
+    // 应用启动阶段先完成 PostgreSQL 连接和表结构检查，前端可通过 database_status 展示结果。
+    let database = DatabaseState::initialize().await;
     tauri::Builder::default()
+        .manage(database)
         .manage(LocalTestState {
             is_enabled: Arc::new(AtomicBool::new(false)), // 初始设为 false，等前端同步
             is_running: Arc::new(AtomicBool::new(false)), // 初始为未运行
@@ -29,19 +37,21 @@ pub async fn run() {
         .invoke_handler(tauri::generate_handler![
             get_lol_region,
             start_listener,
-            start_champ_select,
             invoke_lcu,
             get_match_list,
             is_game_start,
             get_ingame_players,
             init_keyboard,
             listen_for_client_start,
-            start_current_champ_select,
             launch_lol,
             start_tracking_loop,
             sync_tracker_config,
             set_borderless_mode,
             check_borderless_mode,
+            database_status,
+            cache_match_history,
+            get_cached_match_history,
+            database_summary,
         ])
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_process::init())
@@ -58,7 +68,6 @@ pub async fn run() {
                 .with_denylist(&[
                     "background",
                     "queryMatchWindow",
-                    "matchAnalysisWindow",
                     "recentMatchWindow",
                 ])
                 .build(),

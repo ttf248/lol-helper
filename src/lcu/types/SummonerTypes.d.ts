@@ -39,7 +39,6 @@ export interface summonerInfo {
 
 export interface SummonerData {
 	summonerInfo: summonerInfo | null;
-	rankList: string[] | null;
 	champLevel: any[][] | null;
 }
 export interface ChampionMasteryTypes {

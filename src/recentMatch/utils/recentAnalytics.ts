@@ -6,6 +6,8 @@ import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import BlackList from "@/main/views/record/blackList";
 import { Hater } from "@/main/views/record/blackListTypes";
+import { cacheHistory, getCachedHistory } from "@/recentMatch/utils/databaseCache";
+import { isModeQueue, MatchModeKey, modeForQueue } from "@/recentMatch/utils/matchMode";
 import {
   ChampionRecentStats,
   ConfidenceInfo,
@@ -29,7 +31,9 @@ export const RECENT_ANALYSIS_GAME_COUNT = 100;
 export const RECENT_DEFAULT_GAME_COUNT = 10;
 export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 
-// 非当前模式的历史记录会占用窗口，因此多扫描一些记录后再截取当前队列的 100 场。
+// 默认只读取小窗口，避免首页第一次打开就等待分页扫描；完整窗口在后台补齐。
+const HISTORY_FAST_SCAN_LIMIT = 40;
+// 非当前模式的历史记录会占用窗口，因此完整分析需要多扫描一些记录。
 const HISTORY_SCAN_LIMIT = 300;
 const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
@@ -278,12 +282,44 @@ const loadPlayerHistory = async (
   }
 
   const request = (async (): Promise<PlayerHistorySnapshot> => {
+    const modeKey = modeForQueue(queueId);
+    const cachedGames = await getCachedHistory({
+      puuid: player.puuid,
+      queueId,
+      modeKey,
+      limit: RECENT_ANALYSIS_GAME_COUNT,
+    });
+    if (cachedGames.length > 0) {
+      const limitedGames = new Map(
+        cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
+          game.gameId,
+          game,
+        ]),
+      );
+      return {
+        puuid: player.puuid,
+        games: limitedGames,
+        source: "PostgreSQL 本地缓存",
+        complete: limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT,
+      };
+    }
+
     const result = await queryMatchHistoryFullWithSource(
       player.puuid,
       0,
       HISTORY_SCAN_LIMIT,
     );
     const games = uniqueGames(result?.games ?? [], queueId, player);
+    if (games.size > 0) {
+      void cacheHistory({
+        puuid: player.puuid,
+        summonerId: player.summonerId,
+        summonerName: player.summonerName,
+        modeKey,
+        source: result?.source || "unavailable",
+        games: Array.from(games.values()),
+      });
+    }
     const limitedGames = new Map(
       Array.from(games.entries()).slice(0, RECENT_ANALYSIS_GAME_COUNT),
     );
@@ -297,6 +333,112 @@ const loadPlayerHistory = async (
 
   historyCache.set(key, request);
   return request;
+};
+
+const modeHydration = new Map<string, Promise<void>>();
+
+const sortGames = (games: NormalizedHistoryGame[]) =>
+  Array.from(new Map(games.map((game) => [game.gameId, game])).values()).sort(
+    (left, right) => right.gameCreation - left.gameCreation,
+  );
+
+const normalizeModeGames = (
+  games: MatchHistoryGame[],
+  modeKey: MatchModeKey,
+) =>
+  sortGames(
+    games
+      .map(normalizeHistoryGame)
+      .filter(
+        (game): game is NormalizedHistoryGame =>
+          game !== null && isModeQueue(game.queueId, modeKey),
+      ),
+  );
+
+const hydratePlayerModeHistory = (
+  player: RecentSumInfo,
+  modeKey: MatchModeKey,
+  existingGames: NormalizedHistoryGame[],
+) => {
+  const key = `${player.puuid}:${modeKey}`;
+  const existing = modeHydration.get(key);
+  if (existing) return existing;
+
+  const request = (async () => {
+    const result = await queryMatchHistoryFullWithSource(
+      player.puuid,
+      0,
+      HISTORY_SCAN_LIMIT,
+    );
+    const games = sortGames([
+      ...existingGames,
+      ...normalizeModeGames(result?.games || [], modeKey),
+    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+    if (games.length > 0) {
+      await cacheHistory({
+        puuid: player.puuid,
+        summonerId: player.summonerId,
+        summonerName: player.summonerName,
+        modeKey,
+        source: result?.source || "unavailable",
+        games,
+      });
+    }
+  })().catch((error) => {
+    console.warn("Failed to hydrate full mode history", error);
+  });
+  modeHydration.set(key, request);
+  return request;
+};
+
+const loadPlayerModeHistory = async (
+  player: RecentSumInfo,
+  modeKey: MatchModeKey,
+  requestedGames = RECENT_DEFAULT_GAME_COUNT,
+): Promise<PlayerHistorySnapshot> => {
+  const cachedGames = await getCachedHistory({
+    puuid: player.puuid,
+    modeKey,
+    limit: RECENT_ANALYSIS_GAME_COUNT,
+  });
+  if (cachedGames.length >= Math.min(requestedGames, RECENT_ANALYSIS_GAME_COUNT)) {
+    if (cachedGames.length < RECENT_ANALYSIS_GAME_COUNT) {
+      void hydratePlayerModeHistory(player, modeKey, cachedGames);
+    }
+    return {
+      puuid: player.puuid,
+      games: new Map(cachedGames.map((game) => [game.gameId, game])),
+      source: "PostgreSQL 本地缓存",
+      complete: cachedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+    };
+  }
+
+  const fastResult = await queryMatchHistoryFullWithSource(
+    player.puuid,
+    0,
+    HISTORY_FAST_SCAN_LIMIT,
+  );
+  const fastGames = sortGames([
+    ...cachedGames,
+    ...normalizeModeGames(fastResult?.games || [], modeKey),
+  ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+  if (fastGames.length > 0) {
+    void cacheHistory({
+      puuid: player.puuid,
+      summonerId: player.summonerId,
+      summonerName: player.summonerName,
+      modeKey,
+      source: fastResult?.source || "unavailable",
+      games: fastGames,
+    });
+    void hydratePlayerModeHistory(player, modeKey, fastGames);
+  }
+  return {
+    puuid: player.puuid,
+    games: new Map(fastGames.map((game) => [game.gameId, game])),
+    source: fastResult?.source || "unavailable",
+    complete: fastGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+  };
 };
 
 const mapWithConcurrency = async <T, R>(
@@ -728,8 +870,10 @@ const buildPlayerAnalysis = (
   partyGroups: PartyGroupAnalysis[],
   opponents: OpponentMatchupStats[],
   moderation: PlayerModerationInfo,
+  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
 ): PlayerRecentAnalysis => {
-  const games = Array.from(snapshot.games.values());
+  const allGames = Array.from(snapshot.games.values());
+  const games = allGames.slice(0, requestedGames);
   const playerGames = games
     .map((game) => findPlayerParticipant(game, player))
     .filter(
@@ -739,31 +883,152 @@ const buildPlayerAnalysis = (
   const wins = playerGames.filter((participant) => participant.win).length;
   const actualGames = playerGames.length;
   const champions = buildChampionStats(games, player);
-  const sampleScore = Math.min(actualGames / RECENT_ANALYSIS_GAME_COUNT, 1) * 80;
-  const confidenceScore = sampleScore + (snapshot.complete ? 20 : 0);
+  const sampleScore = Math.min(actualGames / requestedGames, 1) * 80;
+  const confidenceScore = sampleScore +
+    (snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT ? 20 : 0);
   const confidenceReasons = [
-    `有效样本 ${actualGames}/${RECENT_ANALYSIS_GAME_COUNT} 场`,
-    snapshot.complete ? "已覆盖完整 100 场窗口" : "当前队列历史不足 100 场",
+    `有效样本 ${actualGames}/${requestedGames} 场`,
+    snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT
+      ? "已覆盖完整 100 场窗口"
+      : `当前按最近 ${requestedGames} 场样本统计`,
     "统计基于完整 participant 身份关联",
   ];
 
   return {
-    requestedGames: RECENT_ANALYSIS_GAME_COUNT,
+    requestedGames,
     actualGames,
     wins,
     winRate: roundRate(wins, actualGames),
     currentChampion:
       champions.find((item) => item.championId === player.champId) || null,
     champions,
-    trends: buildTrendStats(games, player),
+    // 主指标遵循当前窗口；趋势始终使用已加载的完整历史，避免默认 10 场时
+    // 20/50/100 场被错误地显示为无数据。
+    trends: buildTrendStats(allGames, player),
     positions: buildPositionStats(games, player),
     opponents,
     partyGroups,
     confidence: confidenceInfo(confidenceScore, confidenceReasons),
     moderation,
     source: snapshot.source,
-    historyComplete: snapshot.complete,
+    historyComplete:
+      snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT,
   };
+};
+
+/** 默认面板使用最近 10 场；用户展开更多分析时仍可复用同一份缓存。 */
+export const loadPlayerModeAnalysis = async (
+  player: RecentSumInfo,
+  modeKey: MatchModeKey,
+  requestedGames = 10,
+): Promise<PlayerRecentAnalysis> => {
+  let snapshot = await loadPlayerModeHistory(player, modeKey, requestedGames);
+  if (requestedGames > RECENT_DEFAULT_GAME_COUNT && snapshot.games.size < requestedGames) {
+    const hydration = modeHydration.get(`${player.puuid}:${modeKey}`);
+    if (hydration) {
+      await hydration;
+      const hydratedGames = await getCachedHistory({
+        puuid: player.puuid,
+        modeKey,
+        limit: RECENT_ANALYSIS_GAME_COUNT,
+      });
+      if (hydratedGames.length > snapshot.games.size) {
+        snapshot = {
+          ...snapshot,
+          games: new Map(hydratedGames.map((game) => [game.gameId, game])),
+          source: "PostgreSQL 本地缓存",
+          complete: hydratedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+        };
+      }
+    }
+  }
+  if (snapshot.games.size === 0) {
+    return buildQuickPlayerAnalysis(player);
+  }
+
+  // 单个用户的默认面板也需要展示关系分析。历史详情已经包含每局的
+  // participant，因此可以从同一份缓存构造共同对局快照，不必为每个队友
+  // 再发起一次历史接口请求。
+  const related = new Map<
+    string,
+    {
+      player: RecentSumInfo;
+      sameTeamGames: number;
+      opposedGames: number;
+      games: Map<number, NormalizedHistoryGame>;
+    }
+  >();
+  for (const game of snapshot.games.values()) {
+    const ownParticipant = findPlayerParticipant(game, player);
+    if (!ownParticipant) continue;
+    for (const participant of game.participants) {
+      if (participantMatchesPlayer(participant, player)) continue;
+      const existing = related.get(participant.puuid) || {
+        player: {
+          summonerId: participant.summonerId || 0,
+          summonerName: participant.summonerName || participant.puuid,
+          puuid: participant.puuid,
+          championUrl: "",
+          champId: participant.championId,
+          teamParticipantId: 0,
+          matchList: [],
+        },
+        sameTeamGames: 0,
+        opposedGames: 0,
+        games: new Map<number, NormalizedHistoryGame>(),
+      };
+      existing.games.set(game.gameId, game);
+      if (participant.teamId === ownParticipant.teamId) {
+        existing.sameTeamGames += 1;
+      } else {
+        existing.opposedGames += 1;
+      }
+      related.set(participant.puuid, existing);
+    }
+  }
+
+  const relatedEntries = Array.from(related.values());
+  const partyPlayers = relatedEntries
+    .filter((item) => item.sameTeamGames > 0)
+    .sort((left, right) => right.sameTeamGames - left.sameTeamGames)
+    .slice(0, 10)
+    .map((item) => item.player);
+  const opponentPlayers = relatedEntries
+    .filter((item) => item.opposedGames > 0)
+    .sort((left, right) => right.opposedGames - left.opposedGames)
+    .slice(0, 10)
+    .map((item) => item.player);
+  const selectedPlayers = [
+    player,
+    ...partyPlayers,
+    ...opponentPlayers.filter(
+      (opponent) => !partyPlayers.some((item) => item.puuid === opponent.puuid),
+    ),
+  ];
+  const snapshots = new Map<string, PlayerHistorySnapshot>([
+    [player.puuid, snapshot],
+  ]);
+  selectedPlayers.slice(1).forEach((item) => {
+    const itemSnapshot = related.get(item.puuid);
+    if (itemSnapshot) {
+      snapshots.set(item.puuid, {
+        puuid: item.puuid,
+        games: itemSnapshot.games,
+        source: snapshot.source,
+        complete: snapshot.complete,
+      });
+    }
+  });
+  const moderationMap = await loadModerationMap(selectedPlayers);
+
+  return buildPlayerAnalysis(
+    player,
+    snapshot,
+    buildPartyGroups([player, ...partyPlayers], snapshots, moderationMap),
+    buildOpponentStats(player, opponentPlayers, snapshots, moderationMap),
+    moderationMap.get(player.puuid) || emptyModeration(),
+    requestedGames,
+  );
 };
 
 const buildNetworkAnalysis = (

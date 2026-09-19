@@ -134,7 +134,6 @@ const clearBlackMatch = () => {
                 :team-two="blackMatchDetails[0].teamTwo"
                 :summoner-id="blackMatchDetails[1]"
                 :is-game-in="true"
-                :game-id="blackMatchDetails[0].gameId"
                 :team-one="blackMatchDetails[0].teamOne"
             />
         </n-drawer-content>

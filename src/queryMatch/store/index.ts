@@ -4,8 +4,8 @@ import { summonerInfo } from "@/lcu/types/SummonerTypes";
 import BaseMatch from "@/queryMatch/utils/baseMatch";
 import { SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
-import { RencentDataAnalysisTypes } from "@/main/views/teammate/teammateTypes";
-import { findTopChamp } from "@/main/views/teammate/utils";
+import { RencentDataAnalysisTypes } from "@/queryMatch/utils/analysisTypes";
+import { findTopChamp } from "@/queryMatch/utils/analysisSummary";
 import { MatchHistorySource } from "@/lcu/aboutMatch";
 
 const baseMatch = new BaseMatch();
@@ -20,7 +20,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			recentMatchList20: [] as SimpleMatchDetailsTypes[],
 			specialMatchList: [] as SimpleMatchDetailsTypes[],
 			participantsInfo: null as null | ParticipantsInfo,
-			sumInfo: null as { info: summonerInfo; rank: string[] } | null,
+			sumInfo: null as { info: summonerInfo } | null,
 			matchLoading: true,
 			detailLoading: false,
 			matchError: null as string | null,
@@ -59,7 +59,6 @@ const useMatchStore = defineStore("useMatchStore", {
 				}
 				this.sumInfo = {
 					info: sumResult.summonerInfo,
-					rank: sumResult.rankList,
 				};
 				this.summonerId = sumResult.summonerInfo.currentId;
 				this.matchList = [];

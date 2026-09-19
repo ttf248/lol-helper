@@ -7,7 +7,6 @@ import {
 	NButtonGroup,
 	NPopconfirm,
 	NDivider,
-	NDrawer,
 } from "naive-ui";
 import {
 	ThumbUp,
@@ -16,23 +15,15 @@ import {
 	CircleMinus,
 	CircleX,
 	Refresh,
-	ApiApp,
 } from "@vicons/tabler";
-import { onMounted, reactive, ref, watch } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ConfigSettingTypes } from "@/background/types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import hexMain from "@/recentMatch/hexRecommend/hexMain.vue";
-import { window as tauriWindow } from "@tauri-apps/api";
-import { emitTo, once } from "@tauri-apps/api/event";
-import { requestFetch } from "@/main/utils/request";
-import { HexInfoTypes } from "@/main/views/rune/runeTypes";
-import { champDict } from "@/resources/champList";
 import BrandLockup from "@/components/BrandLockup.vue";
 
-const { winCount, isFriCount, queueId, analysisLoading } = defineProps<{
+const { winCount, isFriCount, analysisLoading } = defineProps<{
 	winCount: { friend: number[]; enemy: number[] };
 	isFriCount: boolean;
-	queueId: number;
 	analysisLoading: boolean;
 }>();
 const emits = defineEmits<{ openNetwork: [] }>();
@@ -41,50 +32,12 @@ const config: ConfigSettingTypes = reactive(
 );
 
 const isModalOpen = ref(false);
-const isHexDrawerOpen = ref(false);
-const curChampId = ref(-1);
-const hexInfo = ref<HexInfoTypes | null>(null);
 
 onMounted(() => {
 	if (!config.isGameInTips) {
 		isModalOpen.value = true;
 	}
 	window.addEventListener("keydown", handleKeyDown);
-});
-
-// 监听 queueId 的变化
-watch(
-	() => queueId,
-	(newVal) => {
-		if (newVal === 2400 && curChampId.value === -1) {
-			// 向主窗口发送消息
-			tauriWindow.Window.getByLabel("mainWindow").then((win) => {
-				if (win !== null) {
-					emitTo("mainWindow", "cacheMatchList", "getCurChampId");
-				}
-			});
-		}
-	},
-	{
-		immediate: false,
-	},
-);
-
-// 监听当前英雄ID
-once<{ id: number }>("curChampId", async (res) => {
-	if (res.payload.id !== -1) {
-		curChampId.value = res.payload.id;
-		const date = new Date(new Date().toDateString()).getTime();
-		const baseUrl =
-			"https://frank-1304009809.cos.ap-chongqing.myqcloud.com";
-		const resInfo = await requestFetch<HexInfoTypes | null>(
-			`${baseUrl}/hex/${champDict[res.payload.id].alias}.json?date=${date}`,
-			"GET",
-		);
-		if (resInfo === null) return;
-		hexInfo.value = resInfo;
-		isHexDrawerOpen.value = true;
-	}
 });
 
 const handleMin = async () => {
@@ -208,27 +161,9 @@ const changeConfig = () => {
 					@click="refresh"
 					style="padding: 12px"
 					type="default"
-					v-if="queueId !== 2400"
 				>
 					<template #icon>
 						<N-icon :size="20" :component="Refresh" />
-					</template>
-				</n-button>
-
-				<n-button
-					:focusable="false"
-					@click="isHexDrawerOpen = true"
-					class="bg-[linear-gradient(139deg,#FF9BD2_0%,#6B42DC_49.5%,#54ACEE_100%)]"
-					style="padding: 12px"
-					type="default"
-					v-else
-				>
-					<template #icon>
-						<N-icon
-							color="#FFFFFF"
-							:size="20"
-							:component="ApiApp"
-						/>
 					</template>
 				</n-button>
 
@@ -269,13 +204,11 @@ const changeConfig = () => {
 			<p class="my-1 text-red-500">
 				0：在游戏中显示，请将游戏窗口模式设置成【无边框】
 			</p>
-			<p class="my-1">1：熟练度：英雄熟练度分数，右上角：英雄熟练度等级</p>
-			<p class="my-1">2：展开分析中的“疑似开黑”表示最近100场至少2次历史同队</p>
-			<p class="my-1">3：游戏模式为单双 / 灵活排位时，只显示排位数据</p>
-			<p class="my-1">4：标签含义 【S : 小代】【A : 绝活】【B : 熟练】</p>
-			<p class="my-1">5：点击下方战绩标签，即可查看此局详细数据</p>
-			<p class="my-1">6：点击英雄头像，可查看此英雄的技能信息</p>
-			<p class="my-1">7：先展示最近10场，后台扩展100场；展开分析可查看详细统计</p>
+			<p class="my-1">1：展开分析中的“疑似开黑”表示历史同队记录达到判断阈值</p>
+			<p class="my-1">2：统计会区分匹配、排位、大乱斗和海克斯大乱斗模式</p>
+			<p class="my-1">3：点击下方战绩标签，即可查看此局详细数据</p>
+			<p class="my-1">4：点击英雄头像，可查看英雄信息</p>
+			<p class="my-1">5：先展示最近 10 场，完整窗口在后台补齐</p>
 
 			<n-divider style="margin: 22px 0 20px 0" />
 
@@ -292,21 +225,4 @@ const changeConfig = () => {
 		</div>
 	</div>
 
-	<!-- 海克斯推荐 -->
-	<n-drawer
-		style="border-radius: 0.5rem"
-		v-model:show="isHexDrawerOpen"
-		placement="right"
-		width="320px"
-		:auto-focus="false"
-	>
-		<hex-main
-			v-if="queueId === 2400 && hexInfo != null"
-			:alias="champDict[curChampId].alias"
-			:champName="champDict[curChampId].label"
-			:title="champDict[curChampId].title"
-			:hexInfo="hexInfo"
-			:minWindow="() => (isHexDrawerOpen = false)"
-		/>
-	</n-drawer>
 </template>

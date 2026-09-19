@@ -51,25 +51,6 @@ export class QueryMatchWindow {
 	}
 }
 
-export class MatchAnalysisWindow {
-	constructor() {
-		const webview = new WebviewWindow("matchAnalysisWindow", {
-			title: "战绩分析",
-			url: "src/matchAnalysis/index.html",
-			width: 1024,
-			height: 576,
-			resizable: false,
-			decorations: false,
-			center: true,
-			visible: false,
-			transparent: true,
-		});
-		webview.once("tauri://created", async function () {
-			webview.show();
-		});
-	}
-}
-
 export class RecentMatchWindow {
 	constructor() {
 		const webview = new WebviewWindow("recentMatchWindow", {

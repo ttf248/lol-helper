@@ -51,7 +51,6 @@ export default defineConfig(async () => ({
 				background: path.resolve(__dirname, "src/background/index.html"),
 				queryMatch: path.resolve(__dirname, "src/queryMatch/index.html"),
 				recentMatch: path.resolve(__dirname, "src/recentMatch/index.html"),
-				matchAnalysis: path.resolve(__dirname, "src/matchAnalysis/index.html"),
 			},
 		},
 		// Tauri uses Chromium on Windows and WebKit on macOS and Linux

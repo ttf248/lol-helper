@@ -47,7 +47,7 @@ const showSumDetails = (summonerId:number) => {
     <n-space style="margin-top: 17px;" :size="[0,54.8]" justify="space-between">
       <div v-for="summoner in teamOne" >
         <n-space style="width: 290px;" @click="showSumDetails(summoner.accountId)" vertical>
-          <match-sum-details :summoner="summoner" :summoner-id="summonerId"/>
+          <match-sum-details :item-width="290" :summoner="summoner" :summoner-id="summonerId"/>
           <div class="flex justify-between">
             <n-tag style="width: 82px;justify-content: center;height: 26px;" type="success"
                    :bordered="false" size="small">输出：{{summoner.totalDamageDealtToChampions}}</n-tag>

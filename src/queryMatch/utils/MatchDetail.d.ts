@@ -23,7 +23,6 @@ export interface SumDetail {
   spell2Id: number;
   runesList: number[];
   listItemData: any[][];
-  rankData: string[];
   summonerId: number;
 }
 

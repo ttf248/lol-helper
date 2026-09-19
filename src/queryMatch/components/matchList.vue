@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {ref, watch} from "vue";
-import {NAvatar,NSpace, NTag,NList,NListItem,NIcon} from "naive-ui";
+import {NAvatar,NSpace, NTag,NList,NListItem} from "naive-ui";
 import {ThumbUp,ThumbDown} from "@vicons/tabler"
 import useMatchStore from "@/queryMatch/store";
 

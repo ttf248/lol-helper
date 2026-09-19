@@ -5,8 +5,6 @@ import {
   NProgress,
   NSpace,
   NTag,
-  NList,
-  NListItem,
   NEllipsis,
   NStep,
   NIcon,
@@ -14,21 +12,16 @@ import {
   NSkeleton
 } from "naive-ui"
 import {summonerInfo} from "@/lcu/types/SummonerTypes";
-import MatchAnalysis from "@/main/views/teammate/matchAnalysis.vue";
+import MatchAnalysis from "@/queryMatch/components/matchAnalysisSummary.vue";
 import useMatchStore from "@/queryMatch/store";
 import {Crown, Planet} from "@vicons/tabler";
 
 const {sumInfo} = defineProps<{
-  sumInfo:{ info:summonerInfo, rank:string[] }
+  sumInfo:{ info:summonerInfo }
 }>()
 
 const matchStore = useMatchStore()
 
-const rankRender = [
-  {title:'单双排位',value:sumInfo.rank[0]},
-  {title:'灵活排位',value:sumInfo.rank[1]},
-  {title:'云顶排位',value:sumInfo.rank[2]}
-]
 </script>
 
 <template>
@@ -78,21 +71,6 @@ const rankRender = [
       </div>
       <!--    头像 昵称 等级-->
 
-      <!--    排位数据-->
-      <n-list style="margin-top: 21px;">
-        <n-list-item v-for="rank in rankRender">
-          <div class="flex justify-between">
-            <n-tag style="width: 76px;justify-content: center;" type="success" :bordered="false" :round="false" >
-              {{ rank.title }}
-            </n-tag>
-
-            <n-tag style="width: 76px;justify-content: center;" type="warning" :bordered="false" :round="false">
-              {{ rank.value }}
-            </n-tag>
-          </div>
-        </n-list-item>
-      </n-list>
-      <!--    排位数据-->
     </n-card>
     <n-card size="small" class="mt-3 shadow" content-style="padding-top:10px" style="height: 337px">
       <!--      战绩分析加载页面-->
@@ -107,7 +85,7 @@ const rankRender = [
               </n-icon>
             </template>
             <n-space justify="space-between">
-              <n-space vertical :size="[0,2.5]" v-for="i in 3">
+              <n-space vertical :size="[0,2.5]" v-for="index in 3" :key="index">
                 <n-skeleton height="45px" width="45px" :sharp="false"/>
                 <n-tag :bordered="false" size="small" class="text-sm"
                        style="width: 45px;justify-content: center">
@@ -124,7 +102,7 @@ const rankRender = [
               </n-icon>
             </template>
             <n-space class="pt-1" :size="[12,16]" justify="space-between">
-              <n-space :size="[0,3]" vertical v-for="i in 6">
+              <n-space :size="[0,3]" vertical v-for="index in 6" :key="index">
                 <n-skeleton height="45px" circle/>
                 <n-tag :bordered="false" round
                        style="width: 45px;height:22px;padding: 0 12px">

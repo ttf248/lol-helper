@@ -1,16 +1,12 @@
 <script setup lang="ts">
-import { NSpace, NIcon } from "naive-ui";
-import { SmartHome, Ghost, List, Notebook, Stack2 } from '@vicons/tabler';
+import { NIcon } from "naive-ui";
+import { SmartHome } from '@vicons/tabler';
 
 const {curPos,navigateToPage} = defineProps<{
   curPos:number,
   navigateToPage:(page:string,index:number) => void}>()
 const icons = [
   { icon: SmartHome, index: 0,route:'home' },
-  { icon: List, index: 1,route:'rank' },
-  { icon: Ghost, index: 2,route:'teammate' },
-  { icon: Stack2, index: 3,route:'rune' },
-  { icon: Notebook, index: 4,route:'record' },
 ]
 const iconColor = localStorage.getItem('theme')!=='dark' ? ['#18a058',''] :["#63e2b7","#f1f5f9"]
 

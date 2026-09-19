@@ -33,8 +33,6 @@ const queryMatch = new QueryMatch();
 const isLcuErr = ref(true);
 const friendList: Ref<RecentSumInfo[]> = ref([]);
 const enemyList: Ref<RecentSumInfo[]> = ref([]);
-const fScoreMax = ref(0);
-const eScoreMax = ref(0);
 const queueId: Ref<number> = ref(0);
 const winCount = ref({ friend: [0, 0], enemy: [0, 0] });
 const isFriCount = ref(true);
@@ -128,9 +126,6 @@ const init = (simpleMatchList: { [key: string]: SimpleMatchTypes[] }) => {
             // 判断敌我双方谁的赢场最多
             isFriCount.value =
                 winCount.value.friend[0] >= winCount.value.enemy[0];
-            fScoreMax.value = getMaxSummonerStateScore(friendList.value);
-            eScoreMax.value = getMaxSummonerStateScore(enemyList.value);
-
             // 先用基础战绩列表中的最近 10 场填充面板，完整 100 场分析在后台加载。
             applyFastRecentAnalysis([
                 ...friendList.value,
@@ -159,30 +154,23 @@ const getCompleteSumInfo = async (
     queueId: number,
     isFri: boolean,
 ) => {
-    for (const summoner of sumInfos) {
-        // 根据已获取的召唤师puuid获取每一个召唤师的战绩数据
-        const resultList = await queryMatch.queryMatchHistory(
-            summoner.puuid,
-            queueId,
-            summoner.summonerState.label,
-            summoner.summonerId,
-        );
-        summoner.matchList = resultList[0];
-        // 判断是否为小代
-        if (summoner.summonerState.label === "Y" && resultList[2]) {
-            summoner.summonerState.label = "S";
-        } else if (summoner.summonerState.label === "Y") {
-            summoner.summonerState.label = "Z";
-        }
-
-        // 判断是否为友方或敌方，分别写入不同的数据
-        const targetList = isFri ? friendList.value : enemyList.value;
-        const countList = isFri ? winCount.value.friend : winCount.value.enemy;
-
-        countList[0] += resultList[1];
-        countList[1] += resultList[0].length;
+    const results = await Promise.all(
+        sumInfos.map(async (summoner) => ({
+            summoner,
+            result: await queryMatch.queryMatchHistory(
+                summoner.puuid,
+                queueId,
+                summoner.summonerId,
+            ),
+        })),
+    );
+    const targetList = isFri ? friendList.value : enemyList.value;
+    const countList = isFri ? winCount.value.friend : winCount.value.enemy;
+    for (const { summoner, result } of results) {
+        summoner.matchList = result[0];
+        countList[0] += result[1];
+        countList[1] += result[0].length;
         targetList.push(summoner);
-        await new Promise((resolve) => setTimeout(resolve, 200));
     }
 };
 
@@ -209,18 +197,6 @@ const getSumInfoFromCache = async (
                     queueId: match.queueId,
                 };
             });
-            // 判断是否为小代
-            if (
-                sumInfo.summonerState.label === "Y" &&
-                queryMatch.isExcelPlayer(
-                    sumInfo.summonerState.label,
-                    matchListElement,
-                )
-            ) {
-                sumInfo.summonerState.label = "S";
-            } else if (sumInfo.summonerState.label === "Y") {
-                sumInfo.summonerState.label = "Z";
-            }
             sumInfo.matchList = matchListElement;
             friendList.value.push(sumInfo);
             winCount.value.friend[0] += winMatchCount;
@@ -280,17 +256,6 @@ const getChampInfoList = async (champId: number) => {
     }
 };
 
-const getMaxSummonerStateScore = (
-    recentSumInfoList: RecentSumInfo[],
-): number => {
-    if (!recentSumInfoList || recentSumInfoList.length === 0) {
-        return 0;
-    }
-
-    return recentSumInfoList.reduce((maxScore, current) => {
-        return Math.max(maxScore, current.summonerState.score);
-    }, 0);
-};
 </script>
 
 <template>
@@ -308,7 +273,6 @@ const getMaxSummonerStateScore = (
         <div v-else class="flex justify-between">
             <recent-match-list
                 @show-detail="openDetailDrawer"
-                :max-score="fScoreMax"
                 :sum-list="friendList"
                 :queue-id="queueId"
                 :is-fri="true"
@@ -316,7 +280,6 @@ const getMaxSummonerStateScore = (
             />
             <recent-match-list
                 @show-detail="openDetailDrawer"
-                :max-score="eScoreMax"
                 :sum-list="enemyList"
                 :queue-id="queueId"
                 :is-fri="false"
@@ -355,7 +318,6 @@ const getMaxSummonerStateScore = (
                 :queue-id="participantsInfo.queueId"
                 :summoner-id="currentId"
                 :is-game-in="true"
-                :game-id="participantsInfo.gameId"
             />
             <div
                 class="w-full h-full flex justify-center items-center"
