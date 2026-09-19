@@ -46,7 +46,7 @@ class QueryMatch {
     ) => {
         const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
         for (const rawGame of games) {
-            const normalized = normalizeHistoryGame(rawGame);
+            const normalized = normalizeHistoryGame(rawGame, source);
             if (!normalized) continue;
             const modeKey = modeForQueue(normalized.queueId);
             const modeGames = gamesByMode.get(modeKey) || [];

@@ -180,6 +180,17 @@ export interface MatchItemTypes {
   gameCreation?: number;
 }
 
+export interface HistoryCoverageInfo {
+  cachedGames: number;
+  interfaceGames: number;
+  mergedGames: number;
+  completeGames: number;
+  partialGames: number;
+  conflicts: number;
+  sources: string[];
+  latestGameCreation: number | null;
+}
+
 export interface ChampionRecentStats {
   championId: number;
   games: number;
@@ -277,6 +288,7 @@ export interface PlayerRecentAnalysis {
   moderation: PlayerModerationInfo;
   source: string;
   historyComplete: boolean;
+  dataCoverage?: HistoryCoverageInfo;
   network?: RecentNetworkAnalysis;
 }
 

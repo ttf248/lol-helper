@@ -16,6 +16,7 @@ import {
     normalizeHistoryGame,
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
+import { mergeHistoryGames as mergeNormalizedHistoryGames } from "@/recentMatch/utils/historyData";
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 
 const HISTORY_PAGE_SIZE = 20;
@@ -93,16 +94,18 @@ export default class BaseMatch {
         cachedGames: NormalizedHistoryGame[],
         serverGames: (Games | GamesBySgp)[],
         limit: number,
+        source = "interface",
     ): NormalizedHistoryGame[] => {
-        const unique = new Map<number, NormalizedHistoryGame>();
-        cachedGames.forEach((game) => unique.set(game.gameId, game));
-        serverGames.forEach((rawGame) => {
-            const game = normalizeHistoryGame(rawGame);
-            if (game) unique.set(game.gameId, game);
-        });
-        return Array.from(unique.values())
-            .sort((left, right) => right.gameCreation - left.gameCreation)
-            .slice(0, limit);
+        const normalizedServerGames = serverGames
+            .map((rawGame) => normalizeHistoryGame(rawGame, source))
+            .filter(
+                (game): game is NormalizedHistoryGame => game !== null,
+            );
+        return mergeNormalizedHistoryGames(
+            cachedGames,
+            normalizedServerGames,
+            limit,
+        ).games;
     };
 
     private cacheNormalizedGames = (
@@ -113,7 +116,7 @@ export default class BaseMatch {
     ) => {
         const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
         for (const rawGame of games) {
-            const normalized = normalizeHistoryGame(rawGame);
+            const normalized = normalizeHistoryGame(rawGame, source);
             if (!normalized) continue;
             const modeKey = modeForQueue(normalized.queueId);
             const modeGames = gamesByMode.get(modeKey) || [];
@@ -194,6 +197,7 @@ export default class BaseMatch {
                 cachedGames,
                 synced.games,
                 syncLimit,
+                synced.source || "interface",
             );
             const cachedMatches = mergedGames
                 .map((game) => this.getSimpleCachedMatch(game, puuid))

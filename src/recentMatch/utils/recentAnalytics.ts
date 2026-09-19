@@ -22,6 +22,7 @@ import {
   PlayerAnalysisProgress,
   PlayerModerationInfo,
   PlayerRecentAnalysis,
+  HistoryCoverageInfo,
   PositionRecentStats,
   RecentNetworkAnalysis,
   RecentNetworkEdge,
@@ -29,6 +30,10 @@ import {
   RecentSumInfo,
   WinRateTrendPoint,
 } from "@/recentMatch/utils/queryTypes";
+import {
+  historyGameQuality,
+  mergeHistoryGames,
+} from "@/recentMatch/utils/historyData";
 
 export const RECENT_ANALYSIS_GAME_COUNT = 100;
 export const RECENT_DEFAULT_GAME_COUNT = 10;
@@ -61,6 +66,7 @@ export interface NormalizedHistoryGame {
   gameCreation: number;
   queueId: number;
   participants: NormalizedHistoryParticipant[];
+  source?: string;
 }
 
 interface PlayerHistorySnapshot {
@@ -68,6 +74,7 @@ interface PlayerHistorySnapshot {
   games: Map<number, NormalizedHistoryGame>;
   source: string;
   complete: boolean;
+  dataCoverage?: HistoryCoverageInfo;
 }
 
 export interface RecentAnalysisProgress {
@@ -233,6 +240,7 @@ const combinations = <T>(items: T[], size: number): T[][] => {
 /** 将 LCU/SGP 的不同 participant 结构转换成分析层使用的统一结构。 */
 export const normalizeHistoryGame = (
   game: MatchHistoryGame,
+  source = "interface",
 ): NormalizedHistoryGame | null => {
   if (
     !game ||
@@ -267,6 +275,7 @@ export const normalizeHistoryGame = (
     gameCreation: game.gameCreation,
     queueId: game.queueId,
     participants,
+    source,
   };
 };
 
@@ -274,13 +283,14 @@ const uniqueGames = (
   games: MatchHistoryGame[],
   modeKey: MatchModeKey,
   player: RecentSumInfo,
+  source = "interface",
 ): Map<number, NormalizedHistoryGame> => {
   const result = new Map<number, NormalizedHistoryGame>();
   for (const rawGame of games) {
     if (!isModeQueue(rawGame.queueId, modeKey)) {
       continue;
     }
-    const game = normalizeHistoryGame(rawGame);
+    const game = normalizeHistoryGame(rawGame, source);
     if (!game || !findPlayerParticipant(game, player)) {
       continue;
     }
@@ -296,19 +306,14 @@ const uniqueGames = (
 const historyCache = new Map<string, Promise<PlayerHistorySnapshot>>();
 
 const sortGames = (games: NormalizedHistoryGame[]) =>
-  Array.from(new Map(games.map((game) => [game.gameId, game])).values()).sort(
-    (left, right) => right.gameCreation - left.gameCreation,
-  );
+  mergeHistoryGames([], games, Math.max(games.length, 1)).games;
 
 // 只有同一局至少包含一支完整队伍时，才能用于同队/对手关系分析。
 // 普通战绩接口可能只缓存目标玩家一个 participant，这种数据仍可计算
 // 个人胜率，但不能误判为“没有共同对局”。
 const hasParticipantRoster = (games: NormalizedHistoryGame[]): boolean =>
   games.length > 0 &&
-  games.every((game) => {
-    const teams = new Set(game.participants.map((participant) => participant.teamId));
-    return game.participants.length >= 5 && teams.size >= 2;
-  });
+  games.every((game) => historyGameQuality(game) === "complete");
 
 const queueHydration = new Map<string, Promise<NormalizedHistoryGame[]>>();
 
@@ -319,7 +324,11 @@ const syncPlayerModeGames = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingGames: NormalizedHistoryGame[],
-): Promise<{ games: NormalizedHistoryGame[]; source: string }> => {
+): Promise<{
+  games: NormalizedHistoryGame[];
+  source: string;
+  coverage: HistoryCoverageInfo;
+}> => {
   const cachedGameIds = new Set(existingGames.map((game) => game.gameId));
   const fetchedGames = new Map<number, NormalizedHistoryGame>();
   let source = "unavailable";
@@ -339,7 +348,12 @@ const syncPlayerModeGames = async (
     if (result?.source) source = result.source;
     if (rawGames.length === 0) break;
 
-    const pageGames = uniqueGames(rawGames, modeKey, player);
+    const pageGames = uniqueGames(
+      rawGames,
+      modeKey,
+      player,
+      result?.source || "interface",
+    );
     for (const [gameId, game] of pageGames) {
       if (cachedGameIds.has(gameId)) {
         reachedCachedBoundary = true;
@@ -364,12 +378,15 @@ const syncPlayerModeGames = async (
     }
   }
 
+  const merged = mergeHistoryGames(
+    existingGames,
+    Array.from(fetchedGames.values()),
+    RECENT_ANALYSIS_GAME_COUNT,
+  );
   return {
-    games: sortGames([
-      ...existingGames,
-      ...Array.from(fetchedGames.values()),
-    ]).slice(0, RECENT_ANALYSIS_GAME_COUNT),
+    games: merged.games,
     source,
+    coverage: merged.coverage,
   };
 };
 
@@ -442,6 +459,11 @@ const loadPlayerHistory = async (
         complete:
           limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
           hasParticipantRoster(Array.from(limitedGames.values())),
+        dataCoverage: mergeHistoryGames(
+          cachedGames,
+          [],
+          RECENT_ANALYSIS_GAME_COUNT,
+        ).coverage,
       };
     }
 
@@ -460,6 +482,8 @@ const loadPlayerHistory = async (
         games: new Map(quickGames.map((game) => [game.gameId, game])),
         source: "当前面板已加载的最近战绩",
         complete: false,
+        dataCoverage: mergeHistoryGames([], quickGames, RECENT_DEFAULT_GAME_COUNT)
+          .coverage,
       };
     }
 
@@ -481,10 +505,11 @@ const loadPlayerHistory = async (
 const normalizeModeGames = (
   games: MatchHistoryGame[],
   modeKey: MatchModeKey,
+  source = "interface",
 ) =>
   sortGames(
     games
-      .map(normalizeHistoryGame)
+      .map((game) => normalizeHistoryGame(game, source))
       .filter(
         (game): game is NormalizedHistoryGame =>
           game !== null && isModeQueue(game.queueId, modeKey),
@@ -499,12 +524,14 @@ const toHistorySnapshot = (
   player: RecentSumInfo,
   games: NormalizedHistoryGame[],
   source: string,
+  dataCoverage?: HistoryCoverageInfo,
 ): PlayerHistorySnapshot => ({
   puuid: player.puuid,
   games: new Map(games.map((game) => [game.gameId, game])),
   source,
   complete:
     games.length >= RECENT_ANALYSIS_GAME_COUNT && hasParticipantRoster(games),
+  dataCoverage,
 });
 
 const loadPlayerModeHistory = async (
@@ -592,7 +619,11 @@ const loadPlayerModeHistory = async (
   );
   const fastGames = sortGames([
     ...initialGames,
-    ...normalizeModeGames(fastResult?.games || [], modeKey),
+    ...normalizeModeGames(
+      fastResult?.games || [],
+      modeKey,
+      fastResult?.source || "interface",
+    ),
   ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
   if (fastGames.length > 0) {
     void cacheHistory({
@@ -618,7 +649,16 @@ const loadPlayerModeHistory = async (
       ? fastResult?.source || "unavailable"
       : cachedGames.length > 0
         ? "PostgreSQL 本地缓存"
-        : "当前个人战绩列表",
+      : "当前个人战绩列表",
+    mergeHistoryGames(
+      [...cachedGames, ...initialGames],
+      normalizeModeGames(
+        fastResult?.games || [],
+        modeKey,
+        fastResult?.source || "interface",
+      ),
+      RECENT_ANALYSIS_GAME_COUNT,
+    ).coverage,
   );
 };
 
@@ -654,6 +694,7 @@ const hydratePlayerModeHistory = async (
     mergedGames.length > existingGames.length
       ? synced.source || "历史接口完整参与者"
       : existingSnapshot.source,
+    synced.coverage,
   );
   onProgress?.({
     stage: "full",
@@ -854,6 +895,7 @@ const quickMatchToGame = (
       ? Number(match.gameCreation)
       : Date.now() - index,
   queueId: match.queueId,
+  source: "current-panel",
   participants: [
     {
       puuid: player.puuid,
@@ -1300,6 +1342,7 @@ const buildPlayerAnalysis = (
     source: snapshot.source,
     historyComplete:
       snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT,
+    dataCoverage: snapshot.dataCoverage,
   };
 };
 

@@ -66,6 +66,12 @@ const partyAnalysisGames = computed(
     0,
 );
 
+const coverageRate = computed(() => {
+  const coverage = analysis.value?.dataCoverage;
+  if (!coverage || coverage.mergedGames === 0) return null;
+  return Math.round((coverage.completeGames / coverage.mergedGames) * 1000) / 10;
+});
+
 const partyRankingSections = computed(() => {
   const groups = analysis.value?.partyGroups || [];
   return [2, 3, 4, 5].map((size) => {
@@ -300,6 +306,17 @@ onMounted(() => {
               {{ confidenceLabel(analysis.confidence.level) }} · {{ analysis.source }}
             </div>
           </n-card>
+          <n-card size="small" :bordered="false">
+            <div class="metric-label">参与者完整度</div>
+            <div class="metric-value">
+              {{ coverageRate === null ? "--" : `${coverageRate}%` }}
+            </div>
+            <div class="metric-sub">
+              缓存 {{ analysis.dataCoverage?.cachedGames || 0 }} · 接口
+              {{ analysis.dataCoverage?.interfaceGames || 0 }} · 冲突
+              {{ analysis.dataCoverage?.conflicts || 0 }}
+            </div>
+          </n-card>
         </div>
 
         <n-card size="small" title="胜率趋势" :bordered="false">
@@ -452,6 +469,12 @@ onMounted(() => {
             </div>
           </div>
           <div class="text-xs text-gray-500 mt-2">{{ databaseStatus.message }}</div>
+          <div
+            v-if="analysis.dataCoverage?.sources?.length"
+            class="text-xs text-gray-500 mt-1"
+          >
+            本次分析来源：{{ analysis.dataCoverage.sources.join("、") }}
+          </div>
         </n-card>
       </div>
 
@@ -543,7 +566,7 @@ onMounted(() => {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
@@ -749,6 +772,10 @@ onMounted(() => {
 }
 
 @media (max-width: 760px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .two-columns,
   .party-ranking-grid {
     grid-template-columns: 1fr;

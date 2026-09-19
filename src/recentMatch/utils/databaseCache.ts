@@ -43,6 +43,7 @@ export const getCachedHistory = async (
       gameId: game.gameId,
       gameCreation: game.gameCreation,
       queueId: game.queueId,
+      source: game.source || "postgres",
       participants: (game.participants || []).map((participant) => ({
         puuid: participant.puuid,
         summonerId: participant.summonerId,
