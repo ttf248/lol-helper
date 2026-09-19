@@ -7,14 +7,13 @@ use matchlisthanle::MatchListDetails;
 use crate::lcu::global_key::init_global_keyboard;
 use crate::shaco::ingame;
 use crate::shaco::rest::RESTClient;
-use crate::shaco::utils::process_info::{get_auth_info, AuthResponse};
+use crate::shaco::utils::process_info::get_auth_info;
 use configparser::ini::Ini;
 use listener::listen_client;
 use once_cell::sync::OnceCell;
 use serde_json::{from_value, Value};
 use std::fs;
 use std::path::Path;
-use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -23,71 +22,152 @@ static REST_CLIENT: OnceCell<RESTClient> = OnceCell::new();
 
 // 获取 REST_CLIENT 的函数
 fn get_client() -> Result<&'static RESTClient, Value> {
-    REST_CLIENT
-        .get()
-        .ok_or(Value::Null)
+    REST_CLIENT.get().ok_or(Value::Null)
 }
 
 #[tauri::command]
 pub async fn invoke_lcu(method: &str, uri: &str, body: &str) -> Result<Value, Value> {
-    let client = get_client()?; // 获取全局的 REST_CLIENT
-    if method == "get" {
-        match client.get(uri).await {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Value::Null),
-        }
+    let started = Instant::now();
+    let client = get_client()?;
+    let result = if method == "get" {
+        client.get(uri).await
     } else if method == "patch" {
         let parsed = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
-        match client.patch(uri, parsed).await {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Value::Null),
-        }
+        client.patch(uri, parsed).await
     } else if method == "post" {
         let parsed = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
-        match client.post(uri, parsed).await {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Value::Null),
-        }
+        client.post(uri, parsed).await
     } else if method == "delete" {
-        match client.delete(uri).await {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Value::Null),
-        }
+        client.delete(uri).await
     } else {
-        Ok(Value::Null)
+        tracing::warn!(
+            target: "lcu",
+            cmd = "invoke_lcu",
+            method = %method,
+            uri = %uri,
+            body_len = body.len(),
+            "tauri.invoke_lcu unknown method"
+        );
+        return Ok(Value::Null);
+    };
+    match result {
+        Ok(value) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::info!(
+                target: "lcu",
+                cmd = "invoke_lcu",
+                method = %method,
+                uri = %uri,
+                duration_ms,
+                "tauri.invoke_lcu ok"
+            );
+            Ok(value)
+        }
+        Err(error) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::warn!(
+                target: "lcu",
+                cmd = "invoke_lcu",
+                method = %method,
+                uri = %uri,
+                error = %error,
+                duration_ms,
+                "tauri.invoke_lcu failed"
+            );
+            Err(Value::Null)
+        }
     }
 }
 
 #[tauri::command]
 pub async fn get_match_list(uri: &str) -> Result<MatchListDetails, Value> {
+    let started = Instant::now();
     let client = get_client()?;
     let res = match client.get(uri).await {
         Ok(res) => res,
-        Err(_) => return Err(Value::Null),
+        Err(error) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::warn!(
+                target: "lcu",
+                cmd = "get_match_list",
+                uri = %uri,
+                error = %error,
+                duration_ms,
+                "tauri.get_match_list fetch failed"
+            );
+            return Err(Value::Null);
+        }
     };
     match from_value::<MatchListDetails>(res) {
-        Ok(match_list) => Ok(match_list),
-        Err(_) => Err(Value::Null),
+        Ok(match_list) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::info!(
+                target: "lcu",
+                cmd = "get_match_list",
+                uri = %uri,
+                duration_ms,
+                "tauri.get_match_list ok"
+            );
+            Ok(match_list)
+        }
+        Err(error) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::warn!(
+                target: "lcu",
+                cmd = "get_match_list",
+                uri = %uri,
+                error = %error,
+                duration_ms,
+                "tauri.get_match_list deserialize failed"
+            );
+            Err(Value::Null)
+        }
     }
 }
 
 #[tauri::command]
 pub fn get_lol_region() -> Result<String, String> {
+    tracing::debug!(
+        target: "lcu",
+        cmd = "get_lol_region",
+        "tauri.get_lol_region invoked"
+    );
     match get_auth_info() {
-        Ok(info) => Ok(info.region),
-        Err(_) => Err("客户端未运行".to_string()),
+        Ok(info) => {
+            tracing::info!(
+                target: "lcu",
+                cmd = "get_lol_region",
+                region = %info.region,
+                "tauri.get_lol_region ok"
+            );
+            Ok(info.region)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "lcu",
+                cmd = "get_lol_region",
+                error = %error,
+                "tauri.get_lol_region failed"
+            );
+            Err("客户端未运行".to_string())
+        }
     }
 }
 
 #[tauri::command]
 pub fn listen_for_client_start(app: AppHandle) {
+    tracing::info!(
+        target: "lcu",
+        cmd = "listen_for_client_start",
+        timeout_secs = 180,
+        "tauri.listen_for_client_start invoked"
+    );
     tokio::spawn({
         async move {
             let start_time = Instant::now();
-            let timeout = Duration::from_secs(180); // 设置一个超时时间，例如 180 秒
+            let timeout = Duration::from_secs(180);
 
             loop {
-                // 获取客户端信息
                 let is_exist = get_auth_info();
                 match is_exist {
                     Ok(value) => {
@@ -96,19 +176,35 @@ pub fn listen_for_client_start(app: AppHandle) {
                                 .set(client)
                                 .map_err(|_| "REST_CLIENT is already initialized".to_string());
                             let _ = app.emit_to("background", "client_status", "ClientStarted");
-                            break; // 找到客户端信息后退出循环
+                            tracing::info!(
+                                target: "lcu",
+                                cmd = "listen_for_client_start",
+                                wait_ms = start_time.elapsed().as_millis() as u64,
+                                "lcu client connected, listener done"
+                            );
+                            break;
                         }
                     }
-                    Err(_) => {}
+                    Err(error) => {
+                        tracing::trace!(
+                            target: "lcu",
+                            cmd = "listen_for_client_start",
+                            error = %error,
+                            "lcu client not ready yet"
+                        );
+                    }
                 }
 
-                // 超过指定的超时时间则退出
                 if start_time.elapsed() > timeout {
-                    println!("客户端启动超时，未能获取信息。");
+                    tracing::warn!(
+                        target: "lcu",
+                        cmd = "listen_for_client_start",
+                        timeout_secs = 180,
+                        "lcu client start timeout"
+                    );
                     break;
                 }
 
-                // 每隔一段时间重新检查
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
@@ -117,6 +213,11 @@ pub fn listen_for_client_start(app: AppHandle) {
 
 #[tauri::command]
 pub async fn start_listener(app: AppHandle) {
+    tracing::info!(
+        target: "lcu.ws",
+        cmd = "start_listener",
+        "tauri.start_listener invoked"
+    );
     tokio::spawn(async move {
         listen_client(app).await;
     });
@@ -124,61 +225,186 @@ pub async fn start_listener(app: AppHandle) {
 
 #[tauri::command]
 pub async fn is_game_start() -> bool {
+    let started = Instant::now();
+    tracing::debug!(
+        target: "lcu",
+        cmd = "is_game_start",
+        "tauri.is_game_start invoked"
+    );
     let client = match ingame::IngameClient::new() {
         Ok(client) => client,
-        Err(_) => return false,
+        Err(error) => {
+            tracing::warn!(
+                target: "lcu",
+                cmd = "is_game_start",
+                error = %error,
+                "tauri.is_game_start client init failed"
+            );
+            return false;
+        }
     };
-    client.active_game_loadingscreen().await
+    let result = client.active_game_loadingscreen().await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    tracing::info!(
+        target: "lcu",
+        cmd = "is_game_start",
+        result,
+        duration_ms,
+        "tauri.is_game_start result"
+    );
+    result
 }
 
 /// 获取游戏内实际加载的全部玩家。gameflow session 在加载阶段可能只返回部分队伍。
 #[tauri::command]
 pub async fn get_ingame_players(
 ) -> Result<Vec<crate::shaco::model::ingame::Player>, String> {
-    let client = ingame::IngameClient::new().map_err(|error| error.to_string())?;
-    client
-        .player_list(None)
-        .await
-        .map_err(|error| error.to_string())
+    let started = Instant::now();
+    tracing::info!(
+        target: "lcu",
+        cmd = "get_ingame_players",
+        "tauri.get_ingame_players invoked"
+    );
+    let client = match ingame::IngameClient::new() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(
+                target: "lcu",
+                cmd = "get_ingame_players",
+                error = %error,
+                "tauri.get_ingame_players client init failed"
+            );
+            return Err(error.to_string());
+        }
+    };
+    match client.player_list(None).await {
+        Ok(players) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::info!(
+                target: "lcu",
+                cmd = "get_ingame_players",
+                count = players.len(),
+                duration_ms,
+                "tauri.get_ingame_players ok"
+            );
+            Ok(players)
+        }
+        Err(error) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            tracing::warn!(
+                target: "lcu",
+                cmd = "get_ingame_players",
+                error = %error,
+                duration_ms,
+                "tauri.get_ingame_players player_list failed"
+            );
+            Err(error.to_string())
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn init_keyboard(app: AppHandle) {
+    tracing::info!(
+        target: "lcu",
+        cmd = "init_keyboard",
+        "tauri.init_keyboard invoked"
+    );
     tokio::spawn(async move { init_global_keyboard(app) });
 }
 
 #[tauri::command]
 pub async fn launch_lol(path: &str) -> Result<(), String> {
+    tracing::info!(
+        target: "lcu",
+        cmd = "launch_lol",
+        path = %path,
+        "tauri.launch_lol invoked"
+    );
     std::process::Command::new(path)
         .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map(|_| {
+            tracing::info!(
+                target: "lcu",
+                cmd = "launch_lol",
+                path = %path,
+                "tauri.launch_lol spawned"
+            );
+            ()
+        })
+        .map_err(|e| {
+            tracing::error!(
+                target: "lcu",
+                cmd = "launch_lol",
+                path = %path,
+                error = %e,
+                "tauri.launch_lol spawn failed"
+            );
+            e.to_string()
+        })
 }
 
 // 检查是否游戏窗口模式为无边框
 #[tauri::command]
 pub async fn check_borderless_mode(config_path: &str) -> Result<i32, String> {
-    // 1. 如果文件不存在，按照要求返回 -1
+    tracing::debug!(
+        target: "lcu",
+        cmd = "check_borderless_mode",
+        config_path = %config_path,
+        "tauri.check_borderless_mode invoked"
+    );
     if !Path::new(config_path).exists() {
+        tracing::warn!(
+            target: "lcu",
+            cmd = "check_borderless_mode",
+            config_path = %config_path,
+            "tauri.check_borderless_mode config missing"
+        );
         return Ok(-1);
     }
 
-    // 2. 加载配置文件
     let mut config = Ini::new();
     if let Err(e) = config.load(config_path) {
+        tracing::warn!(
+            target: "lcu",
+            cmd = "check_borderless_mode",
+            config_path = %config_path,
+            error = %e,
+            "tauri.check_borderless_mode load failed"
+        );
         return Err(format!("读取配置文件失败: {}", e));
     }
 
-    // 3. 读取 [General] 下的 WindowMode
     if let Some(mode_str) = config.get("General", "WindowMode") {
-        // 将字符串转换成整数 (i32)
         match mode_str.trim().parse::<i32>() {
-            Ok(id) => Ok(id),
-            Err(_) => Err(format!("配置项格式非法: {}", mode_str)),
+            Ok(id) => {
+                tracing::info!(
+                    target: "lcu",
+                    cmd = "check_borderless_mode",
+                    config_path = %config_path,
+                    mode = id,
+                    "tauri.check_borderless_mode ok"
+                );
+                Ok(id)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "lcu",
+                    cmd = "check_borderless_mode",
+                    config_path = %config_path,
+                    mode_str = %mode_str,
+                    "tauri.check_borderless_mode parse failed"
+                );
+                Err(format!("配置项格式非法: {}", mode_str))
+            }
         }
     } else {
-        // 如果文件存在但没找到 WindowMode 字段，通常是因为文件损坏或版本不同
-        // 这里可以根据需要返回一个特殊 ID 或错误
+        tracing::warn!(
+            target: "lcu",
+            cmd = "check_borderless_mode",
+            config_path = %config_path,
+            "tauri.check_borderless_mode missing key"
+        );
         Err("配置文件中缺少 WindowMode 项".into())
     }
 }
@@ -186,35 +412,86 @@ pub async fn check_borderless_mode(config_path: &str) -> Result<i32, String> {
 // 设置游戏窗口模式为无边框
 #[tauri::command]
 pub async fn set_borderless_mode(config_path: &str) -> Result<String, String> {
+    tracing::info!(
+        target: "lcu",
+        cmd = "set_borderless_mode",
+        config_path = %config_path,
+        "tauri.set_borderless_mode invoked"
+    );
     let path = Path::new(config_path);
 
-    // 1. 检查文件是否存在
     if !path.exists() {
+        tracing::warn!(
+            target: "lcu",
+            cmd = "set_borderless_mode",
+            config_path = %config_path,
+            "tauri.set_borderless_mode config missing"
+        );
         return Err("找不到游戏配置文件，请确认路径是否正确。".into());
     }
 
-    // 2. 处理只读属性 (这是关键，否则写入会失败)
-    let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                target: "lcu",
+                cmd = "set_borderless_mode",
+                config_path = %config_path,
+                error = %e,
+                "tauri.set_borderless_mode metadata failed"
+            );
+            return Err(e.to_string());
+        }
+    };
     let mut permissions = metadata.permissions();
     if permissions.readonly() {
         permissions.set_readonly(false);
-        fs::set_permissions(path, permissions).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::set_permissions(path, permissions) {
+            tracing::warn!(
+                target: "lcu",
+                cmd = "set_borderless_mode",
+                config_path = %config_path,
+                error = %e,
+                "tauri.set_borderless_mode chmod failed"
+            );
+            return Err(e.to_string());
+        }
     }
 
-    // 3. 加载配置文件
     let mut config = Ini::new();
-    // 强制保留原始大小写（League的cfg有时对大小写敏感）
     config.set_comment_symbols(&[';', '#']);
+    if let Err(e) = config.load(config_path) {
+        tracing::warn!(
+            target: "lcu",
+            cmd = "set_borderless_mode",
+            config_path = %config_path,
+            error = %e,
+            "tauri.set_borderless_mode load failed"
+        );
+        return Err(e.to_string());
+    }
 
-    config.load(config_path).map_err(|e| e.to_string())?;
-
-    // 4. 修改配置项
-    // WindowMode: 0=全屏, 1=窗口, 2=无边框
     config.set("General", "WindowMode", Some("2".to_string()));
 
-    // 5. 写入文件
     match config.write(config_path) {
-        Ok(_) => Ok("成功设置为无边框模式".into()),
-        Err(e) => Err(format!("写入文件失败: {}", e)),
+        Ok(_) => {
+            tracing::info!(
+                target: "lcu",
+                cmd = "set_borderless_mode",
+                config_path = %config_path,
+                "tauri.set_borderless_mode ok"
+            );
+            Ok("成功设置为无边框模式".into())
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "lcu",
+                cmd = "set_borderless_mode",
+                config_path = %config_path,
+                error = %e,
+                "tauri.set_borderless_mode write failed"
+            );
+            Err(format!("写入文件失败: {}", e))
+        }
     }
 }

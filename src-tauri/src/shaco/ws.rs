@@ -32,6 +32,8 @@ impl LcuWebsocketClient {
         } = process_info::get_auth_info()
             .map_err(|e| LcuWebsocketError::LcuNotAvailable(e.to_string()))?;
 
+        tracing::info!(target = "lcu.ws", port = %port, "lcu.ws connecting");
+
         let cert = native_tls::Certificate::from_pem(include_bytes!("./riotgames.pem")).unwrap();
         let tls = native_tls::TlsConnector::builder()
             .add_root_certificate(cert)
@@ -41,17 +43,38 @@ impl LcuWebsocketClient {
 
         let mut url = format!("wss://127.0.0.1:{port}")
             .into_client_request()
-            .map_err(|_| LcuWebsocketError::AuthError)?;
-        url.headers_mut().insert(
-            "Authorization",
-            HeaderValue::from_str(format!("Basic {auth_token}").as_str())
-                .map_err(|_| LcuWebsocketError::AuthError)?,
-        );
+            .map_err(|e| {
+                tracing::error!(target = "lcu.ws", error = %e, "lcu.ws url build failed");
+                LcuWebsocketError::AuthError
+            })?;
+        url.headers_mut()
+            .insert(
+                "Authorization",
+                HeaderValue::from_str(format!("Basic {auth_token}").as_str()).map_err(|e| {
+                    tracing::error!(target = "lcu.ws", error = %e, "lcu.ws auth header failed");
+                    LcuWebsocketError::AuthError
+                })?,
+            );
 
+        let started = std::time::Instant::now();
         let (ws_stream, _response) =
             tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector))
                 .await
-                .map_err(|e| LcuWebsocketError::Disconnected(e.to_string()))?;
+                .map_err(|e| {
+                    tracing::error!(
+                        target = "lcu.ws",
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        error = %e,
+                        "lcu.ws connect failed"
+                    );
+                    LcuWebsocketError::Disconnected(e.to_string())
+                })?;
+
+        tracing::info!(
+            target = "lcu.ws",
+            duration_ms = started.elapsed().as_millis() as u64,
+            "lcu.ws connected"
+        );
 
         Ok(Self(ws_stream))
     }
@@ -64,14 +87,29 @@ impl LcuWebsocketClient {
         &mut self,
         subscription: LcuSubscriptionType,
     ) -> Result<(), LcuWebsocketError> {
+        tracing::debug!(target = "lcu.ws", subscription = %subscription, "lcu.ws subscribe");
         self.0
             .send(Message::text(format!("[5, \"{subscription}\"]")))
             .await
             .map_err(|e| match e {
                 tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+                    tracing::warn!(
+                        target = "lcu.ws",
+                        subscription = %subscription,
+                        error = %e,
+                        "lcu.ws subscribe: connection closed"
+                    );
                     LcuWebsocketError::Disconnected(e.to_string())
                 }
-                _ => LcuWebsocketError::SendError,
+                _ => {
+                    tracing::warn!(
+                        target = "lcu.ws",
+                        subscription = %subscription,
+                        error = %e,
+                        "lcu.ws subscribe: send failed"
+                    );
+                    LcuWebsocketError::SendError
+                }
             })
     }
 
@@ -83,14 +121,29 @@ impl LcuWebsocketClient {
         &mut self,
         subscription: LcuSubscriptionType,
     ) -> Result<(), LcuWebsocketError> {
+        tracing::debug!(target = "lcu.ws", subscription = %subscription, "lcu.ws unsubscribe");
         self.0
             .send(Message::text(format!("[6, \"{subscription}\"]")))
             .await
             .map_err(|e| match e {
                 tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+                    tracing::warn!(
+                        target = "lcu.ws",
+                        subscription = %subscription,
+                        error = %e,
+                        "lcu.ws unsubscribe: connection closed"
+                    );
                     LcuWebsocketError::Disconnected(e.to_string())
                 }
-                _ => LcuWebsocketError::SendError,
+                _ => {
+                    tracing::warn!(
+                        target = "lcu.ws",
+                        subscription = %subscription,
+                        error = %e,
+                        "lcu.ws unsubscribe: send failed"
+                    );
+                    LcuWebsocketError::SendError
+                }
             })
     }
 }
@@ -104,11 +157,34 @@ impl Stream for LcuWebsocketClient {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Some(Ok(Message::Text(text)))) => {
                     let Ok(event) = serde_json::from_str::<LcuEvent>(&text) else {
+                        tracing::warn!(
+                            target = "lcu.ws",
+                            text_len = text.len(),
+                            "lcu.ws event deserialize failed"
+                        );
                         continue;
                     };
+                    tracing::trace!(
+                        target = "lcu.ws",
+                        event_type = %event.event_type,
+                        subscription = %event.subscription_type,
+                        "lcu.ws recv"
+                    );
                     Poll::Ready(Some(event))
                 }
-                Poll::Ready(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => Poll::Ready(None),
+                Poll::Ready(Some(Ok(Message::Close(_)))) => {
+                    tracing::warn!(target = "lcu.ws", "lcu.ws closed by server");
+                    Poll::Ready(None)
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    tracing::warn!(
+                        target = "lcu.ws",
+                        error = %error,
+                        "lcu.ws stream error"
+                    );
+                    Poll::Ready(None)
+                }
+                Poll::Ready(None) => Poll::Ready(None),
                 _ => continue,
             };
         }

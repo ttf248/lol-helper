@@ -25,13 +25,25 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         .values()
         .find(|p| p.name() == TARGET_PROCESS)
         .map(|p| p.cmd())
-        .ok_or(ProcessInfoError::ProcessNotAvailable)?;
+        .ok_or_else(|| {
+            tracing::warn!(
+                target = "lcu.auth",
+                "lcu.auth process not found (LeagueClientUx.exe)"
+            );
+            ProcessInfoError::ProcessNotAvailable
+        })?;
 
     let port = args
         .iter()
         .find(|arg| arg.starts_with("--app-port="))
         .map(|arg| arg.strip_prefix("--app-port=").unwrap().to_string())
-        .ok_or(ProcessInfoError::PortNotFound)?;
+        .ok_or_else(|| {
+            tracing::warn!(
+                target = "lcu.auth",
+                "lcu.auth --app-port not present in process args"
+            );
+            ProcessInfoError::PortNotFound
+        })?;
     let auth_token = args
         .iter()
         .find(|arg| arg.starts_with("--remoting-auth-token="))
@@ -40,17 +52,37 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
                 .unwrap()
                 .to_string()
         })
-        .ok_or(ProcessInfoError::AuthTokenNotFound)?;
+        .ok_or_else(|| {
+            tracing::warn!(
+                target = "lcu.auth",
+                "lcu.auth --remoting-auth-token not present in process args"
+            );
+            ProcessInfoError::AuthTokenNotFound
+        })?;
 
     let rso_platform_id = args
         .iter()
         .find(|arg| arg.starts_with("--rso_platform_id="))
         .map(|arg| arg.strip_prefix("--rso_platform_id=").unwrap().to_string())
-        .ok_or(ProcessInfoError::PlatformIdNotFound)?;
+        .ok_or_else(|| {
+            tracing::warn!(
+                target = "lcu.auth",
+                "lcu.auth --rso_platform_id not present in process args"
+            );
+            ProcessInfoError::PlatformIdNotFound
+        })?;
 
+    let token_b64 = general_purpose::STANDARD.encode(format!("riot:{}", auth_token));
+    tracing::info!(
+        target = "lcu.auth",
+        port_len = port.len(),
+        region = %rso_platform_id,
+        token_len = token_b64.len(),
+        "lcu.auth parsed"
+    );
     Ok(AuthResponse {
-        token: general_purpose::STANDARD.encode(format!("riot:{}", auth_token)),
-        port: port,
+        token: token_b64,
+        port,
         region: rso_platform_id,
     })
 }

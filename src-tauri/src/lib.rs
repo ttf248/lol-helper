@@ -1,12 +1,14 @@
 mod lcu;
 mod database;
 mod lol_window_tracker;
+mod observability;
 mod shaco;
 use database::{
     cache_match_history, database_status, database_summary, get_cached_match_history,
     get_cached_player_summary,
     DatabaseState,
 };
+use observability::log::write_frontend_log;
 use lcu::{
     check_borderless_mode, get_lol_region, get_match_list, init_keyboard, invoke_lcu,
     get_ingame_players, is_game_start, launch_lol, listen_for_client_start, set_borderless_mode,
@@ -27,6 +29,13 @@ pub struct LocalTestState {
 #[tokio::main]
 pub async fn run() {
     // 应用启动阶段先完成 PostgreSQL 连接和表结构检查，前端可通过 database_status 展示结果。
+    // 同时初始化 tracing-subscriber，所有后续业务日志走 NDJSON 文件落地。
+    observability::log::init_logger();
+    tracing::info!(
+        target = "observability",
+        exe_dir = ?std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())),
+        "logger initialized"
+    );
     let database = DatabaseState::initialize().await;
     tauri::Builder::default()
         .manage(database)
@@ -34,6 +43,10 @@ pub async fn run() {
             is_enabled: Arc::new(AtomicBool::new(false)), // 初始设为 false，等前端同步
             is_running: Arc::new(AtomicBool::new(false)), // 初始为未运行
             dock_side: Arc::new(Mutex::new("Right".to_string())),
+        })
+        .setup(|_| {
+            tracing::info!(target = "observability", "tauri app initialized");
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_lol_region,
@@ -54,6 +67,7 @@ pub async fn run() {
             get_cached_match_history,
             database_summary,
             get_cached_player_summary,
+            write_frontend_log,
         ])
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_process::init())

@@ -2,10 +2,18 @@ use rdev::{listen, Event, EventType, Key};
 use tauri::{AppHandle, Emitter, EventTarget, Manager};
 
 pub fn init_global_keyboard(app: AppHandle) {
+    tracing::info!(
+        target = "lcu.keyboard",
+        "global keyboard listener starting"
+    );
     let mut shift_state: bool = false;
     // 捕获全局键盘事件
     if let Err(error) = listen(move |event: Event| callback(event, &mut shift_state, &app)) {
-        println!("Error: {:?}", error);
+        tracing::error!(
+            target = "lcu.keyboard",
+            error = ?error,
+            "global keyboard listener failed"
+        );
     }
 }
 
@@ -43,19 +51,50 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
             // 检查窗口当前是否可见
             match win.is_visible() {
                 Ok(true) => {
-                    // 如果可见，则隐藏
-                    win.hide().expect("hide window failed");
+                    tracing::debug!(
+                        target = "lcu.keyboard",
+                        window = win_name,
+                        "hiding window"
+                    );
+                    if let Err(error) = win.hide() {
+                        tracing::warn!(
+                            target = "lcu.keyboard",
+                            window = win_name,
+                            error = %error,
+                            "hide window failed"
+                        );
+                    }
                 }
                 Ok(false) => {
-                    // 如果隐藏，则显示
-                    win.show().expect("show window failed");
+                    tracing::debug!(
+                        target = "lcu.keyboard",
+                        window = win_name,
+                        "showing window"
+                    );
+                    if let Err(error) = win.show() {
+                        tracing::warn!(
+                            target = "lcu.keyboard",
+                            window = win_name,
+                            error = %error,
+                            "show window failed"
+                        );
+                    }
                 }
-                Err(e) => {
-                    // 处理错误情况
-                    eprintln!("Error checking window visibility: {}", e);
+                Err(error) => {
+                    tracing::warn!(
+                        target = "lcu.keyboard",
+                        window = win_name,
+                        error = %error,
+                        "check window visibility failed"
+                    );
                 }
             }
         } else {
+            tracing::info!(
+                target = "lcu.keyboard",
+                window = win_name,
+                "window not present, requesting recovery"
+            );
             // 软件可能在对局开始后才启动，或窗口曾被关闭。通知前端按当前
             // LCU session 恢复窗口，而不是只对已存在的窗口做显隐切换。
             let _ = app.emit_to(

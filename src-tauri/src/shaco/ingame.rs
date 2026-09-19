@@ -1,4 +1,7 @@
-use std::{task::Poll, time::Duration};
+use std::{
+    task::Poll,
+    time::{Duration, Instant},
+};
 
 use futures_util::Stream;
 use tokio::{
@@ -8,7 +11,11 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::shaco::{error::IngameClientError, model::ingame::*, utils::request::build_reqwest_client};
+use crate::shaco::{
+    error::IngameClientError,
+    model::ingame::*,
+    utils::request::build_reqwest_client,
+};
 
 const PORT: u16 = 2999;
 
@@ -18,51 +25,68 @@ pub struct IngameClient(reqwest::Client);
 impl IngameClient {
     /// Create a new connection to the ingame api. This will return an error if a game is not running
     pub fn new() -> Result<Self, IngameClientError> {
+        tracing::info!(target: "ingame", port = PORT, "ingame client created");
         Ok(Self(build_reqwest_client(None)))
     }
 
     /// Checks if there is an active game \
     /// Returns true only after the loading screen
     pub async fn active_game(&self) -> bool {
+        let started = Instant::now();
         let req = self
             .0
-            // HEAD doesn't work with "/liveclientdata/allgamedata" for some reason
             .head(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataAllgamedata",
                 PORT
             ))
-            // set a custom timeout so the function doesn't take forever to complete when the server is not reachable
             .timeout(Duration::from_millis(100))
             .send()
             .await;
 
-        if let Ok(req) = req {
+        let result = if let Ok(req) = req {
             req.status().is_success()
         } else {
             false
-        }
+        };
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataAllgamedata",
+            duration_ms = started.elapsed().as_millis() as u64,
+            result,
+            "ingame.active_game result"
+        );
+        result
     }
 
     /// Checks if there is an active game \
     /// Returns true even in loading screen while other API calls still return Error
     pub async fn active_game_loadingscreen(&self) -> bool {
+        let started = Instant::now();
         let req = self
             .0
             .head(format!("https://127.0.0.1:{}/Help", PORT))
-            // set a custom timeout so the function doesn't take forever to complete when the server is not reachable
             .timeout(Duration::from_millis(100))
             .send()
             .await;
 
-        if let Ok(req) = req {
+        let result = if let Ok(req) = req {
             req.status().is_success()
         } else {
             false
-        }
+        };
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/Help",
+            duration_ms = started.elapsed().as_millis() as u64,
+            result,
+            "ingame.active_game_loadingscreen result"
+        );
+        result
     }
 
     /// Checks if the game is a livegame or in spectatormode
     pub async fn is_spectator_mode(&self) -> Result<bool, IngameClientError> {
+        let started = Instant::now();
         let req = self
             .0
             .head(format!(
@@ -74,10 +98,38 @@ impl IngameClient {
             .and_then(|r| r.error_for_status())
             .map_err(IngameClientError::from);
 
+        let duration_ms = started.elapsed().as_millis() as u64;
         match req {
-            Ok(_) => Ok(false),
-            Err(IngameClientError::ApiNotAvailableInSpectatorMode) => Ok(true),
-            Err(e) => Err(e),
+            Ok(_) => {
+                tracing::debug!(
+                    target: "ingame",
+                    endpoint = "/GetLiveclientdataActiveplayer",
+                    duration_ms,
+                    spectator = false,
+                    "ingame.is_spectator_mode result"
+                );
+                Ok(false)
+            }
+            Err(IngameClientError::ApiNotAvailableInSpectatorMode) => {
+                tracing::debug!(
+                    target: "ingame",
+                    endpoint = "/GetLiveclientdataActiveplayer",
+                    duration_ms,
+                    spectator = true,
+                    "ingame.is_spectator_mode result"
+                );
+                Ok(true)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ingame",
+                    endpoint = "/GetLiveclientdataActiveplayer",
+                    duration_ms,
+                    error = %error,
+                    "ingame.is_spectator_mode failed"
+                );
+                Err(error)
+            }
         }
     }
 
@@ -86,11 +138,13 @@ impl IngameClient {
         &self,
         event_id: Option<u32>,
     ) -> Result<AllGameData, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let resolved_event_id = event_id.unwrap_or(0);
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataAllgamedata?eventID={}",
-                PORT,
-                event_id.unwrap_or(0) // an event_id of 0 returns all events
+                PORT, resolved_event_id
             ))
             .send()
             .await
@@ -98,7 +152,16 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataAllgamedata",
+            event_id = resolved_event_id,
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.all_game_data result"
+        );
+        res
     }
 
     /// Get event data for the active game
@@ -106,11 +169,13 @@ impl IngameClient {
         &self,
         event_id: Option<u32>,
     ) -> Result<Vec<GameEvent>, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let resolved_event_id = event_id.unwrap_or(0);
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataEventdata?eventID={}",
-                PORT,
-                event_id.unwrap_or(0) // an event_id of 0 returns all events
+                PORT, resolved_event_id
             ))
             .send()
             .await
@@ -119,12 +184,25 @@ impl IngameClient {
             .json::<IngameEvents>()
             .await
             .map_err(IngameClientError::from)
-            .map(|ie| ie.events)
+            .map(|ie| ie.events);
+        let count: usize = res.as_ref().map(|v: &Vec<_>| v.len()).unwrap_or(0);
+        tracing::trace!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataEventdata",
+            event_id = resolved_event_id,
+            duration_ms = started.elapsed().as_millis() as u64,
+            count,
+            ok = res.is_ok(),
+            "ingame.event_data result"
+        );
+        res
     }
 
     /// Get the active games stats
     pub async fn game_stats(&self) -> Result<GameStats, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataGamestats",
                 PORT
@@ -135,7 +213,15 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataGamestats",
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.game_stats result"
+        );
+        res
     }
 
     /// Get a specified players items
@@ -143,11 +229,13 @@ impl IngameClient {
         &self,
         summoner_name: S,
     ) -> Result<Vec<PlayerItem>, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let summoner = summoner_name.as_ref();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataPlayeritems?summonerName={}",
-                PORT,
-                summoner_name.as_ref()
+                PORT, summoner
             ))
             .send()
             .await
@@ -155,7 +243,18 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        let count: usize = res.as_ref().map(|v: &Vec<_>| v.len()).unwrap_or(0);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataPlayeritems",
+            summoner = %summoner,
+            duration_ms = started.elapsed().as_millis() as u64,
+            count,
+            ok = res.is_ok(),
+            "ingame.player_items result"
+        );
+        res
     }
 
     /// Get a list of players in game
@@ -163,11 +262,13 @@ impl IngameClient {
         &self,
         team_id: Option<TeamId>,
     ) -> Result<Vec<Player>, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let team = team_id.unwrap_or(TeamId::All);
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataPlayerlist?teamID={}",
-                PORT,
-                team_id.unwrap_or(TeamId::All)
+                PORT, team
             ))
             .send()
             .await
@@ -175,7 +276,18 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        let count: usize = res.as_ref().map(|v: &Vec<_>| v.len()).unwrap_or(0);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataPlayerlist",
+            team_id = ?team,
+            duration_ms = started.elapsed().as_millis() as u64,
+            count,
+            ok = res.is_ok(),
+            "ingame.player_list result"
+        );
+        res
     }
 
     /// Get a specified players main runes
@@ -183,11 +295,13 @@ impl IngameClient {
         &self,
         summoner_name: S,
     ) -> Result<PlayerRunes, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let summoner = summoner_name.as_ref();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataPlayermainrunes?summonerName={}",
-                PORT,
-                summoner_name.as_ref()
+                PORT, summoner
             ))
             .send()
             .await
@@ -195,7 +309,16 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataPlayermainrunes",
+            summoner = %summoner,
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.player_main_runes result"
+        );
+        res
     }
 
     /// Get a specified players score
@@ -203,11 +326,13 @@ impl IngameClient {
         &self,
         summoner_name: S,
     ) -> Result<PlayerScores, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let summoner = summoner_name.as_ref();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataPlayerscores?summonerName={}",
-                PORT,
-                summoner_name.as_ref()
+                PORT, summoner
             ))
             .send()
             .await
@@ -215,7 +340,16 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataPlayerscores",
+            summoner = %summoner,
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.player_scores result"
+        );
+        res
     }
 
     /// Get specified players summoner spells
@@ -223,11 +357,13 @@ impl IngameClient {
         &self,
         summoner_name: S,
     ) -> Result<SummonerSpells, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let summoner = summoner_name.as_ref();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataPlayersummonerspells?summonerName={}",
-                PORT,
-                summoner_name.as_ref()
+                PORT, summoner
             ))
             .send()
             .await
@@ -235,12 +371,22 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataPlayersummonerspells",
+            summoner = %summoner,
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.player_summoner_spells result"
+        );
+        res
     }
 
     /// Get active players data \
     /// Only available during livegame
     pub async fn active_player(&self) -> Result<ActivePlayer, IngameClientError> {
+        let started = Instant::now();
         /// only available in live games - is Error when spectating
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         #[serde(untagged)]
@@ -249,7 +395,8 @@ impl IngameClient {
             Error { error: String },
         }
 
-        self.0
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataActiveplayer",
                 PORT
@@ -266,13 +413,23 @@ impl IngameClient {
                 ActivePlayerInfo::Error { error } => {
                     Err(IngameClientError::DeserializationError(error))
                 }
-            })?
+            })?;
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataActiveplayer",
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.active_player result"
+        );
+        res
     }
 
     /// Get the active players abilities \
     /// Only available during livegame
     pub async fn active_player_abilities(&self) -> Result<PlayerAbilities, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataActiveplayerabilities",
                 PORT
@@ -283,13 +440,23 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataActiveplayerabilities",
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.active_player_abilities result"
+        );
+        res
     }
 
     /// Get the active players name \
     /// Only available during livegame
     pub async fn active_player_name(&self) -> Result<String, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataActiveplayername",
                 PORT
@@ -307,13 +474,23 @@ impl IngameClient {
                 chars.next_back();
                 chars.as_str().to_string()
             })
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataActiveplayername",
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.active_player_name result"
+        );
+        res
     }
 
     /// Get the active players runes \
     /// Only available during livegames
     pub async fn active_player_runes(&self) -> Result<FullPlayerRunes, IngameClientError> {
-        self.0
+        let started = Instant::now();
+        let res = self
+            .0
             .get(format!(
                 "https://127.0.0.1:{}/GetLiveclientdataActiveplayerrunes",
                 PORT
@@ -324,7 +501,15 @@ impl IngameClient {
             .map_err(IngameClientError::from)?
             .json()
             .await
-            .map_err(IngameClientError::from)
+            .map_err(IngameClientError::from);
+        tracing::debug!(
+            target: "ingame",
+            endpoint = "/GetLiveclientdataActiveplayerrunes",
+            duration_ms = started.elapsed().as_millis() as u64,
+            ok = res.is_ok(),
+            "ingame.active_player_runes result"
+        );
+        res
     }
 }
 
@@ -350,16 +535,34 @@ impl EventStream {
                 polling_rate.unwrap_or(Duration::from_millis(DEFAULT_POLLING_RATE_MILLIS));
             let mut timer = tokio::time::interval(polling_rate);
             let mut current_event_id = 0;
+            // 限速：1 秒内只 trace 一次汇总，避免高频 trace 日志撑爆文件。
+            let mut last_event_log = Instant::now();
+            let mut window_count: u64 = 0;
 
             // await start, but return on error (start_tx got dropped)
             if start_rx.await.is_err() {
+                tracing::debug!(
+                    target: "ingame.events",
+                    "ingame events stream cancelled before start"
+                );
                 return;
             }
+            tracing::info!(
+                target: "ingame.events",
+                polling_rate_ms = polling_rate.as_millis() as u64,
+                "ingame events stream armed"
+            );
 
             // wait for a game to start
+            let wait_started = Instant::now();
             loop {
                 timer.tick().await;
                 if ingame_client.event_data(None).await.is_ok() {
+                    tracing::info!(
+                        target: "ingame.events",
+                        wait_ms = wait_started.elapsed().as_millis() as u64,
+                        "ingame events stream started"
+                    );
                     break;
                 };
             }
@@ -372,11 +575,33 @@ impl EventStream {
                         if let Some(last_event) = events.last() {
                             current_event_id = last_event.get_event_id() + 1;
                         }
+                        let batch = events.len();
+                        window_count = window_count.saturating_add(batch as u64);
+                        let now = Instant::now();
+                        let elapsed_ms = now.duration_since(last_event_log).as_millis();
+                        if batch > 0 && elapsed_ms >= 1000 {
+                            tracing::trace!(
+                                target: "ingame.events",
+                                count = window_count,
+                                current_event_id,
+                                window_ms = elapsed_ms as u64,
+                                "ingame events batch"
+                            );
+                            last_event_log = now;
+                            window_count = 0;
+                        }
                         events.drain(..).for_each(|e| {
                             let _ = events_tx.send(e);
                         })
                     }
-                    Err(_) => return,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "ingame.events",
+                            error = %error,
+                            "ingame events poll failed, stopping stream"
+                        );
+                        return;
+                    }
                 }
             }
         });
