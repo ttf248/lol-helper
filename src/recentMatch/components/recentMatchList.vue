@@ -170,54 +170,44 @@ const teamInsight = computed(() => {
   >
     <div v-if="sumList.length !== 0" class="team-panel-content">
       <div class="team-insight">
-        <div class="team-insight-heading">
-          <span>{{ isFri ? "友方" : "敌方" }}历史摘要</span>
+        <div class="team-insight-top">
+          <span class="team-insight-title">{{ isFri ? "友方" : "敌方" }}历史摘要</span>
+          <div class="team-insight-stats">
+            <span><i>样本</i><strong>{{ teamInsight.totalGames }}场</strong></span>
+            <span><i>胜率</i><strong>{{ formatRate(teamInsight.winRate) }}</strong></span>
+            <span><i>胜场</i><strong>{{ teamInsight.totalWins }}</strong></span>
+          </div>
           <n-tag
             size="tiny"
             :bordered="false"
             :type="analysisLoading ? 'warning' : teamInsight.analyzed ? 'success' : 'default'"
+            :title="analysisLoading ? '已先使用本地缓存，服务器数据正在后台补齐' : `${teamInsight.analyzed}/${teamInsight.total} 人已完成分析`"
           >
-            {{ analysisLoading ? "缓存优先，后台补齐中" : `${teamInsight.analyzed}/${teamInsight.total} 人可用` }}
+            {{ analysisLoading ? "补齐中" : `${teamInsight.analyzed}/${teamInsight.total}人` }}
           </n-tag>
-        </div>
-        <div class="team-insight-grid">
-          <div>
-            <span>历史样本</span>
-            <strong>{{ teamInsight.totalGames }} 场</strong>
-          </div>
-          <div>
-            <span>加权胜率</span>
-            <strong>{{ formatRate(teamInsight.winRate) }}</strong>
-          </div>
-          <div>
-            <span>已知胜场</span>
-            <strong>{{ teamInsight.totalWins }}</strong>
-          </div>
-        </div>
-        <div v-if="teamInsight.best" class="team-insight-line">
-          <span class="text-gray-500">优势样本</span>
-          <span class="truncate">
-            {{ teamInsight.best.summonerName }} ·
-            {{ formatRate(teamInsight.best.recentAnalysis?.winRate) }}
-          </span>
         </div>
         <div
-          v-if="teamInsight.risk && teamInsight.risk.puuid !== teamInsight.best?.puuid"
-          class="team-insight-line"
+          v-if="teamInsight.best || teamInsight.risk || teamInsight.groups.length"
+          class="team-insight-details"
         >
-          <span class="text-gray-500">风险样本</span>
-          <span class="truncate">
-            {{ teamInsight.risk.summonerName }} ·
-            {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
+          <span v-if="teamInsight.best" class="team-insight-detail">
+            <b>优势</b>{{ teamInsight.best.summonerName }} {{ formatRate(teamInsight.best.recentAnalysis?.winRate) }}
           </span>
-        </div>
-        <div v-if="teamInsight.groups.length" class="team-insight-party">
-          <n-tag size="tiny" type="warning" :bordered="false">
-            {{ teamInsight.groups.some((group) => group.highWinRateAlert) ? "高胜率开黑队" : "疑似开黑" }}
-          </n-tag>
-          <span class="truncate" :title="teamInsight.groups.map(groupNames).join('；')">
-            {{ groupNames(teamInsight.groups[0]) }} ·
-            {{ teamInsight.groups[0].games }}场 ·
+          <span
+            v-if="teamInsight.risk && teamInsight.risk.puuid !== teamInsight.best?.puuid"
+            class="team-insight-detail"
+          >
+            <b>风险</b>{{ teamInsight.risk.summonerName }} {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
+          </span>
+          <span
+            v-if="teamInsight.groups.length"
+            class="team-insight-detail team-insight-party"
+            :title="teamInsight.groups.map(groupNames).join('；')"
+          >
+            <n-tag size="tiny" type="warning" :bordered="false">
+              {{ teamInsight.groups.some((group) => group.highWinRateAlert) ? "高胜率开黑" : "疑似开黑" }}
+            </n-tag>
+            {{ groupNames(teamInsight.groups[0]) }} · {{ teamInsight.groups[0].games }}场 ·
             {{ formatRate(teamInsight.groups[0].winRate) }}
           </span>
         </div>
@@ -616,68 +606,106 @@ const teamInsight = computed(() => {
 
 .team-insight {
 	margin-bottom: 8px;
-	padding: 7px 8px;
+	padding: 5px 7px;
 	border: 1px solid rgba(16, 185, 129, 0.16);
 	border-radius: 6px;
 	background: rgba(236, 253, 245, 0.78);
 	color: #374151;
 	font-size: 11px;
-	line-height: 1.4;
+	line-height: 1.25;
 }
 
-.team-insight-heading,
-.team-insight-line,
-.team-insight-party {
+.team-insight-top,
+.team-insight-details {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
 	min-width: 0;
-	gap: 6px;
+	gap: 8px;
 }
 
-.team-insight-heading {
-	margin-bottom: 5px;
+.team-insight-top {
+	justify-content: space-between;
+	min-height: 22px;
+	white-space: nowrap;
+}
+
+.team-insight-title {
 	font-weight: 600;
 }
 
-.team-insight-grid {
-	display: grid;
-	grid-template-columns: repeat(3, minmax(0, 1fr));
-	gap: 5px;
-	margin-bottom: 4px;
-}
-
-.team-insight-grid > div {
+.team-insight-stats {
 	display: flex;
-	flex-direction: column;
+	align-items: center;
+	flex: 1 1 auto;
 	min-width: 0;
-	padding: 3px 5px;
-	border-radius: 4px;
-	background: rgba(255, 255, 255, 0.58);
+	gap: 0;
 }
 
-.team-insight-grid span,
-.team-insight-line > span:first-child {
+.team-insight-stats > span {
+	display: inline-flex;
+	align-items: baseline;
+	min-width: 0;
+	padding: 0 8px;
+	border-right: 1px solid rgba(16, 185, 129, 0.18);
+}
+
+.team-insight-stats > span:first-child {
+	padding-left: 4px;
+}
+
+.team-insight-stats > span:last-child {
+	border-right: 0;
+}
+
+.team-insight-stats i {
+	margin-right: 3px;
+	font-style: normal;
 	color: #6b7280;
 }
 
-.team-insight-grid strong {
+.team-insight-stats strong {
 	font-size: 12px;
 	color: #111827;
 }
 
-.team-insight-line,
-.team-insight-party {
+.team-insight-details {
 	margin-top: 3px;
+	padding-top: 3px;
+	border-top: 1px solid rgba(16, 185, 129, 0.12);
+	overflow: hidden;
 }
 
-.team-insight-line > span:last-child,
-.team-insight-party > span:last-child {
+.team-insight-detail {
+	display: inline-flex;
+	align-items: center;
 	min-width: 0;
+	max-width: 50%;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	color: #4b5563;
+}
+
+.team-insight-detail b {
+	flex: 0 0 auto;
+	margin-right: 3px;
+	color: #6b7280;
+	font-weight: 500;
 }
 
 .team-insight-party {
+	flex: 1 1 auto;
+	max-width: none;
+	gap: 3px;
 	justify-content: flex-start;
+}
+
+.team-insight-party :deep(.n-tag) {
+	flex: 0 0 auto;
+}
+
+.team-insight-party {
+	min-width: 0;
 }
 
 :global(.dark) .team-insight {
@@ -685,11 +713,7 @@ const teamInsight = computed(() => {
 	color: #d1fae5;
 }
 
-:global(.dark) .team-insight-grid > div {
-	background: rgba(17, 24, 39, 0.38);
-}
-
-:global(.dark) .team-insight-grid strong {
+:global(.dark) .team-insight-stats strong {
 	color: #ecfdf5;
 }
 
