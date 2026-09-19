@@ -4,6 +4,7 @@ import { invokeLcu } from "@/lcu";
 import { RecentMatchWindow } from "@/background/utils/creatWindow.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { SessionTypes } from "@/recentMatch/utils/queryTypes";
+import { logger } from "@/utils/logger";
 
 const ACTIVE_GAME_PHASES = new Set(["GameStart", "InProgress"]);
 const GAME_START_POLL_INTERVAL = 2000;
@@ -65,7 +66,11 @@ export class GameFlow {
 			const configSetting = JSON.parse(rawSetting);
 			return configSetting?.isGameInWindow !== false;
 		} catch (error) {
-			console.warn("读取对局内窗口配置失败，暂不打开窗口", error);
+			logger.warn({
+				tag: "gameFlow.read_config",
+				message: "读取对局内窗口配置失败，暂不打开窗口",
+				context: { error: String(error).slice(0, 200) },
+			});
 			return false;
 		}
 	};
@@ -134,7 +139,11 @@ export class GameFlow {
 			requireActivePhase,
 		)
 			.catch((error) => {
-				console.warn("初始化对局内战绩窗口失败", error);
+				logger.warn({
+					tag: "gameFlow.open_window",
+					message: "初始化对局内战绩窗口失败",
+					context: { error: String(error).slice(0, 200) },
+				});
 				return false;
 			})
 			.finally(() => {

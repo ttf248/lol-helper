@@ -45,6 +45,7 @@ import {
   MATCH_HISTORY_SOURCE_LABELS,
 } from "@/lcu/aboutMatch";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
+import { logger } from "@/utils/logger";
 
 type AnalysisWindow = (typeof RECENT_ANALYSIS_WINDOWS)[number];
 type PartyRankingMode = "frequency" | "winRate";
@@ -416,7 +417,11 @@ const exportAnalysis = (format: "json" | "csv") => {
     }
     exportMessage.value = `已导出 ${format.toUpperCase()} 分析证据`;
   } catch (error) {
-    console.error("Failed to export history analysis", error);
+    logger.error({
+      tag: "history_analytics.export",
+      message: "Failed to export history analysis",
+      context: { error: String(error).slice(0, 200) },
+    });
     exportMessage.value = "导出失败，请重试";
   } finally {
     exporting.value = false;

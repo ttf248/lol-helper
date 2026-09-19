@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { NormalizedHistoryGame } from "./recentAnalytics";
 import { MatchModeKey } from "./matchMode";
+import { logger } from "@/utils/logger";
 
 export interface CachedHistoryQuery {
   puuid: string;
@@ -58,7 +59,14 @@ export const getCachedHistory = async (
       })),
     }));
   } catch (error) {
-    console.warn("Failed to read PostgreSQL match cache", error);
+    logger.warn({
+      tag: "db.cache_read",
+      message: "Failed to read PostgreSQL match cache",
+      context: {
+        op: "get_cached_match_history",
+        error: String(error).slice(0, 200),
+      },
+    });
     return [];
   }
 };
@@ -90,7 +98,14 @@ export const cacheHistory = async (request: {
     });
     return true;
   } catch (error) {
-    console.warn("Failed to write PostgreSQL match cache", error);
+    logger.warn({
+      tag: "db.cache_write",
+      message: "Failed to write PostgreSQL match cache",
+      context: {
+        op: "cache_match_history",
+        error: String(error).slice(0, 200),
+      },
+    });
     return false;
   }
 };
@@ -144,7 +159,14 @@ export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
   try {
     return await invoke<DatabaseSummary>("database_summary");
   } catch (error) {
-    console.warn("Failed to read PostgreSQL cache summary", error);
+    logger.warn({
+      tag: "db.cache_summary",
+      message: "Failed to read PostgreSQL cache summary",
+      context: {
+        op: "database_summary",
+        error: String(error).slice(0, 200),
+      },
+    });
     return {
       totalMatches: 0,
       totalParticipants: 0,
@@ -172,7 +194,15 @@ export const getCachedPlayerSummary = async (
       request: { puuid, modeKey: modeKey || null },
     });
   } catch (error) {
-    console.warn("Failed to read cached player summary", error);
+    logger.warn({
+      tag: "db.cache_summary",
+      message: "Failed to read cached player summary",
+      context: {
+        op: "get_cached_player_summary",
+        puuid: puuid?.slice(-8) ?? "",
+        error: String(error).slice(0, 200),
+      },
+    });
     return empty;
   }
 };

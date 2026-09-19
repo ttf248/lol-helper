@@ -2,6 +2,7 @@ import { fetch } from "@tauri-apps/plugin-http";
 import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
 import { SgpServers } from "@/resources/areaList";
 import { GamesBySgp, Participant } from "./types/queryMatchSgpGameTypes";
+import { logger } from "@/utils/logger";
 
 export interface SgpRequestParams {
 	playerPuuid: string;
@@ -58,6 +59,7 @@ export class SgpMatchHistoryService {
 	): Promise<{ response: Response; body: string; data: T }> => {
 		const controller = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		const startedAt = Date.now();
 		try {
 			// SGP 的 SUMMARY 响应可能使用 chunked transfer。超时必须覆盖
 			// 建立连接、读取完整 body 和 JSON 解析，并真正中止底层请求，
@@ -75,6 +77,14 @@ export class SgpMatchHistoryService {
 			};
 		} catch (error) {
 			if (controller.signal.aborted) {
+				logger.warn({
+					tag: "lcu.sgp",
+					message: `SGP request timed out after ${this.TIMEOUT}ms`,
+					context: {
+						url,
+						duration_ms: Date.now() - startedAt,
+					},
+				});
 				throw new Error(`SGP request timed out after ${this.TIMEOUT}ms`);
 			}
 			throw error;
@@ -122,6 +132,17 @@ export class SgpMatchHistoryService {
 			if (!this.isUnauthorizedError(error)) {
 				throw error;
 			}
+
+			logger.warn({
+				tag: "lcu.sgp",
+				message: "SGP token expired, refreshing",
+				context: {
+					playerPuuid: params.playerPuuid,
+					start: params.start,
+					count: params.count,
+					fullParticipants,
+				},
+			});
 
 			const refreshedToken = await this._tokenProvider();
 			if (!refreshedToken) {
@@ -180,10 +201,22 @@ export class SgpMatchHistoryService {
 
 		if (!response.ok) {
 			// 如果状态码是 401，说明 Token 过期，此处抛出错误触发 catch 块中的重试
+			if (response.status === 401) {
+				logger.warn({
+					tag: "lcu.sgp",
+					message: "SGP 401 unauthorized",
+					context: { url, status: response.status },
+				});
+			}
 			throw new Error(`SGP_HTTP_ERROR_${response.status}: ${body.slice(0, 500)}`);
 		}
 
 		if (!Array.isArray(data?.games)) {
+			logger.warn({
+				tag: "lcu.sgp",
+				message: "SGP response missing games array",
+				context: { url },
+			});
 			throw new Error("SGP match history response has no games array");
 		}
 

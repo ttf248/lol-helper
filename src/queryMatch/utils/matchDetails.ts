@@ -23,6 +23,7 @@ import {
     GamesBySgp,
     Participant as SgpParticipant,
 } from "@/lcu/types/queryMatchSgpGameTypes";
+import { logger } from "@/utils/logger";
 
 export default class MatchDetails {
     private team100Kills = 0;
@@ -63,6 +64,15 @@ export default class MatchDetails {
                 sumPuuid,
             );
             if (sgpResult !== null) {
+                logger.info({
+                    tag: "match.detail",
+                    message: "queryGameDetail resolved",
+                    context: {
+                        gameId,
+                        sumPuuid,
+                        resolved: "sgp-summary",
+                    },
+                });
                 return this.withDataSource(sgpResult, "sgp-summary");
             }
         }
@@ -95,6 +105,16 @@ export default class MatchDetails {
                           sumPuuid,
                       );
             if (lcuResult !== null) {
+                logger.info({
+                    tag: "match.detail",
+                    message: "queryGameDetail resolved",
+                    context: {
+                        gameId,
+                        sumPuuid,
+                        resolved:
+                            getCachedLcuMatchSource(gameId) || "lcu-puuid",
+                    },
+                });
                 return this.withDataSource(
                     lcuResult,
                     getCachedLcuMatchSource(gameId) || "lcu-puuid",
@@ -107,8 +127,24 @@ export default class MatchDetails {
             `/lol-match-history/v1/games/${gameId}`,
         );
         if (response === null || response?.queueId === undefined) {
+            logger.warn({
+                tag: "match.detail",
+                message: "queryGameDetail no response",
+                context: { gameId, sumPuuid },
+            });
             return null;
         }
+
+        logger.info({
+            tag: "match.detail",
+            message: "queryGameDetail resolved",
+            context: {
+                gameId,
+                sumPuuid,
+                resolved: "lcu-game-detail",
+                queueId: response.queueId,
+            },
+        });
 
         if (response.queueId === 1700) {
             return this.withDataSource(

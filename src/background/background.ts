@@ -5,6 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { MainWindow } from "./utils/creatWindow.ts";
 import { TaskTracker } from "./utils/TaskTracker.ts";
 import { configInit, getClientPath } from "@/background/utils/config.ts";
+import { installLogBridge } from "@/utils/logBridge";
+import { installGlobalErrorHandlers, logger } from "@/utils/logger";
 
 class Background {
 	private gameFlow: GameFlow;
@@ -30,7 +32,11 @@ class Background {
 		try {
 			await invoke("listen_for_client_start");
 		} catch (error) {
-			console.error("启动客户端状态监听失败", error);
+			logger.error({
+				tag: "background.listen_for_client_start",
+				message: "启动客户端状态监听失败",
+				context: { error: String(error).slice(0, 200) },
+			});
 		}
 	}
 
@@ -60,7 +66,11 @@ class Background {
 			elapsedTime += intervalTime;
 			if (elapsedTime >= TIME_LIMIT) {
 				clearInterval(lcuSuccess);
-				console.log("超时，客户端未启动");
+				logger.warn({
+					tag: "background.client_probe_timeout",
+					message: "超时，客户端未启动",
+					context: { elapsed_ms: elapsedTime, time_limit_ms: TIME_LIMIT },
+				});
 			}
 		}, intervalTime);
 	}
@@ -96,4 +106,16 @@ class Background {
 
 }
 
-new Background();
+// background 窗口是唯一的日志聚合点。先完成监听注册，再创建其它窗口和
+// 启动业务，避免首批前端日志在桥接器尚未就绪时丢失。
+const bootstrap = async () => {
+  try {
+    await installLogBridge();
+  } catch {
+    // 日志桥是可选能力，不能因为事件监听失败而阻止主业务启动。
+  }
+  installGlobalErrorHandlers();
+  new Background();
+};
+
+void bootstrap();

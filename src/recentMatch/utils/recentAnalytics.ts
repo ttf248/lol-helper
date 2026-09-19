@@ -39,6 +39,7 @@ import {
   HISTORY_FAST_WINDOW,
   HISTORY_SERVER_FETCH_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
+import { logger } from "@/utils/logger";
 
 export const RECENT_ANALYSIS_GAME_COUNT = HISTORY_ANALYSIS_LIMIT;
 export const RECENT_DEFAULT_GAME_COUNT = HISTORY_FAST_WINDOW;
@@ -392,7 +393,11 @@ const hydratePlayerQueueHistory = (
       sourceEndpoints: synced.sourceEndpoints,
     };
   })().catch((error) => {
-    console.warn("Failed to hydrate full queue history", error);
+    logger.warn({
+      tag: "recent.analysis",
+      message: "Failed to hydrate full queue history",
+      context: { error: String(error).slice(0, 200) },
+    });
     return {
       games: existingGames,
       source: "PostgreSQL 本地缓存",
@@ -703,7 +708,11 @@ const loadModerationMap = async (
       });
     }
   } catch (error) {
-    console.warn("Failed to load recent-match moderation records", error);
+    logger.warn({
+      tag: "recent.analysis",
+      message: "Failed to load recent-match moderation records",
+      context: { error: String(error).slice(0, 200) },
+    });
   }
 
   return result;
@@ -1645,6 +1654,11 @@ export const loadRecentTeamAnalysis = async (
     return buildNetworkAnalysis(friendList, enemyList, new Map());
   }
 
+  logger.info({
+    tag: "recent.analysis",
+    message: "stage=cache",
+    context: { queueId, players: players.length },
+  });
   onProgress?.({
     stage: "cache",
     completed: 0,
@@ -1680,6 +1694,11 @@ export const loadRecentTeamAnalysis = async (
     new Map(players.map((player) => [player.puuid, emptyModeration()])),
     RECENT_DEFAULT_GAME_COUNT,
   );
+  logger.info({
+    tag: "recent.analysis",
+    message: "stage=recent",
+    context: { queueId, players: players.length },
+  });
   onProgress?.({
     stage: "recent",
     completed: players.length,
@@ -1740,6 +1759,11 @@ export const loadRecentTeamAnalysis = async (
 
   if (hydrationEntries.length === 0) {
     const network = buildNetworkAnalysis(friendList, enemyList, snapshotMap);
+    logger.info({
+      tag: "recent.analysis",
+      message: "stage=done",
+      context: { queueId, players: players.length, hydrated: 0 },
+    });
     onProgress?.({
       stage: "done",
       completed: players.length,
@@ -1797,6 +1821,15 @@ export const loadRecentTeamAnalysis = async (
     RECENT_ANALYSIS_GAME_COUNT,
   );
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
+  logger.info({
+    tag: "recent.analysis",
+    message: "stage=done",
+    context: {
+      queueId,
+      players: players.length,
+      hydrated: hydrationEntries.length,
+    },
+  });
   onProgress?.({
     stage: "done",
     completed: hydrationEntries.length,

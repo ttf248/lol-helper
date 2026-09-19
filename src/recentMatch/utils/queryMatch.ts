@@ -23,6 +23,7 @@ import {
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
 import { HISTORY_ANALYSIS_LIMIT, HISTORY_SERVER_FETCH_LIMIT } from "@/recentMatch/utils/historyConfig";
+import { logger } from "@/utils/logger";
 
 interface MatchSearchResult {
     matches: MatchItemTypes[];
@@ -264,6 +265,16 @@ class QueryMatch {
                     (match): match is MatchItemTypes => match !== null,
                 );
 
+            logger.info({
+                tag: "recent.history",
+                message: "stage=cache",
+                context: {
+                    puuid,
+                    queueId,
+                    cachedGames: cachedMatchItems.length,
+                },
+            });
+
             // 每次打开对局面板只读取服务器最近三页，再与本地缓存按
             // gameId 合并；更早记录不会触发服务器继续翻页。
             const search = await this.findMatchesWithStatus(
@@ -279,13 +290,35 @@ class QueryMatch {
                 ...search,
                 matches,
             });
+            logger.info({
+                tag: "recent.history",
+                message: "stage=server",
+                context: {
+                    puuid,
+                    queueId,
+                    serverGames: search.serverGames,
+                    modeGames: search.modeGames,
+                    matchedGames: search.matchedGames,
+                    requestFailed: search.requestFailed,
+                    sourceEndpoints: search.sourceEndpoints,
+                    finalStatus: status.kind,
+                },
+            });
             return [
                 matches,
                 matches.filter((match) => match.isWin).length,
                 status,
             ];
         } catch (error) {
-            console.error("Error in queryMatchHistory:", error);
+            logger.error({
+                tag: "recent.history",
+                message: "queryMatchHistory failed",
+                context: {
+                    puuid,
+                    queueId,
+                    error: String(error).slice(0, 200),
+                },
+            });
             // Return default values in case of error
             return [
                 [],
@@ -367,7 +400,14 @@ class QueryMatch {
             // 下一次查询直接参与本地合并。
             void this.cacheRawGames(puuid, result.games, result.source).catch(
                 (error) => {
-                    console.warn("Failed to persist recent match cache", error);
+                    logger.warn({
+                        tag: "recent.history",
+                        message: "Failed to persist recent match cache",
+                        context: {
+                            puuid,
+                            error: String(error).slice(0, 200),
+                        },
+                    });
                 },
             );
             serverGames = result.games.length;

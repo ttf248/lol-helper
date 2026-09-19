@@ -10,6 +10,7 @@ import {
   SessionTypes,
   TeamData,
 } from "@/recentMatch/utils/queryTypes";
+import { logger } from "@/utils/logger";
 
 export interface CurrentMatchProgress {
   loaded: number;
@@ -178,7 +179,10 @@ class QuerySummoner {
    * 游戏加载阶段 gameflow 的 teamTwo 可能暂时只有部分玩家。
    * playerChampionSelections 通常已经包含十名玩家，利用它补齐缺失的那一队。
    */
-  private hydrateMissingTeam = async (session: SessionTypes): Promise<SessionTypes> => {
+  private hydrateMissingTeam = async (
+    session: SessionTypes,
+    onStage?: (stage: "champion-selection" | "live-data", detected: number) => void,
+  ): Promise<SessionTypes> => {
     if (this.hasCompleteTeams(session)) {
       return session;
     }
@@ -197,6 +201,8 @@ class QuerySummoner {
     if (targetTeam === null || gameData.playerChampionSelections.length === 0) {
       return session;
     }
+
+    onStage?.("champion-selection", teamOne.length + teamTwo.length);
 
     const knownPlayers = new Set(
       [...teamOne, ...teamTwo].flatMap((player) => [
@@ -251,11 +257,36 @@ class QuerySummoner {
   public init = async (onProgress?: CurrentMatchProgressCallback) => {
     let latestSession: SessionTypes | null = null;
     const maxAttempts = 12;
+    let firstStageLogged = false;
+    let liveStageLogged = false;
+    let championSelectionStageLogged = false;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const session = await invokeLcu<SessionTypes>('get','/lol-gameflow/v1/session');
       if (session?.gameData) {
-        latestSession = await this.hydrateMissingTeam(session);
+        if (!firstStageLogged) {
+          firstStageLogged = true;
+          logger.info({
+            tag: "query_summoner",
+            message: "stage=gameflow-session",
+            context: {
+              phase: session.phase,
+              queueId: session.gameData.queue?.id,
+              detected: session.gameData.teamOne.length + session.gameData.teamTwo.length,
+            },
+          });
+        }
+
+        latestSession = await this.hydrateMissingTeam(session, (resolved, detected) => {
+          if (!championSelectionStageLogged && resolved === "champion-selection") {
+            championSelectionStageLogged = true;
+            logger.info({
+              tag: "query_summoner",
+              message: "stage=champion-selection",
+              context: { detected },
+            });
+          }
+        });
 
         const detectedPlayers =
           latestSession.gameData.teamOne.length + latestSession.gameData.teamTwo.length;
@@ -279,6 +310,16 @@ class QuerySummoner {
                 teamTwo: liveTeams.teamTwo,
               },
             };
+            if (!liveStageLogged) {
+              liveStageLogged = true;
+              logger.info({
+                tag: "query_summoner",
+                message: "stage=live-data",
+                context: {
+                  detected: liveTeams.teamOne.length + liveTeams.teamTwo.length,
+                },
+              });
+            }
           }
 
           const refreshedPlayers =

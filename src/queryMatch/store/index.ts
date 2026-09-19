@@ -9,6 +9,7 @@ import { findTopChamp } from "@/queryMatch/utils/analysisSummary";
 import { MatchHistoryEndpoint, MatchHistorySource } from "@/lcu/aboutMatch";
 import { invoke } from "@tauri-apps/api/core";
 import { TencentRsoPlatformId } from "@/resources/areaList";
+import { logger } from "@/utils/logger";
 
 const baseMatch = new BaseMatch();
 const matchDetials = new MatchDetails();
@@ -121,7 +122,14 @@ const useMatchStore = defineStore("useMatchStore", {
 				if (queryRequestId !== this.queryRequestId) {
 					return;
 				}
-				console.error("Failed to initialize match history", error);
+				logger.error({
+					tag: "queryMatch.fetch_history",
+					message: "Failed to initialize match history",
+					context: {
+						queryRequestId,
+						error: String(error).slice(0, 200),
+					},
+				});
 				this.matchList = null;
 				this.recentMatchList20 = [];
 				this.analysisData = null;
@@ -311,7 +319,14 @@ const useMatchStore = defineStore("useMatchStore", {
 				if (detailRequestId !== this.detailRequestId) {
 					return false;
 				}
-				console.error("Failed to load match details", error);
+				logger.error({
+					tag: "queryMatch.fetch_details",
+					message: "Failed to load match details",
+					context: {
+						detailRequestId,
+						error: String(error).slice(0, 200),
+					},
+				});
 				this.participantsInfo = null;
 				this.matchError =
 					"对局详情查询失败，请切换其它对局重试；如果接口无数据，页面会保留当前提示。";

@@ -7,6 +7,7 @@ import {
 } from "./types/queryMatchLcuTypes";
 
 import { GamesBySgp } from "./types/queryMatchSgpGameTypes";
+import { logger } from "@/utils/logger";
 
 export type MatchHistorySource =
 	| "lcu-current"
@@ -79,7 +80,10 @@ const tokenFetcher = async (): Promise<string | null> => {
 		"/entitlements/v1/token",
 	);
 	if (entitlements === null) {
-		console.error("Failed to fetch token");
+		logger.error({
+			tag: "lcu.token",
+			message: "entitlements token fetch failed",
+		});
 		return null;
 	}
 	return entitlements.accessToken;
@@ -232,6 +236,18 @@ const fetchMatchHistory = async (
 			endIndex,
 		);
 		if (currentGames !== null) {
+			logger.info({
+				tag: "lcu.history",
+				message: "fetchMatchHistory resolved",
+				context: {
+					puuid,
+					begIndex,
+					count: endIndex,
+					fullParticipants,
+					resolved: "lcu-current-summoner",
+					count_games: currentGames.length,
+				},
+			});
 			return {
 				games: currentGames,
 				source: "lcu-current",
@@ -252,6 +268,18 @@ const fetchMatchHistory = async (
 		lcuGames.length > 0 &&
 		(!fullParticipants || hasParticipantRoster(lcuGames))
 	) {
+		logger.info({
+			tag: "lcu.history",
+			message: "fetchMatchHistory resolved",
+			context: {
+				puuid,
+				begIndex,
+				count: endIndex,
+				fullParticipants,
+				resolved: "lcu-puuid",
+				count_games: lcuGames.length,
+			},
+		});
 		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
 	}
 
@@ -265,6 +293,18 @@ const fetchMatchHistory = async (
 			? await sgpService.getFullMatchHistory(sgpRequest)
 			: await sgpService.getMatchHistory(sgpRequest);
 		if (sgpGames.length > 0) {
+			logger.info({
+				tag: "lcu.history",
+				message: "fetchMatchHistory resolved",
+				context: {
+					puuid,
+					begIndex,
+					count: endIndex,
+					fullParticipants,
+					resolved: fullParticipants ? "sgp-summary-full" : "sgp-summary",
+					count_games: sgpGames.length,
+				},
+			});
 			return {
 				games: sgpGames,
 				source: "sgp",
@@ -272,7 +312,18 @@ const fetchMatchHistory = async (
 			};
 		}
 	} catch (sgpError) {
-		console.warn("SGP match history request failed, trying LCU fallback", sgpError);
+		logger.warn({
+			tag: "lcu.history",
+			message: "SGP match history request failed, trying LCU fallback",
+			context: {
+				puuid,
+				begIndex,
+				count: endIndex,
+				fullParticipants,
+				resolved: "sgp-error",
+				error: String(sgpError).slice(0, 200),
+			},
+		});
 	}
 
 	// SGP 不可用时，仍允许页面显示目标玩家的历史胜率；但这里明确是
@@ -283,6 +334,18 @@ const fetchMatchHistory = async (
 			endIndex,
 		);
 		if (currentGames !== null && currentGames.length > 0) {
+			logger.info({
+				tag: "lcu.history",
+				message: "fetchMatchHistory resolved (fallback)",
+				context: {
+					puuid,
+					begIndex,
+					count: endIndex,
+					fullParticipants,
+					resolved: "lcu-current-summoner",
+					count_games: currentGames.length,
+				},
+			});
 			return {
 				games: currentGames,
 				source: "lcu-current",
@@ -291,8 +354,31 @@ const fetchMatchHistory = async (
 		}
 	}
 	if (lcuGames !== null) {
+		logger.info({
+			tag: "lcu.history",
+			message: "fetchMatchHistory resolved (fallback)",
+			context: {
+				puuid,
+				begIndex,
+				count: endIndex,
+				fullParticipants,
+				resolved: "lcu-puuid",
+				count_games: lcuGames.length,
+			},
+		});
 		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
 	}
+	logger.warn({
+		tag: "lcu.history",
+		message: "fetchMatchHistory no data",
+		context: {
+			puuid,
+			begIndex,
+			count: endIndex,
+			fullParticipants,
+			resolved: "none",
+		},
+	});
 	throw new Error("Match history interfaces returned no data");
 };
 
@@ -481,7 +567,17 @@ const queryMatchHistoryWithSourceInternalUncached = async (
 			endpoints: result.endpoints,
 		};
 	} catch (error) {
-		console.error("Error fetching match history:", error);
+		logger.error({
+			tag: "lcu.history",
+			message: "queryMatchHistoryWithSourceInternal failed",
+			context: {
+				puuid,
+				begIndex,
+				endIndex,
+				fullParticipants,
+				error: String(error).slice(0, 200),
+			},
+		});
 		return null;
 	}
 };

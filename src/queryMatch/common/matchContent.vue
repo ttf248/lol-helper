@@ -6,6 +6,7 @@ import MatchConHeader from "./matchConHeader.vue";
 import MatchDrawer from "@/queryMatch/common/matchDrawer.vue";
 import MatchDetailsFighter from "@/queryMatch/common/matchDetailsFighter.vue";
 import { SumDetail, SummonerDetailInfo } from "@/queryMatch/utils/MatchDetail";
+import { logger } from "@/utils/logger";
 
 const emits = defineEmits(["changeSum"]);
 const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn } =
@@ -52,7 +53,11 @@ const openMatchDra = async (summonerId: number) => {
         }
         curMatchDraData.value = await getDrawerData(summonerInfo);
     } catch (error) {
-        console.error("Failed to load player match details", error);
+        logger.error({
+            tag: "matchContent.drawer",
+            message: "Failed to load player match details",
+            context: { summonerId, error: String(error).slice(0, 200) },
+        });
         drawerError.value =
             "该玩家的对局数据没有返回完整信息，请稍后重试。";
     } finally {

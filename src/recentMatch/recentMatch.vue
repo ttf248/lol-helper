@@ -13,6 +13,7 @@ import {
     RecentSumInfo,
     RecentMatchLoadingState,
 } from "@/recentMatch/utils/queryTypes";
+import { logger } from "@/utils/logger";
 import QueryMatch from "@/recentMatch/utils/queryMatch";
 import MatchContent from "@/queryMatch/common/matchContent.vue";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
@@ -257,7 +258,11 @@ const init = () => {
                     networkAnalysis.value = analysis;
                 })
                 .catch((error) => {
-                    console.error("Failed to load recent team analysis", error);
+                    logger.error({
+                        tag: "recent.analysis_panel",
+                        message: "Failed to load recent team analysis",
+                        context: { error: String(error).slice(0, 200) },
+                    });
                     setLoadingState({
                         stage: "error",
                         message: "最近历史分析部分失败",
@@ -268,7 +273,11 @@ const init = () => {
                     recentAnalysisLoading.value = false;
                 });
         } catch (error) {
-            console.error("Failed to initialize recent-match panel", error);
+            logger.error({
+                tag: "recent.analysis_panel",
+                message: "Failed to initialize recent-match panel",
+                context: { error: String(error).slice(0, 200) },
+            });
             isLcuErr.value = true;
             setLoadingState({
                 stage: "error",
@@ -338,7 +347,11 @@ const getChampInfoList = async (champId: number) => {
             });
         }
     } catch (error) {
-        console.error(error);
+        logger.error({
+            tag: "recent.champ_info",
+            message: "Failed to load champion info list",
+            context: { champId, error: String(error).slice(0, 200) },
+        });
     }
 };
 
