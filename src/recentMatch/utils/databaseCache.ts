@@ -125,6 +125,21 @@ export interface DatabaseSummary {
   modes: DatabaseModeSummary[];
 }
 
+export interface DatabaseSourceSummary {
+  source: string;
+  matches: number;
+}
+
+export interface CachedPlayerSummary {
+  puuid: string;
+  modeKey?: MatchModeKey | null;
+  matches: number;
+  completeMatches: number;
+  wins: number;
+  latestGameCreation?: number | null;
+  sources: DatabaseSourceSummary[];
+}
+
 export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
   try {
     return await invoke<DatabaseSummary>("database_summary");
@@ -136,5 +151,28 @@ export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
       totalPlayers: 0,
       modes: [],
     };
+  }
+};
+
+export const getCachedPlayerSummary = async (
+  puuid: string,
+  modeKey?: MatchModeKey,
+): Promise<CachedPlayerSummary> => {
+  const empty: CachedPlayerSummary = {
+    puuid,
+    modeKey: modeKey || null,
+    matches: 0,
+    completeMatches: 0,
+    wins: 0,
+    latestGameCreation: null,
+    sources: [],
+  };
+  try {
+    return await invoke<CachedPlayerSummary>("get_cached_player_summary", {
+      request: { puuid, modeKey: modeKey || null },
+    });
+  } catch (error) {
+    console.warn("Failed to read cached player summary", error);
+    return empty;
   }
 };

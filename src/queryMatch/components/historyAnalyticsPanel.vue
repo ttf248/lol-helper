@@ -12,7 +12,9 @@ import {
 } from "naive-ui";
 import { champDict } from "@/resources/champList";
 import {
+  CachedPlayerSummary,
   DatabaseSummary,
+  getCachedPlayerSummary,
   getDatabaseStatus,
   getDatabaseSummary,
 } from "@/recentMatch/utils/databaseCache";
@@ -57,6 +59,17 @@ const databaseSummary = ref<DatabaseSummary>({
   totalPlayers: 0,
   modes: [],
 });
+const cachedPlayerSummary = ref<CachedPlayerSummary>({
+  puuid: "",
+  modeKey: selectedMode.value,
+  matches: 0,
+  completeMatches: 0,
+  wins: 0,
+  latestGameCreation: null,
+  sources: [],
+});
+const databasePlayerLoading = ref(false);
+let databaseRequestId = 0;
 
 const activeTrend = computed(() =>
   analysis.value?.trends.find((item) => item.window === selectedWindow.value),
@@ -194,12 +207,18 @@ const loadAnalysis = async () => {
 };
 
 const loadDatabaseInfo = async () => {
-  const [status, summary] = await Promise.all([
+  const currentRequest = ++databaseRequestId;
+  databasePlayerLoading.value = true;
+  const [status, summary, playerSummary] = await Promise.all([
     getDatabaseStatus(),
     getDatabaseSummary(),
+    getCachedPlayerSummary(props.player.puuid, selectedMode.value),
   ]);
+  if (currentRequest !== databaseRequestId) return;
   databaseStatus.value = status;
   databaseSummary.value = summary;
+  cachedPlayerSummary.value = playerSummary;
+  databasePlayerLoading.value = false;
 };
 
 const refresh = async () => {
@@ -207,6 +226,31 @@ const refresh = async () => {
 };
 
 const formatNumber = (value: number) => value.toLocaleString("zh-CN");
+
+const formatCacheTime = (timestamp: number | null | undefined) => {
+  if (!timestamp) return "暂无";
+  const normalized = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const cachedPlayerWinRate = computed(() =>
+  cachedPlayerSummary.value.matches > 0
+    ? (cachedPlayerSummary.value.wins / cachedPlayerSummary.value.matches) * 100
+    : null,
+);
+
+const cachedPlayerSources = computed(() =>
+  cachedPlayerSummary.value.sources
+    .map((item) => `${item.source} ${item.matches}场`)
+    .join("、"),
+);
 
 const cacheModeSummary = (modeKey: string) => {
   const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
@@ -217,6 +261,9 @@ const cacheModeSummary = (modeKey: string) => {
 
 watch([selectedMode, selectedWindow], () => {
   void loadAnalysis();
+  if (selectedMode.value !== cachedPlayerSummary.value.modeKey) {
+    void loadDatabaseInfo();
+  }
 });
 
 watch(
@@ -224,6 +271,7 @@ watch(
   () => {
     analysis.value = null;
     void loadAnalysis();
+    void loadDatabaseInfo();
   },
 );
 
@@ -531,7 +579,22 @@ onMounted(() => {
           <recent-network-graph :analysis="analysis.network || null" />
         </n-card>
 
-        <n-card size="small" title="本地缓存汇总" :bordered="false">
+        <n-card size="small" title="本玩家缓存派生汇总" :bordered="false">
+          <div class="cache-overview">
+            <span>本模式 {{ formatNumber(cachedPlayerSummary.matches) }} 场</span>
+            <span>完整 {{ formatNumber(cachedPlayerSummary.completeMatches) }} 场</span>
+            <span>缓存胜率 {{ formatRate(cachedPlayerWinRate) }}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-2">
+            最新缓存：{{ formatCacheTime(cachedPlayerSummary.latestGameCreation) }} ·
+            {{ databasePlayerLoading ? "正在查询数据库" : "按 gameId 去重后的本地派生结果" }}
+          </div>
+          <div v-if="cachedPlayerSources" class="text-xs text-gray-500 mt-1">
+            数据来源：{{ cachedPlayerSources }}
+          </div>
+        </n-card>
+
+        <n-card size="small" title="本地缓存总览" :bordered="false">
           <div class="cache-overview">
             <span>对局 {{ formatNumber(databaseSummary.totalMatches) }}</span>
             <span>参赛记录 {{ formatNumber(databaseSummary.totalParticipants) }}</span>

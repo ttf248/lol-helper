@@ -121,6 +121,32 @@ pub struct DatabaseSummary {
     pub modes: Vec<DatabaseModeSummary>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPlayerSummaryQuery {
+    pub puuid: String,
+    pub mode_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseSourceSummary {
+    pub source: String,
+    pub matches: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPlayerSummary {
+    pub puuid: String,
+    pub mode_key: Option<String>,
+    pub matches: i64,
+    pub complete_matches: i64,
+    pub wins: i64,
+    pub latest_game_creation: Option<i64>,
+    pub sources: Vec<DatabaseSourceSummary>,
+}
+
 pub struct DatabaseState {
     client: Arc<Mutex<Option<Client>>>,
     status: Arc<RwLock<DatabaseStatus>>,
@@ -486,6 +512,77 @@ impl DatabaseState {
             modes,
         })
     }
+
+    pub async fn player_summary(
+        &self,
+        request: CachedPlayerSummaryQuery,
+    ) -> Result<CachedPlayerSummary, String> {
+        if request.puuid.trim().is_empty() {
+            return Err("查询缓存汇总缺少 puuid".to_string());
+        }
+
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let summary_row = client
+            .query_one(
+                "WITH player_matches AS (
+                     SELECT m.game_id, m.game_creation, target.win
+                     FROM matches m
+                     JOIN match_participants target
+                       ON target.game_id = m.game_id
+                      AND target.puuid = $1
+                     WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                 ), roster_counts AS (
+                     SELECT game_id, COUNT(*) AS participant_count
+                     FROM match_participants
+                     GROUP BY game_id
+                 )
+                 SELECT COUNT(*)::BIGINT,
+                        COUNT(*) FILTER (
+                            WHERE COALESCE(roster_counts.participant_count, 0) >= 5
+                        )::BIGINT,
+                        COALESCE(SUM(CASE WHEN player_matches.win THEN 1 ELSE 0 END), 0)::BIGINT,
+                        MAX(player_matches.game_creation)
+                 FROM player_matches
+                 LEFT JOIN roster_counts
+                   ON roster_counts.game_id = player_matches.game_id",
+                &[&request.puuid, &request.mode_key],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let source_rows = client
+            .query(
+                "SELECT m.source, COUNT(DISTINCT m.game_id)::BIGINT
+                 FROM matches m
+                 JOIN match_participants target
+                   ON target.game_id = m.game_id
+                  AND target.puuid = $1
+                 WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                 GROUP BY m.source
+                 ORDER BY COUNT(DISTINCT m.game_id) DESC, m.source",
+                &[&request.puuid, &request.mode_key],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(CachedPlayerSummary {
+            puuid: request.puuid,
+            mode_key: request.mode_key,
+            matches: summary_row.get(0),
+            complete_matches: summary_row.get(1),
+            wins: summary_row.get(2),
+            latest_game_creation: summary_row.get(3),
+            sources: source_rows
+                .into_iter()
+                .map(|row| DatabaseSourceSummary {
+                    source: row.get(0),
+                    matches: row.get(1),
+                })
+                .collect(),
+        })
+    }
 }
 
 fn now_unix() -> i64 {
@@ -523,4 +620,12 @@ pub async fn database_summary(
     state: tauri::State<'_, DatabaseState>,
 ) -> Result<DatabaseSummary, String> {
     state.summary().await
+}
+
+#[tauri::command]
+pub async fn get_cached_player_summary(
+    state: tauri::State<'_, DatabaseState>,
+    request: CachedPlayerSummaryQuery,
+) -> Result<CachedPlayerSummary, String> {
+    state.player_summary(request).await
 }
