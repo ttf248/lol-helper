@@ -27,6 +27,7 @@ import {
 } from "@/recentMatch/utils/recentAnalytics";
 import {
   PlayerRecentAnalysis,
+  PlayerAnalysisProgress,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
@@ -37,6 +38,7 @@ const props = defineProps<{ player: RecentSumInfo }>();
 const selectedMode = ref<MatchModeKey>("match");
 const selectedWindow = ref<AnalysisWindow>(10);
 const analysis = ref<PlayerRecentAnalysis | null>(null);
+const analysisProgress = ref<PlayerAnalysisProgress | null>(null);
 const loading = ref(false);
 const errorMessage = ref("");
 let requestId = 0;
@@ -86,17 +88,33 @@ const championImage = (championId: number) => {
 const loadAnalysis = async () => {
   const currentRequest = ++requestId;
   loading.value = true;
+  analysis.value = null;
+  analysisProgress.value = {
+    stage: "cache",
+    completed: 0,
+    total: 1,
+    percentage: 0,
+    message: "准备读取本地缓存",
+  };
   errorMessage.value = "";
   try {
     const result = await loadPlayerModeAnalysis(
       props.player,
       selectedMode.value,
       selectedWindow.value,
+      (progress) => {
+        if (currentRequest !== requestId) return;
+        analysisProgress.value = progress;
+        if (progress.analysis) {
+          analysis.value = progress.analysis;
+        }
+      },
     );
     if (currentRequest === requestId) analysis.value = result;
   } catch (error) {
     if (currentRequest !== requestId) return;
     analysis.value = null;
+    analysisProgress.value = null;
     errorMessage.value = `历史战绩分析失败：${String(error)}`;
   } finally {
     if (currentRequest === requestId) loading.value = false;
@@ -190,8 +208,33 @@ onMounted(() => {
       <n-button size="tiny" text type="primary" @click="loadAnalysis">重试</n-button>
     </div>
 
+    <div
+      v-if="analysisProgress"
+      class="analysis-progress"
+      :class="analysisProgress.stage === 'done' ? 'analysis-progress-done' : ''"
+    >
+      <div class="analysis-progress-heading">
+        <span>{{ analysisProgress.message }}</span>
+        <span>{{ analysisProgress.percentage }}%</span>
+      </div>
+      <n-progress
+        type="line"
+        :percentage="analysisProgress.percentage"
+        :show-indicator="false"
+        :status="analysisProgress.stage === 'done' ? 'success' : 'default'"
+        :height="6"
+      />
+      <div class="analysis-progress-text">
+        <span v-if="analysisProgress.stage === 'cache'">先检查 PostgreSQL，命中缓存就不重复请求服务器。</span>
+        <span v-else-if="analysisProgress.stage === 'personal'">个人胜率、英雄表现先使用快速历史摘要展示。</span>
+        <span v-else-if="analysisProgress.stage === 'full'">正在补齐完整参与者，仅用于同队、对手和关系图分析。</span>
+        <span v-else-if="analysisProgress.stage === 'relations'">正在计算共同对局、交手胜率和黑名单关联。</span>
+        <span v-else>个人指标与关系分析均已完成。</span>
+      </div>
+    </div>
+
     <n-spin :show="loading">
-      <template #description>优先读取 PostgreSQL 缓存，未命中时查询历史接口</template>
+      <template #description>{{ analysisProgress?.message || "正在读取历史数据" }}</template>
 
       <div v-if="analysis" class="analysis-content">
         <div class="metric-grid">
@@ -392,6 +435,33 @@ onMounted(() => {
   color: #d03050;
   font-size: 0.75rem;
   margin: 0.35rem 0;
+}
+
+.analysis-progress {
+  padding: 0.35rem 0.45rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid rgba(24, 160, 88, 0.18);
+  border-radius: 0.35rem;
+  background: rgba(24, 160, 88, 0.05);
+}
+
+.analysis-progress-done {
+  opacity: 0.8;
+}
+
+.analysis-progress-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #333;
+  font-size: 0.72rem;
+  margin-bottom: 0.15rem;
+}
+
+.analysis-progress-text {
+  color: #888;
+  font-size: 0.66rem;
+  margin-top: 0.15rem;
 }
 
 .analysis-content {

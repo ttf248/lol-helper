@@ -254,6 +254,16 @@ export interface PlayerRecentAnalysis {
   network?: RecentNetworkAnalysis;
 }
 
+export interface PlayerAnalysisProgress {
+  stage: "cache" | "personal" | "full" | "relations" | "done";
+  completed: number;
+  total: number;
+  percentage: number;
+  message: string;
+  /** 后台补齐期间可直接展示的阶段性个人统计。 */
+  analysis?: PlayerRecentAnalysis;
+}
+
 export interface OpponentMatchupStats {
   opponent: PartyMember;
   games: number;
