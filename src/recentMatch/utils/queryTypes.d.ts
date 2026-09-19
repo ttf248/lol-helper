@@ -110,6 +110,29 @@ export interface SessionTypes {
   phase: string;
 }
 
+export type RecentHistoryStatusKind =
+  | "loading"
+  | "ready"
+  | "cache-fallback"
+  | "no-data"
+  | "mode-empty"
+  | "identity-mismatch"
+  | "error";
+
+export interface RecentHistoryStatus {
+  kind: RecentHistoryStatusKind;
+  title: string;
+  detail: string;
+  /** 本地缓存中成功匹配到目标玩家的对局数。 */
+  cachedGames: number;
+  /** 接口本次扫描返回的原始对局数，包含其它模式。 */
+  serverGames: number;
+  /** 接口返回且属于当前筛选模式的对局数。 */
+  modeGames: number;
+  /** 接口返回且成功匹配到目标身份的对局数。 */
+  matchedGames: number;
+}
+
 export interface RecentSumInfo {
   summonerId: number;
   summonerName: string;
@@ -118,6 +141,7 @@ export interface RecentSumInfo {
   champId:number;
   teamParticipantId: number;
   matchList: MatchItemTypes[];
+  historyStatus?: RecentHistoryStatus;
   recentAnalysis?: PlayerRecentAnalysis;
 }
 

@@ -9,6 +9,7 @@ import {
     MatchItemTypes,
     RecentAllSumInfo,
     RecentNetworkAnalysis,
+    RecentHistoryStatus,
     RecentSumInfo,
     RecentMatchLoadingState,
 } from "@/recentMatch/utils/queryTypes";
@@ -109,7 +110,7 @@ const normalizeMatchList = (matches: MatchItemTypes[]): MatchItemTypes[] => {
 
 const commitHistoryResult = (
     summoner: RecentSumInfo,
-    result: [RecentSumInfo["matchList"], number],
+    result: [RecentSumInfo["matchList"], number, RecentHistoryStatus],
     isFri: boolean,
     onComplete?: () => void,
 ) => {
@@ -121,6 +122,7 @@ const commitHistoryResult = (
     // 胜场和总场次始终从去重后的最终列表重算，不能信任不同数据源
     // 合并前的数量，否则边界重复会污染顶部的队伍胜率。
     summoner.matchList = matchList;
+    summoner.historyStatus = result[2];
     countList[0] += matchList.filter((match) => match.isWin).length;
     countList[1] += matchList.length;
     if (oldIndex >= 0) {

@@ -1,4 +1,7 @@
-import { MatchItemTypes } from "@/recentMatch/utils/queryTypes";
+import {
+    MatchItemTypes,
+    RecentHistoryStatus,
+} from "@/recentMatch/utils/queryTypes";
 import { champDict } from "@/resources/champList";
 import { queryMatchHistoryWithSource } from "@/lcu/aboutMatch";
 import { Games } from "@/lcu/types/queryMatchLcuTypes";
@@ -20,6 +23,20 @@ import {
 const HISTORY_PAGE_SIZE = 20;
 const HISTORY_SYNC_SCAN_LIMIT = 300;
 const HISTORY_SYNC_GAME_LIMIT = 100;
+
+interface RawHistoryPage {
+    games: (Games | GamesBySgp)[];
+    /** null 表示接口请求失败；空数组仍表示接口正常返回但没有记录。 */
+    failed: boolean;
+}
+
+interface MatchSearchResult {
+    matches: MatchItemTypes[];
+    serverGames: number;
+    modeGames: number;
+    matchedGames: number;
+    requestFailed: boolean;
+}
 
 class QueryMatch {
     private cacheRawGames = async (
@@ -52,19 +69,116 @@ class QueryMatch {
         puuid: string,
         begIndex: number,
         endIndex: number,
-    ): Promise<(Games | GamesBySgp)[]> => {
+    ): Promise<RawHistoryPage> => {
         const result = await queryMatchHistoryWithSource(
             puuid,
             begIndex,
             endIndex,
         );
-        if (!result || result.games.length === 0) return [];
+        if (!result) {
+            return { games: [], failed: true };
+        }
+        if (result.games.length === 0) {
+            return { games: [], failed: false };
+        }
         // 缓存写入不再阻塞首屏。当前请求的数据已经可以直接渲染，
         // 后续分析会优先使用 player.matchList；数据库在后台完成持久化。
         void this.cacheRawGames(puuid, result.games, result.source).catch((error) => {
             console.warn("Failed to persist recent match cache", error);
         });
-        return result.games;
+        return { games: result.games, failed: false };
+    };
+
+    private buildHistoryStatus = (
+        cachedGames: number,
+        search: MatchSearchResult,
+    ): RecentHistoryStatus => {
+        const common = {
+            cachedGames,
+            serverGames: search.serverGames,
+            modeGames: search.modeGames,
+            matchedGames: search.matchedGames,
+        };
+
+        if (search.matches.length > 0) {
+            if (search.requestFailed) {
+                return {
+                    ...common,
+                    kind: "cache-fallback",
+                    title: "接口查询未完成，已使用可用数据",
+                    detail: `历史接口请求失败或超时，当前显示本地缓存及已返回的 ${search.matches.length} 场。`,
+                };
+            }
+            if (search.serverGames === 0) {
+                return {
+                    ...common,
+                    kind: "cache-fallback",
+                    title: "接口暂无新数据，已使用本地缓存",
+                    detail: `接口正常返回空列表，当前显示本地缓存 ${cachedGames} 场。`,
+                };
+            }
+            if (search.modeGames === 0) {
+                return {
+                    ...common,
+                    kind: "cache-fallback",
+                    title: "当前模式未命中接口记录",
+                    detail: `接口返回了 ${search.serverGames} 场历史对局，但没有当前模式记录，已显示本地缓存 ${cachedGames} 场。`,
+                };
+            }
+            if (search.matchedGames === 0) {
+                return {
+                    ...common,
+                    kind: "cache-fallback",
+                    title: "接口未匹配到该玩家",
+                    detail: `接口返回了当前模式对局，但无法用 PUUID/召唤师 ID 匹配该玩家，已显示本地缓存 ${cachedGames} 场。`,
+                };
+            }
+            return {
+                ...common,
+                kind: "ready",
+                title: "历史战绩已加载",
+                detail: `已合并本地缓存 ${cachedGames} 场与接口匹配的 ${search.matchedGames} 场。`,
+            };
+        }
+
+        if (search.requestFailed) {
+            return {
+                ...common,
+                kind: "error",
+                title: "历史接口请求失败",
+                detail: "接口请求失败或超时，且本地没有可用的该模式缓存。",
+            };
+        }
+        if (search.serverGames === 0) {
+            return {
+                ...common,
+                kind: "no-data",
+                title: "接口没有返回历史对局",
+                detail: "接口已正常返回，但没有可用的公开历史战绩。",
+            };
+        }
+        if (search.modeGames === 0) {
+            return {
+                ...common,
+                kind: "mode-empty",
+                title: "当前模式没有历史记录",
+                detail: `接口返回了 ${search.serverGames} 场历史对局，但最近扫描范围内没有当前模式记录。`,
+            };
+        }
+        if (search.matchedGames === 0) {
+            return {
+                ...common,
+                kind: "identity-mismatch",
+                title: "玩家身份匹配失败",
+                detail: `接口返回了 ${search.modeGames} 场当前模式对局，但没有找到该玩家的 PUUID/召唤师 ID。`,
+            };
+        }
+        return {
+            ...common,
+            kind: "no-data",
+            title: "没有可用的有效战绩",
+            detail: "接口返回了数据，但无法解析为该玩家的有效历史记录。",
+        };
     };
 
     private findParticipant = (
@@ -160,7 +274,7 @@ class QueryMatch {
         puuid: string,
         queueId: number,
         targetSummonerId?: number,
-    ): Promise<[MatchItemTypes[], number]> => {
+    ): Promise<[MatchItemTypes[], number, RecentHistoryStatus]> => {
         try {
             const modeKey = modeForQueue(queueId);
             const cachedMatches = await getCachedHistory({
@@ -181,7 +295,7 @@ class QueryMatch {
             // 缓存永远不是停止条件。每次打开对局面板都从服务器读取
             // 最新分页；服务器返回某局 gameId 已存在于本地缓存后，才
             // 认为已经追到缓存边界并停止继续向后翻页。
-            const apiMatches = await this.findMatch(
+            const search = await this.findMatchesWithStatus(
                 puuid,
                 modeKey,
                 targetSummonerId,
@@ -189,13 +303,33 @@ class QueryMatch {
             );
             const matches = this.uniqueAndSortMatches([
                 ...cachedMatchItems,
-                ...apiMatches,
+                ...search.matches,
             ]).slice(0, 10);
-            return [matches, matches.filter((match) => match.isWin).length];
+            const status = this.buildHistoryStatus(cachedMatchItems.length, {
+                ...search,
+                matches,
+            });
+            return [
+                matches,
+                matches.filter((match) => match.isWin).length,
+                status,
+            ];
         } catch (error) {
             console.error("Error in queryMatchHistory:", error);
             // Return default values in case of error
-            return [[], 0];
+            return [
+                [],
+                0,
+                {
+                    kind: "error",
+                    title: "历史战绩查询异常",
+                    detail: "查询过程发生异常，且当前没有可用的历史战绩。",
+                    cachedGames: 0,
+                    serverGames: 0,
+                    modeGames: 0,
+                    matchedGames: 0,
+                },
+            ];
         }
     };
 
@@ -237,30 +371,40 @@ class QueryMatch {
         };
     };
 
-    public findMatch = async (
+    private findMatchesWithStatus = async (
         puuid: string,
         modeKey: MatchModeKey,
         targetSummonerId?: number,
         cachedGameIds: Set<number> = new Set(),
-    ): Promise<MatchItemTypes[]> => {
+    ): Promise<MatchSearchResult> => {
         const matchList: MatchItemTypes[] = [];
         const seenGameIds = new Set<number>();
         let reachedCachedBoundary = false;
+        let serverGames = 0;
+        let modeGames = 0;
+        let matchedGames = 0;
+        let requestFailed = false;
 
         for (
             let offset = 0;
             offset < HISTORY_SYNC_SCAN_LIMIT;
             offset += HISTORY_PAGE_SIZE
         ) {
-            const games = await this.queryRawHistory(
+            const page = await this.queryRawHistory(
                 puuid,
                 offset,
                 Math.min(offset + HISTORY_PAGE_SIZE, HISTORY_SYNC_SCAN_LIMIT),
             );
-            if (games.length === 0) break;
+            if (page.failed) {
+                requestFailed = true;
+                break;
+            }
+            if (page.games.length === 0) break;
+            serverGames += page.games.length;
 
-            for (const game of games) {
+            for (const game of page.games) {
                 if (!isModeQueue(game.queueId, modeKey)) continue;
+                modeGames += 1;
                 if (cachedGameIds.has(game.gameId)) {
                     reachedCachedBoundary = true;
                 }
@@ -269,6 +413,7 @@ class QueryMatch {
                 if (match && !seenGameIds.has(match.gameId)) {
                     seenGameIds.add(match.gameId);
                     matchList.push(match);
+                    matchedGames += 1;
                 }
             }
 
@@ -284,16 +429,38 @@ class QueryMatch {
                     mergedGameCount >= HISTORY_SYNC_GAME_LIMIT) ||
                 (cachedGameIds.size === 0 &&
                     matchList.length >= HISTORY_SYNC_GAME_LIMIT) ||
-                games.length < HISTORY_PAGE_SIZE
+                page.games.length < HISTORY_PAGE_SIZE
             ) {
                 break;
             }
         }
 
-        return this.uniqueAndSortMatches(matchList).slice(
-            0,
-            HISTORY_SYNC_GAME_LIMIT,
+        return {
+            matches: this.uniqueAndSortMatches(matchList).slice(
+                0,
+                HISTORY_SYNC_GAME_LIMIT,
+            ),
+            serverGames,
+            modeGames,
+            matchedGames,
+            requestFailed,
+        };
+    };
+
+    /** 保留旧的公开方法，供其它调用方继续取得纯战绩列表。 */
+    public findMatch = async (
+        puuid: string,
+        modeKey: MatchModeKey,
+        targetSummonerId?: number,
+        cachedGameIds: Set<number> = new Set(),
+    ): Promise<MatchItemTypes[]> => {
+        const result = await this.findMatchesWithStatus(
+            puuid,
+            modeKey,
+            targetSummonerId,
+            cachedGameIds,
         );
+        return result.matches;
     };
 }
 

@@ -8,6 +8,7 @@ import {
   OpponentMatchupStats,
   PartyGroupAnalysis,
   PositionRecentStats,
+  RecentHistoryStatus,
   RecentMatchLoadingState,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
@@ -105,6 +106,9 @@ const positionHeroSummary = (position: PositionRecentStats) =>
     )
     .join(" · ");
 
+const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
+  status !== undefined && status.kind !== "ready";
+
 </script>
 
 <template>
@@ -143,7 +147,10 @@ const positionHeroSummary = (position: PositionRecentStats) =>
           </n-tag>
 
           <div v-if="summoner.recentAnalysis" class="text-xs leading-5">
-            <div class="flex justify-between">
+            <div
+              v-if="summoner.recentAnalysis.actualGames > 0"
+              class="flex justify-between"
+            >
               <span>
                 近{{ summoner.recentAnalysis.actualGames }}场
                 {{ summoner.recentAnalysis.wins }}胜
@@ -151,6 +158,9 @@ const positionHeroSummary = (position: PositionRecentStats) =>
               <span class="font-medium">
                 {{ formatRate(summoner.recentAnalysis.winRate) }}
               </span>
+            </div>
+            <div v-else class="text-gray-500">
+              暂无可用历史样本
             </div>
             <div class="text-gray-500 truncate">
               {{ getChampionName(summoner.champId) }}
@@ -162,6 +172,15 @@ const positionHeroSummary = (position: PositionRecentStats) =>
           </div>
           <div v-else class="text-xs text-gray-400 text-center leading-5">
             {{ loadingState.stage === "history" || analysisLoading ? "最近10场数据加载中" : "暂无完整分析" }}
+          </div>
+
+          <div
+            v-if="shouldShowHistoryStatus(summoner.historyStatus)"
+            class="history-status"
+            :class="`history-status-${summoner.historyStatus?.kind}`"
+          >
+            <div class="font-medium">{{ summoner.historyStatus?.title }}</div>
+            <div>{{ summoner.historyStatus?.detail }}</div>
           </div>
 
           <div
@@ -228,7 +247,7 @@ const positionHeroSummary = (position: PositionRecentStats) =>
             {{ selectedPuuid === summoner.puuid ? "收起分析" : "展开分析" }}
           </n-button>
 
-          <div class="match-history">
+          <div v-if="summoner.matchList.length" class="match-history">
             <div
               v-for="match in summoner.matchList"
               :key="match.gameId"
@@ -248,6 +267,9 @@ const positionHeroSummary = (position: PositionRecentStats) =>
                 {{ match.kills }}-{{ match.deaths }}-{{ match.assists }}
               </n-tag>
             </div>
+          </div>
+          <div v-else-if="summoner.historyStatus?.kind !== 'loading'" class="history-empty">
+            暂无可展示的有效对局
           </div>
         </div>
       </div>
@@ -522,6 +544,42 @@ const positionHeroSummary = (position: PositionRecentStats) =>
   flex-direction: column;
   min-width: 0;
   gap: 6px;
+}
+
+.history-status,
+.history-empty {
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.history-empty {
+  color: #9ca3af;
+  background: #f3f4f6;
+}
+
+.history-status-loading {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.history-status-cache-fallback {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.history-status-no-data,
+.history-status-mode-empty {
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+.history-status-identity-mismatch,
+.history-status-error {
+  color: #dc2626;
+  background: #fef2f2;
 }
 
 .match-history-row {

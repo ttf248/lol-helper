@@ -5,6 +5,7 @@ import {invoke} from "@tauri-apps/api/core";
 import {
   LiveGamePlayer,
   PlayerChampionSelection,
+  RecentHistoryStatus,
   RecentSumInfo,
   SessionTypes,
   TeamData,
@@ -345,6 +346,15 @@ class QuerySummoner {
         const iconAlias = this.getIconAlias(summoner)
         return <RecentSumInfo> {
           matchList:[],
+          historyStatus: <RecentHistoryStatus> {
+            kind: "loading",
+            title: "正在查询历史战绩",
+            detail: "正在按当前模式读取本地缓存并校验服务器数据",
+            cachedGames: 0,
+            serverGames: 0,
+            modeGames: 0,
+            matchedGames: 0,
+          },
           summonerId: summoner.summonerId,
           puuid:summoner.puuid,
           summonerName: summoner.summonerName,
