@@ -1162,6 +1162,35 @@ const buildNetworkAnalysis = (
   return { nodes, edges, availableGames };
 };
 
+const applyTeamAnalysis = (
+  friendList: RecentSumInfo[],
+  enemyList: RecentSumInfo[],
+  snapshotMap: Map<string, PlayerHistorySnapshot>,
+  moderationMap: Map<string, PlayerModerationInfo>,
+  requestedGames: number,
+) => {
+  for (const [team, opposingTeam] of [
+    [friendList, enemyList],
+    [enemyList, friendList],
+  ] as const) {
+    const groups = buildPartyGroups(team, snapshotMap, moderationMap);
+    for (const player of team) {
+      const snapshot = snapshotMap.get(player.puuid);
+      if (!snapshot || snapshot.games.size === 0) continue;
+      player.recentAnalysis = buildPlayerAnalysis(
+        player,
+        snapshot,
+        groups.filter((group) =>
+          group.members.some((member) => member.puuid === player.puuid),
+        ),
+        buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
+        moderationMap.get(player.puuid) || emptyModeration(),
+        requestedGames,
+      );
+    }
+  }
+};
+
 export const loadRecentTeamAnalysis = async (
   friendList: RecentSumInfo[],
   enemyList: RecentSumInfo[],
@@ -1183,30 +1212,56 @@ export const loadRecentTeamAnalysis = async (
   const snapshotMap = new Map(
     players.map((player, index) => [player.puuid, snapshots[index]]),
   );
+  // 第一阶段只使用缓存/首屏的最近 10 场，立刻把个人分析和已有关系交付给 UI。
+  applyTeamAnalysis(
+    friendList,
+    enemyList,
+    snapshotMap,
+    moderationMap,
+    RECENT_DEFAULT_GAME_COUNT,
+  );
 
-  for (const [team, opposingTeam] of [
-    [friendList, enemyList],
-    [enemyList, friendList],
-  ] as const) {
-    const groups = buildPartyGroups(team, snapshotMap, moderationMap);
-    for (const player of team) {
-      const snapshot = snapshotMap.get(player.puuid);
-      // 完整历史接口失败时保留首屏已经计算出的最近 10 场，避免空结果覆盖可用数据。
-      if (!snapshot || snapshot.games.size === 0) continue;
-      player.recentAnalysis = buildPlayerAnalysis(
-        player,
-        snapshot,
-        groups.filter((group) =>
-          group.members.some((member) => member.puuid === player.puuid),
-        ),
-        buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
-        moderationMap.get(player.puuid) || emptyModeration(),
-        RECENT_DEFAULT_GAME_COUNT,
-      );
-    }
+  const hydrationRequests = players
+    .map((player) => queueHydration.get(`${player.puuid}:${queueId}`))
+    .filter((request): request is Promise<void> => request !== undefined);
+  if (hydrationRequests.length === 0) {
+    return buildNetworkAnalysis(friendList, enemyList, snapshotMap);
   }
 
-  return buildNetworkAnalysis(friendList, enemyList, snapshotMap);
+  // 第二阶段等待后台补齐；此函数由调用方 fire-and-forget，因而不会阻塞
+  // 首屏，但能让顶部“100 场分析中”状态准确持续到真正完成。
+  await Promise.allSettled(hydrationRequests);
+  const hydratedSnapshots = await Promise.all(
+    players.map(async (player, index) => {
+      const cachedGames = await getCachedHistory({
+        puuid: player.puuid,
+        queueId,
+        modeKey: modeForQueue(queueId),
+        limit: RECENT_ANALYSIS_GAME_COUNT,
+      });
+      const initialSnapshot = snapshots[index];
+      if (cachedGames.length <= initialSnapshot.games.size) {
+        return initialSnapshot;
+      }
+      return {
+        puuid: player.puuid,
+        games: new Map(cachedGames.map((game) => [game.gameId, game])),
+        source: "PostgreSQL 本地缓存",
+        complete: cachedGames.length >= RECENT_ANALYSIS_GAME_COUNT,
+      };
+    }),
+  );
+  const hydratedSnapshotMap = new Map(
+    players.map((player, index) => [player.puuid, hydratedSnapshots[index]]),
+  );
+  applyTeamAnalysis(
+    friendList,
+    enemyList,
+    hydratedSnapshotMap,
+    moderationMap,
+    RECENT_ANALYSIS_GAME_COUNT,
+  );
+  return buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
 };
 
 export const clearRecentAnalysisCache = () => historyCache.clear();
