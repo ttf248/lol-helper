@@ -109,6 +109,57 @@ const positionHeroSummary = (position: PositionRecentStats) =>
 const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
   status !== undefined && status.kind !== "ready";
 
+const teamInsight = computed(() => {
+  const analyzedPlayers = sumList.filter(
+    (player) => (player.recentAnalysis?.actualGames || 0) > 0,
+  );
+  const totalGames = analyzedPlayers.reduce(
+    (total, player) => total + (player.recentAnalysis?.actualGames || 0),
+    0,
+  );
+  const totalWins = analyzedPlayers.reduce(
+    (total, player) => total + (player.recentAnalysis?.wins || 0),
+    0,
+  );
+  const rankedPlayers = analyzedPlayers
+    .filter((player) => (player.recentAnalysis?.actualGames || 0) >= 3)
+    .sort(
+      (left, right) =>
+        (right.recentAnalysis?.winRate || 0) -
+          (left.recentAnalysis?.winRate || 0) ||
+        (right.recentAnalysis?.actualGames || 0) -
+          (left.recentAnalysis?.actualGames || 0),
+    );
+  const groupMap = new Map<string, PartyGroupAnalysis>();
+  const currentTeam = new Set(sumList.map((player) => player.puuid));
+  for (const player of sumList) {
+    for (const group of player.recentAnalysis?.partyGroups || []) {
+      if (!group.members.every((member) => currentTeam.has(member.puuid))) continue;
+      const key = group.members.map((member) => member.puuid).sort().join("|");
+      const previous = groupMap.get(key);
+      if (!previous || group.games > previous.games) groupMap.set(key, group);
+    }
+  }
+
+  return {
+    analyzed: analyzedPlayers.length,
+    total: sumList.length,
+    totalGames,
+    totalWins,
+    winRate: totalGames > 0 ? (totalWins / totalGames) * 100 : null,
+    best: rankedPlayers[0] || null,
+    risk: rankedPlayers[rankedPlayers.length - 1] || null,
+    groups: Array.from(groupMap.values())
+      .sort(
+        (left, right) =>
+          Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
+          right.games - left.games ||
+          right.winRate - left.winRate,
+      )
+      .slice(0, 2),
+  };
+});
+
 </script>
 
 <template>
@@ -118,6 +169,59 @@ const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
     content-style="padding: 10px"
   >
     <div v-if="sumList.length !== 0" class="team-panel-content">
+      <div class="team-insight">
+        <div class="team-insight-heading">
+          <span>{{ isFri ? "友方" : "敌方" }}历史摘要</span>
+          <n-tag
+            size="tiny"
+            :bordered="false"
+            :type="analysisLoading ? 'warning' : teamInsight.analyzed ? 'success' : 'default'"
+          >
+            {{ analysisLoading ? "缓存优先，后台补齐中" : `${teamInsight.analyzed}/${teamInsight.total} 人可用` }}
+          </n-tag>
+        </div>
+        <div class="team-insight-grid">
+          <div>
+            <span>历史样本</span>
+            <strong>{{ teamInsight.totalGames }} 场</strong>
+          </div>
+          <div>
+            <span>加权胜率</span>
+            <strong>{{ formatRate(teamInsight.winRate) }}</strong>
+          </div>
+          <div>
+            <span>已知胜场</span>
+            <strong>{{ teamInsight.totalWins }}</strong>
+          </div>
+        </div>
+        <div v-if="teamInsight.best" class="team-insight-line">
+          <span class="text-gray-500">优势样本</span>
+          <span class="truncate">
+            {{ teamInsight.best.summonerName }} ·
+            {{ formatRate(teamInsight.best.recentAnalysis?.winRate) }}
+          </span>
+        </div>
+        <div
+          v-if="teamInsight.risk && teamInsight.risk.puuid !== teamInsight.best?.puuid"
+          class="team-insight-line"
+        >
+          <span class="text-gray-500">风险样本</span>
+          <span class="truncate">
+            {{ teamInsight.risk.summonerName }} ·
+            {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
+          </span>
+        </div>
+        <div v-if="teamInsight.groups.length" class="team-insight-party">
+          <n-tag size="tiny" type="warning" :bordered="false">
+            {{ teamInsight.groups.some((group) => group.highWinRateAlert) ? "高胜率开黑队" : "疑似开黑" }}
+          </n-tag>
+          <span class="truncate" :title="teamInsight.groups.map(groupNames).join('；')">
+            {{ groupNames(teamInsight.groups[0]) }} ·
+            {{ teamInsight.groups[0].games }}场 ·
+            {{ formatRate(teamInsight.groups[0].winRate) }}
+          </span>
+        </div>
+      </div>
       <div class="team-grid">
         <div
           v-for="summoner in sumList"
@@ -507,7 +611,86 @@ const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
 }
 
 .team-panel-content {
-  min-height: 100%;
+	min-height: 100%;
+}
+
+.team-insight {
+	margin-bottom: 8px;
+	padding: 7px 8px;
+	border: 1px solid rgba(16, 185, 129, 0.16);
+	border-radius: 6px;
+	background: rgba(236, 253, 245, 0.78);
+	color: #374151;
+	font-size: 11px;
+	line-height: 1.4;
+}
+
+.team-insight-heading,
+.team-insight-line,
+.team-insight-party {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-width: 0;
+	gap: 6px;
+}
+
+.team-insight-heading {
+	margin-bottom: 5px;
+	font-weight: 600;
+}
+
+.team-insight-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 5px;
+	margin-bottom: 4px;
+}
+
+.team-insight-grid > div {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding: 3px 5px;
+	border-radius: 4px;
+	background: rgba(255, 255, 255, 0.58);
+}
+
+.team-insight-grid span,
+.team-insight-line > span:first-child {
+	color: #6b7280;
+}
+
+.team-insight-grid strong {
+	font-size: 12px;
+	color: #111827;
+}
+
+.team-insight-line,
+.team-insight-party {
+	margin-top: 3px;
+}
+
+.team-insight-line > span:last-child,
+.team-insight-party > span:last-child {
+	min-width: 0;
+}
+
+.team-insight-party {
+	justify-content: flex-start;
+}
+
+:global(.dark) .team-insight {
+	background: rgba(6, 78, 59, 0.25);
+	color: #d1fae5;
+}
+
+:global(.dark) .team-insight-grid > div {
+	background: rgba(17, 24, 39, 0.38);
+}
+
+:global(.dark) .team-insight-grid strong {
+	color: #ecfdf5;
 }
 
 .team-grid {
