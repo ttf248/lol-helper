@@ -70,6 +70,8 @@ const cachedPlayerSummary = ref<CachedPlayerSummary>({
 });
 const databasePlayerLoading = ref(false);
 let databaseRequestId = 0;
+const exporting = ref(false);
+const exportMessage = ref("");
 
 const activeTrend = computed(() =>
   analysis.value?.trends.find((item) => item.window === selectedWindow.value),
@@ -252,6 +254,134 @@ const cachedPlayerSources = computed(() =>
     .join("、"),
 );
 
+const safeFileName = (value: string) =>
+  value.replace(/[\\/:*?"<>|]/g, "_").trim() || "player";
+
+const downloadExport = (content: string, fileName: string, type: string) => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const analysisExportPayload = () => ({
+  schemaVersion: 1,
+  exportedAt: new Date().toISOString(),
+  player: {
+    puuid: props.player.puuid,
+    summonerId: props.player.summonerId,
+    summonerName: props.player.summonerName,
+  },
+  mode: {
+    key: selectedMode.value,
+    label: modeLabel(selectedMode.value),
+  },
+  window: selectedWindow.value,
+  database: {
+    status: databaseStatus.value,
+    playerSummary: cachedPlayerSummary.value,
+  },
+  analysis: analysis.value,
+});
+
+const csvCell = (value: unknown) =>
+  `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+const exportCsv = () => {
+  if (!analysis.value) return "";
+  const rows: unknown[][] = [
+    ["section", "name", "games", "wins", "winRate", "details"],
+    [
+      "summary",
+      "overall",
+      analysis.value.actualGames,
+      analysis.value.wins,
+      analysis.value.winRate,
+      analysis.value.source,
+    ],
+    ...analysis.value.trends.map((item) => [
+      "trend",
+      `recent-${item.window}`,
+      item.games,
+      item.wins,
+      item.winRate,
+      "",
+    ]),
+    ...analysis.value.champions.map((item) => [
+      "champion",
+      championName(item.championId),
+      item.games,
+      item.wins,
+      item.winRate,
+      `championId=${item.championId}`,
+    ]),
+    ...analysis.value.positions.map((item) => [
+      "position",
+      positionName(item.position),
+      item.games,
+      item.wins,
+      item.winRate,
+      "",
+    ]),
+    ...(analysis.value.teammateSynergy || []).map((item) => [
+      "teammate-synergy",
+      item.teammate.summonerName,
+      item.games,
+      item.wins,
+      item.winRate,
+      `puuid=${item.teammate.puuid}`,
+    ]),
+    ...analysis.value.partyGroups.map((item) => [
+      "party-group",
+      partyGroupNames(item),
+      item.games,
+      item.wins,
+      item.winRate,
+      `stability=${item.stabilityScore};confidence=${item.confidence.level}`,
+    ]),
+    ...analysis.value.opponents.map((item) => [
+      "opponent",
+      item.opponent.summonerName,
+      item.games,
+      item.wins,
+      item.winRate,
+      `opponentWins=${item.opponentWins}`,
+    ]),
+  ];
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+};
+
+const exportAnalysis = (format: "json" | "csv") => {
+  if (!analysis.value || exporting.value) return;
+  exporting.value = true;
+  exportMessage.value = "";
+  try {
+    const baseName = `${safeFileName(props.player.summonerName)}-${selectedMode.value}-analysis`;
+    if (format === "json") {
+      downloadExport(
+        JSON.stringify(analysisExportPayload(), null, 2),
+        `${baseName}.json`,
+        "application/json;charset=utf-8",
+      );
+    } else {
+      downloadExport(
+        `\uFEFF${exportCsv()}`,
+        `${baseName}.csv`,
+        "text/csv;charset=utf-8",
+      );
+    }
+    exportMessage.value = `已导出 ${format.toUpperCase()} 分析证据`;
+  } catch (error) {
+    console.error("Failed to export history analysis", error);
+    exportMessage.value = "导出失败，请重试";
+  } finally {
+    exporting.value = false;
+  }
+};
+
 const cacheModeSummary = (modeKey: string) => {
   const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
   return mode
@@ -294,9 +424,29 @@ onMounted(() => {
         <n-tag size="small" :type="databaseStatus.available ? 'success' : 'warning'" :bordered="false">
           {{ databaseStatus.available ? "PostgreSQL 已连接" : "实时数据模式" }}
         </n-tag>
+        <n-button-group size="small">
+          <n-button
+            :disabled="!analysis || loading"
+            :loading="exporting"
+            secondary
+            @click="exportAnalysis('json')"
+          >
+            导出 JSON
+          </n-button>
+          <n-button
+            :disabled="!analysis || loading"
+            :loading="exporting"
+            secondary
+            @click="exportAnalysis('csv')"
+          >
+            导出 CSV
+          </n-button>
+        </n-button-group>
         <n-button size="small" secondary @click="refresh">刷新</n-button>
       </div>
     </div>
+
+    <div v-if="exportMessage" class="export-message">{{ exportMessage }}</div>
 
     <div class="analytics-controls">
       <span class="control-label">模式</span>
@@ -667,6 +817,12 @@ onMounted(() => {
   color: #d03050;
   font-size: 0.75rem;
   margin: 0.35rem 0;
+}
+
+.export-message {
+  color: #18a058;
+  font-size: 0.7rem;
+  margin: 0.25rem 0;
 }
 
 .analysis-progress {
