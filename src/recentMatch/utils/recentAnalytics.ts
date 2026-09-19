@@ -636,6 +636,37 @@ const loadPlayerModeHistory = async (
       games: fastGames,
     });
   }
+
+  // 摘要接口可能因客户端分页或临时网络错误返回空结果。窗口大于
+  // 10 场时不能直接退回“当前面板的 10 场”，再尝试完整参与者接口，
+  // 确保可用的历史数据不会被首屏摘要失败遮住。
+  if (fastGames.length === 0 && requestedGames > RECENT_DEFAULT_GAME_COUNT) {
+    onProgress?.({
+      stage: "full",
+      completed: 0,
+      total: progressTotal,
+      percentage: 45,
+      message: "个人摘要接口未返回数据，正在尝试完整历史接口",
+    });
+    const recovered = await syncPlayerModeGames(player, modeKey, []);
+    if (recovered.games.length > 0) {
+      void cacheHistory({
+        puuid: player.puuid,
+        summonerId: player.summonerId,
+        summonerName: player.summonerName,
+        modeKey,
+        source: recovered.source,
+        games: recovered.games,
+      });
+      return toHistorySnapshot(
+        player,
+        recovered.games,
+        recovered.source,
+        recovered.coverage,
+      );
+    }
+  }
+
   onProgress?.({
     stage: "personal",
     completed: Math.min(fastGames.length, progressTotal),
@@ -915,9 +946,14 @@ const quickMatchToGame = (
 
 const buildQuickPlayerAnalysis = (
   player: RecentSumInfo,
+  modeKey?: MatchModeKey,
+  requestedGames = RECENT_DEFAULT_GAME_COUNT,
 ): PlayerRecentAnalysis => {
   const quickMatches = (Array.isArray(player.matchList) ? player.matchList : [])
-    .slice(0, RECENT_DEFAULT_GAME_COUNT);
+    .filter((match) =>
+      modeKey === undefined || isModeQueue(Number(match.queueId), modeKey),
+    )
+    .slice(0, requestedGames);
   const games = quickMatches.map((match, index) =>
     quickMatchToGame(match, player, index),
   );
@@ -930,10 +966,10 @@ const buildQuickPlayerAnalysis = (
   const wins = playerGames.filter((participant) => participant.win).length;
   const champions = buildChampionStats(games, player);
   const actualGames = playerGames.length;
-  const confidenceScore = Math.min(actualGames / RECENT_DEFAULT_GAME_COUNT, 1) * 70;
+  const confidenceScore = Math.min(actualGames / requestedGames, 1) * 70;
 
   return {
-    requestedGames: RECENT_DEFAULT_GAME_COUNT,
+    requestedGames,
     actualGames,
     wins,
     winRate: roundRate(wins, actualGames),
@@ -945,7 +981,7 @@ const buildQuickPlayerAnalysis = (
     opponents: [],
     partyGroups: [],
     confidence: confidenceInfo(confidenceScore, [
-      `面板已加载最近 ${actualGames} 场`,
+      `面板已加载当前模式最近 ${actualGames}/${requestedGames} 场`,
       "位置、交手和组合关系将在后台继续补齐",
     ]),
     moderation: emptyModeration(),
@@ -1428,7 +1464,11 @@ export const loadPlayerModeAnalysis = async (
     onProgress,
   );
   if (snapshot.games.size === 0) {
-    const quickAnalysis = buildQuickPlayerAnalysis(player);
+    const quickAnalysis = buildQuickPlayerAnalysis(
+      player,
+      modeKey,
+      requestedGames,
+    );
     onProgress?.({
       stage: "done",
       completed: 0,

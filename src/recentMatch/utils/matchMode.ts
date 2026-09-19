@@ -20,7 +20,10 @@ const OTHER_MODE: MatchModeDefinition = {
 };
 
 export const modeForQueue = (queueId: number): MatchModeKey => {
-  const mode = MATCH_MODES.find((item) => item.queueIds.includes(queueId));
+  const normalizedQueueId = Number(queueId);
+  const mode = MATCH_MODES.find((item) =>
+    item.queueIds.includes(normalizedQueueId),
+  );
   return mode?.key || OTHER_MODE.key;
 };
 
@@ -28,8 +31,15 @@ export const modeLabel = (modeKey: MatchModeKey): string =>
   [...MATCH_MODES, OTHER_MODE].find((item) => item.key === modeKey)?.label || "其他模式";
 
 export const isModeQueue = (queueId: number, modeKey: MatchModeKey): boolean => {
+  const normalizedQueueId = Number(queueId);
   if (modeKey === OTHER_MODE.key) {
-    return !MATCH_MODES.some((item) => item.queueIds.includes(queueId));
+    return !MATCH_MODES.some((item) =>
+      item.queueIds.includes(normalizedQueueId),
+    );
   }
-  return MATCH_MODES.find((item) => item.key === modeKey)?.queueIds.includes(queueId) || false;
+  return (
+    MATCH_MODES.find((item) => item.key === modeKey)?.queueIds.includes(
+      normalizedQueueId,
+    ) || false
+  );
 };

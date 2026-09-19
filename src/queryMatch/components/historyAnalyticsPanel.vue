@@ -417,7 +417,7 @@ onMounted(() => {
       <div>
         <div class="font-medium">历史战绩分析</div>
         <div class="text-xs text-gray-500">
-          {{ props.player.summonerName }} · 历史数据 · {{ modeLabel(selectedMode) }} · 默认最近 10 场
+          {{ props.player.summonerName }} · 历史数据 · {{ modeLabel(selectedMode) }} · 当前最近 {{ selectedWindow }} 场
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -519,7 +519,9 @@ onMounted(() => {
             <div class="metric-label">有效样本</div>
             <div class="metric-value">{{ analysis.actualGames }}</div>
             <div class="metric-sub">
-              {{ analysis.historyComplete ? "已覆盖完整 100 场" : "当前窗口可用数据" }}
+              {{ analysis.historyComplete
+                ? "已覆盖完整 100 场"
+                : `当前窗口可用 ${analysis.actualGames}/${analysis.requestedGames} 场` }}
             </div>
           </n-card>
           <n-card size="small" :bordered="false">
