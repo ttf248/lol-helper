@@ -26,7 +26,7 @@ const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
 </script>
 
 <template>
-    <div class="flex flex-col justify-between" style="margin-top: 17px">
+    <div class="match-details-column">
         <!--    每一个英雄数据-->
         <n-space v-for="summoner in summonerList" vertical>
             <match-sum-details
@@ -90,6 +90,15 @@ const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
 </template>
 
 <style scoped>
+.match-details-column {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+    padding-top: 17px;
+}
+
 .matchIconImg {
     height: 12px;
     padding-bottom: 1px;
@@ -107,7 +116,7 @@ const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
 }
 
 .progressDivP {
-    width: 290px;
+    width: min(290px, 100%);
     height: 26px;
     border-radius: 2px;
     display: flex;

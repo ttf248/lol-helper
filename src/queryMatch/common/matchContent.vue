@@ -100,13 +100,13 @@ const searchSummoner = () => {
 </script>
 
 <template>
-    <div class="h-full flex flex-col" v-if="queueId !== 1700">
+    <div class="match-content-standard" v-if="queueId !== 1700">
         <match-con-header
             :title="titleArr[rotatedIndex][1]"
             :title-list="headerInfo"
             :change-show="changeShowMode"
         />
-        <div class="flex flex-grow justify-between">
+        <div class="match-teams">
             <match-details
                 @open-drawer="openMatchDra"
                 :summoner-list="teamOne"
@@ -164,3 +164,26 @@ const searchSummoner = () => {
         />
     </n-drawer>
 </template>
+
+<style scoped>
+.match-content-standard {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.match-teams {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.match-teams :deep(.match-details-column) {
+    flex: 1 1 0;
+    min-width: 0;
+}
+</style>

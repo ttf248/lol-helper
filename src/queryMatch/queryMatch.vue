@@ -132,21 +132,21 @@ const clearBlackMatch = () => {
     <div class="main bg-neutral-100 dark:bg-neutral-900">
         <div data-tauri-drag-region class="dragDiv"></div>
 
-        <query-header class="h-10 mb-2" />
+        <query-header class="query-header" />
 
-        <div class="flex">
+        <div class="query-workspace">
             <summoner-info-view
                 v-if="matchStore.sumInfo"
                 :key="matchStore.summonerId"
                 :sum-info="matchStore.sumInfo"
+                class="query-profile"
             />
-            <div style="width: 254px" v-else></div>
-            <div class="ml-3 flex-grow">
+            <div class="query-profile" v-else></div>
+            <div class="query-results">
                 <n-card
                     v-if="!matchStore.matchLoading"
-                    class="shadow h-full"
+                    class="query-result-card shadow"
                     size="small"
-                    style="height: 596px"
                     content-style="padding:0 0 0 12px"
                 >
                     <n-tabs
@@ -206,9 +206,8 @@ const clearBlackMatch = () => {
                 </n-card>
                 <n-card
                     v-else
-                    class="shadow h-full"
+                    class="query-result-card shadow"
                     size="small"
-                    style="height: 596px"
                     content-style="padding:0 0 0 12px"
                 >
                     <loading-anime />
@@ -243,7 +242,7 @@ const clearBlackMatch = () => {
 <style scoped>
 .main {
     /* 主窗口现在直接承载战绩工作区，不再为旧的底部导航预留空白。 */
-    padding-bottom: 0.5rem;
+    padding-bottom: 10px;
 }
 
 .match-tabs {

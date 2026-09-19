@@ -11,6 +11,15 @@
     font-size: 16px;
 }
 
+html,
+body,
+#app {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
 ::-webkit-scrollbar {
     width: 0;
 }
@@ -18,14 +27,19 @@
 body {
     font-family: DingTalk;
     -webkit-user-select: none;
+    min-width: 0;
 }
 
 .main {
     height: 100vh;
-    weight: 100vw;
+    width: 100vw;
     box-sizing: border-box;
-    padding: .5rem .5rem 3.5rem .5rem;
+    padding: 10px;
     position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
 }
 .mainContent {
     height: 616px;
@@ -105,4 +119,63 @@ body {
 .text-ss {
     font-size: 13px;
     line-height: 17px;
+}
+
+.query-header {
+    flex: 0 0 40px;
+    min-width: 0;
+}
+
+.query-workspace {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    gap: 12px;
+}
+
+.query-profile {
+    flex: 0 0 254px;
+    width: 254px;
+    min-height: 0;
+}
+
+.query-results {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.query-result-card {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+}
+
+.query-result-card :where(.n-card__content) {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.query-result-card :where(.n-tabs) {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+}
+
+.query-result-card :where(.n-tabs-pane-wrapper) {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.query-result-card :where(.n-tab-pane) {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
 }

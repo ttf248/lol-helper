@@ -110,19 +110,17 @@ const positionHeroSummary = (position: PositionRecentStats) =>
 <template>
   <n-card
     size="small"
-    class="shadow"
-    style="width: 615px; max-height: calc(100vh - 3.5rem); min-height: 499px; margin-top: 6px; overflow-y: auto"
-    content-style="padding: 8px"
+    class="team-panel shadow"
+    content-style="padding: 10px"
   >
-    <div v-if="sumList.length !== 0">
-      <div class="flex gap-x-2">
+    <div v-if="sumList.length !== 0" class="team-panel-content">
+      <div class="team-grid">
         <div
           v-for="summoner in sumList"
           :key="summoner.puuid"
-          class="flex flex-col gap-y-2"
-          style="width: 113px"
+          class="team-player"
         >
-          <div class="flex justify-between relative">
+          <div class="team-player-avatar">
             <n-avatar
               @click.stop="showDetail(0, 0, summoner.champId)"
               :size="55"
@@ -230,12 +228,12 @@ const positionHeroSummary = (position: PositionRecentStats) =>
             {{ selectedPuuid === summoner.puuid ? "收起分析" : "展开分析" }}
           </n-button>
 
-          <div class="flex flex-col gap-y-2">
+          <div class="match-history">
             <div
               v-for="match in summoner.matchList"
               :key="match.gameId"
               @click.stop="showDetail(match.gameId, summoner.summonerId, 0)"
-              class="flex w-full gap-x-1 cursor-pointer"
+              class="match-history-row cursor-pointer"
             >
               <n-avatar
                 :size="27"
@@ -245,7 +243,7 @@ const positionHeroSummary = (position: PositionRecentStats) =>
               <n-tag
                 :type="match.isWin ? 'success' : 'error'"
                 :bordered="false"
-                style="width: 84px; height: 27px; justify-content: center; font-size: 11px"
+                class="match-kda"
               >
                 {{ match.kills }}-{{ match.deaths }}-{{ match.assists }}
               </n-tag>
@@ -466,3 +464,86 @@ const positionHeroSummary = (position: PositionRecentStats) =>
     </div>
   </n-card>
 </template>
+
+<style scoped>
+.team-panel {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.team-panel :deep(.n-card__content) {
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.team-panel-content {
+  min-height: 100%;
+}
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-player {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+}
+
+.team-player-avatar {
+  display: flex;
+  justify-content: center;
+  min-height: 55px;
+}
+
+.team-player :deep(.n-avatar) {
+  flex: 0 0 auto;
+}
+
+.team-player :deep(.n-tag) {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.match-history {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 6px;
+}
+
+.match-history-row {
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+
+.match-kda {
+  width: 100%;
+  height: 27px;
+  min-width: 0;
+  justify-content: center;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+@media (max-width: 980px) {
+  .team-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+</style>

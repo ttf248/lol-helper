@@ -18,16 +18,16 @@ const searchSum = (summonerId: number) => {
 </script>
 
 <template>
-  <div class="h-full flex flex-col box-border">
-    <div class="h-7 flex items-center justify-end pr-3 flex-shrink-0">
+  <div class="match-main">
+    <div class="match-source-bar">
       <n-tag v-if="matchSourceLabel" size="small" type="info"
              :bordered="false" round style="white-space: nowrap;">
         数据源：{{ matchSourceLabel }}
       </n-tag>
     </div>
-    <div class="flex flex-1 min-h-0 box-border">
+    <div class="match-main-body">
       <match-list/>
-      <div class="flex-grow p-3 ml-7"
+      <div class="match-detail-pane"
            :key="matchStore.participantsInfo?.gameId ?? 'match-detail-loading'"
            v-if="matchStore.participantsInfo !== null">
         <match-content
@@ -58,4 +58,36 @@ const searchSum = (summonerId: number) => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.match-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.match-source-bar {
+  display: flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 12px;
+}
+
+.match-main-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  gap: 12px;
+}
+
+.match-detail-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+}
+</style>
 

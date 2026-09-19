@@ -393,7 +393,9 @@ onMounted(() => {
 
 <style scoped>
 .analytics-panel {
-  height: 540px;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
   overflow-y: auto;
   padding: 0.45rem 0.6rem 1rem;
 }

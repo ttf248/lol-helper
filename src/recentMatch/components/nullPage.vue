@@ -3,7 +3,7 @@ import {NResult,NAlert,NCard} from "naive-ui";
 </script>
 
 <template>
-  <n-card size="small" class="mt-2 shadow h-full"  style="height: 499px;">
+  <n-card size="small" class="empty-state-card shadow">
     <n-result
       status="418"
       title="数据正在加载中..."
@@ -20,4 +20,18 @@ import {NResult,NAlert,NCard} from "naive-ui";
     </n-result>
   </n-card>
 </template>
+
+<style scoped>
+.empty-state-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  margin-top: 6px;
+}
+
+.empty-state-card :deep(.n-card__content) {
+  height: 100%;
+  box-sizing: border-box;
+}
+</style>
 

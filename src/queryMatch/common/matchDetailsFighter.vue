@@ -17,36 +17,37 @@ const showSumDetails = (summonerId:number) => {
 </script>
 
 <template>
-  <n-grid class="bg-neutral-100 rounded" :cols="4">
-    <n-gi>
-      <n-space vertical align="center">
-        <text class="text-gray-400">对局日期</text>
-        <text>{{ headerInfo[0] }}</text>
-      </n-space>
-    </n-gi>
-    <n-gi>
-      <n-space vertical align="center">
-        <text class="text-gray-400">对局类型</text>
-        <text>{{ headerInfo[2] }}</text>
-      </n-space>
-    </n-gi>
-    <n-gi>
-      <n-space vertical align="center">
-        <text class="text-gray-400">开始时间</text>
-        <text>{{ headerInfo[1] }}</text>
-      </n-space>
-    </n-gi>
-    <n-gi>
-      <n-space vertical align="center">
-        <text class="text-gray-400">对局时长</text>
-        <text>{{ headerInfo[3] }}分钟</text>
-      </n-space>
-    </n-gi>
-  </n-grid>
-  <n-scrollbar style="max-height: 518px;padding-right: 13px">
-    <n-space style="margin-top: 17px;" :size="[0,54.8]" justify="space-between">
-      <div v-for="summoner in teamOne" >
-        <n-space style="width: 290px;" @click="showSumDetails(summoner.accountId)" vertical>
+  <div class="fighter-details">
+    <n-grid class="fighter-header bg-neutral-100 rounded" :cols="4">
+      <n-gi>
+        <n-space vertical align="center">
+          <text class="text-gray-400">对局日期</text>
+          <text>{{ headerInfo[0] }}</text>
+        </n-space>
+      </n-gi>
+      <n-gi>
+        <n-space vertical align="center">
+          <text class="text-gray-400">对局类型</text>
+          <text>{{ headerInfo[2] }}</text>
+        </n-space>
+      </n-gi>
+      <n-gi>
+        <n-space vertical align="center">
+          <text class="text-gray-400">开始时间</text>
+          <text>{{ headerInfo[1] }}</text>
+        </n-space>
+      </n-gi>
+      <n-gi>
+        <n-space vertical align="center">
+          <text class="text-gray-400">对局时长</text>
+          <text>{{ headerInfo[3] }}分钟</text>
+        </n-space>
+      </n-gi>
+    </n-grid>
+    <n-scrollbar class="fighter-scroll">
+      <n-space class="fighter-list" :size="[0,54.8]" justify="space-between">
+        <div v-for="summoner in teamOne" :key="summoner.accountId" class="fighter-player">
+          <n-space @click="showSumDetails(summoner.accountId)" vertical>
           <match-sum-details :item-width="290" :summoner="summoner" :summoner-id="summonerId"/>
           <div class="flex justify-between">
             <n-tag style="width: 82px;justify-content: center;height: 26px;" type="success"
@@ -56,9 +57,39 @@ const showSumDetails = (summonerId:number) => {
             <n-tag style="width: 82px;justify-content: center;height: 26px;" type="warning"
                    :bordered="false" size="small">金币：{{summoner.goldEarned}}</n-tag>
           </div>
-        </n-space>
-      </div>
-    </n-space>
-  </n-scrollbar>
+          </n-space>
+        </div>
+      </n-space>
+    </n-scrollbar>
+  </div>
 
 </template>
+
+<style scoped>
+.fighter-details {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.fighter-header {
+  flex: 0 0 auto;
+}
+
+.fighter-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 17px;
+  padding-right: 13px;
+}
+
+.fighter-list {
+  width: 100%;
+}
+
+.fighter-player {
+  width: min(290px, 100%);
+  min-width: 0;
+}
+</style>

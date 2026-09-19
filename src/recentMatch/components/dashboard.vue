@@ -17,7 +17,7 @@ import {
 	CircleX,
 	Refresh,
 } from "@vicons/tabler";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ConfigSettingTypes } from "@/background/types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import BrandLockup from "@/components/BrandLockup.vue";
@@ -52,6 +52,10 @@ onMounted(() => {
 	window.addEventListener("keydown", handleKeyDown);
 });
 
+onBeforeUnmount(() => {
+	window.removeEventListener("keydown", handleKeyDown);
+});
+
 const handleMin = async () => {
 	await getCurrentWindow().hide();
 };
@@ -67,7 +71,7 @@ const handleClose = async () => {
 
 const closeModalOutside = (event: any) => {
 	// Check if the clicked element is outside the modal
-	if (!event.target.closest(".bg-white")) {
+	if (!event.target.closest(".tips-modal-card")) {
 		isModalOpen.value = false;
 	}
 };
@@ -82,17 +86,17 @@ const changeConfig = () => {
 </script>
 
 <template>
-	<header class="flex w-full h-10 relative">
+	<header class="game-dashboard">
 		<div data-tauri-drag-region class="dragDiv"></div>
-		<div class="flex w-1/2 gap-x-4">
+		<div class="dashboard-primary">
 			<BrandLockup compact />
-			<div class="flex">
-				<div class="flex flex-col gap-y-0.5 mr-4">
+			<div class="team-win-summary">
+				<div class="team-win-stat">
 					<text class="text-gray-400 text-xs">友方胜利次数</text>
 					<n-tag
 						:bordered="false"
 						:type="isFriCount ? 'success' : 'error'"
-						style="justify-content: center; width: 72px"
+						class="win-count-tag"
 					>
 						<template #icon>
 							<n-icon
@@ -103,12 +107,12 @@ const changeConfig = () => {
 						{{ winCount.friend[0] }}/{{ winCount.friend[1] }}
 					</n-tag>
 				</div>
-				<div class="flex flex-col gap-y-0.5">
+				<div class="team-win-stat">
 					<text class="text-gray-400 text-xs">敌方胜利次数</text>
 					<n-tag
 						:bordered="false"
 						:type="!isFriCount ? 'success' : 'error'"
-						style="justify-content: center; width: 72px"
+						class="win-count-tag"
 					>
 						<template #icon>
 							<n-icon
@@ -120,8 +124,7 @@ const changeConfig = () => {
 					</n-tag>
 				</div>
 				<n-tag
-					class="h-10 ml-4"
-					style="cursor: default !important"
+					class="dashboard-shortcut"
 					:bordered="false"
 					type="default"
 					:disabled="true"
@@ -129,10 +132,9 @@ const changeConfig = () => {
 					显示•隐藏&nbsp;&nbsp;&nbsp;&nbsp;Shift + Tab
 				</n-tag>
 				<n-tag
-					class="h-10 ml-2"
+					class="dashboard-loading"
 					:bordered="false"
 					:type="loadingState.stage === 'error' ? 'error' : loadingState.stage === 'done' ? 'success' : 'warning'"
-					style="cursor: default !important"
 					:title="loadingState.detail"
 				>
 					{{ loadingState.message }}
@@ -143,10 +145,9 @@ const changeConfig = () => {
 			</div>
 		</div>
 
-		<div class="flex w-1/2 justify-end gap-x-8">
+		<div class="dashboard-actions">
 			<n-tag
-				class="h-10"
-				style="cursor: default !important"
+				class="dashboard-hint"
 				:bordered="false"
 				type="default"
 				:disabled="true"
@@ -157,7 +158,7 @@ const changeConfig = () => {
 				<n-button
 					:focusable="false"
 					@click="isModalOpen = true"
-					style="padding: 12px"
+					class="dashboard-action-button"
 					type="default"
 				>
 					<template #icon>
@@ -167,7 +168,7 @@ const changeConfig = () => {
 				<n-button
 					:focusable="false"
 					@click="emits('openNetwork')"
-					style="padding: 12px"
+					class="dashboard-action-button"
 					type="default"
 				>
 					关系图
@@ -175,7 +176,7 @@ const changeConfig = () => {
 				<n-button
 					:focusable="false"
 					@click="refresh"
-					style="padding: 12px"
+					class="dashboard-action-button"
 					type="default"
 				>
 					<template #icon>
@@ -185,7 +186,7 @@ const changeConfig = () => {
 
 				<n-button
 					@click="handleMin"
-					style="padding: 12px"
+					class="dashboard-action-button"
 					type="default"
 				>
 					<template #icon>
@@ -194,7 +195,7 @@ const changeConfig = () => {
 				</n-button>
 				<n-popconfirm @positive-click="handleClose" :show-icon="false">
 					<template #trigger>
-						<n-button style="padding: 12px" type="default">
+						<n-button class="dashboard-action-button" type="default">
 							<template #icon>
 								<N-icon :size="20" :component="CircleX" />
 							</template>
@@ -220,13 +221,13 @@ const changeConfig = () => {
 	</header>
 
 	<!-- Modal -->
-	<div
-		v-if="isModalOpen"
-		@click="closeModalOutside"
-		class="fixed inset-0 bg-neutral-950 bg-opacity-40 flex items-center justify-center z-50"
-	>
 		<div
-			class="bg-white text-neutral-900 px-6 py-4 rounded shadow-md dark:bg-neutral-900 dark:text-neutral-200"
+			v-if="isModalOpen"
+			@click="closeModalOutside"
+			class="tips-overlay fixed inset-0 bg-neutral-950 bg-opacity-40 flex items-center justify-center z-50"
+		>
+		<div
+			class="tips-modal-card bg-white text-neutral-900 px-6 py-4 rounded shadow-md dark:bg-neutral-900 dark:text-neutral-200"
 		>
 			<!-- Modal content goes here -->
 			<text class="text-xl">Tips</text>
@@ -255,3 +256,91 @@ const changeConfig = () => {
 	</div>
 
 </template>
+
+<style scoped>
+.game-dashboard {
+	display: flex;
+	align-items: center;
+	position: relative;
+	min-width: 0;
+	height: 40px;
+	gap: 10px;
+}
+
+.dashboard-primary,
+.dashboard-actions,
+.team-win-summary,
+.team-win-stat {
+	display: flex;
+	align-items: center;
+}
+
+.dashboard-primary {
+	flex: 1 1 auto;
+	min-width: 0;
+	gap: 10px;
+}
+
+.team-win-summary {
+	flex: 0 0 auto;
+	gap: 8px;
+}
+
+.team-win-stat {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 2px;
+}
+
+.win-count-tag {
+	justify-content: center;
+	width: 72px;
+}
+
+.dashboard-shortcut,
+.dashboard-loading,
+.dashboard-hint {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 220px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	cursor: default !important;
+}
+
+.dashboard-actions {
+	flex: 0 0 auto;
+	min-width: 0;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.dashboard-hint {
+	max-width: 250px;
+}
+
+.dashboard-action-button {
+	padding: 10px;
+}
+
+.tips-overlay {
+	padding: 16px;
+}
+
+.tips-modal-card {
+	width: min(520px, calc(100vw - 32px));
+	max-height: calc(100vh - 32px);
+	overflow-y: auto;
+}
+
+@media (max-width: 1120px) {
+	.dashboard-hint {
+		display: none;
+	}
+
+	.dashboard-loading {
+		max-width: 170px;
+	}
+}
+</style>

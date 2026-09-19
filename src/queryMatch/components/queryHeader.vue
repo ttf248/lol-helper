@@ -113,45 +113,45 @@ const pageChange = (page: number) => {
 </script>
 
 <template>
-  <header class="flex">
-    <div class="flex gap-x-2 items-center mr-3">
+  <header class="query-header-bar">
+    <div class="header-identity">
       <BrandLockup compact />
       <n-tag
         v-if="matchStore.summonerId===matchStore.localSumId"
         :bordered="false"
-        type="info"
-        style="margin-left: 22px">
+        type="info">
         本地数据
       </n-tag>
       <n-button
         v-else
         @click="backSelf"
-        size="small" style="margin-left: 30px;width: 90.41px"
+        size="small"
         secondary type="info">
-        Back Self
+        返回本人
       </n-button>
     </div>
-    <div class="flex-grow flex items-center gap-x-3">
+    <div class="header-controls">
       <n-input v-model:value="inputVal" type="text" spellcheck="false"
-               style="width: 141px;font-size: 13.5px" size="small"
+               class="search-input" size="small"
                placeholder="输入 Riot ID 或召唤师名"
                @keyup.enter="searchSum" />
       <n-button size="small" :bordered="false" @click="searchSum"
-                type="success" style="width: 46px;padding: 0 9px">
+                type="success" class="search-button">
         查询
       </n-button>
       <n-select size="small" v-model:value="selectVal"
                 :disabled="inputVal!==''"
                 @update:value="changeMatchMode"
-                :options="options" style="width: 100px;margin-left: 28px;"/>
+                :options="options" class="mode-select"/>
 
       <n-pagination v-model:page="pageVal"
                     @update-page="pageChange"
-                    :page-slot="10"
-                    :page-count="12"/>
+                    :page-slot="5"
+                    :page-count="12"
+                    class="match-pagination"/>
 
     </div>
-    <n-space style="padding-top: 10px;" :size=[8,0]>
+    <n-space class="header-actions" :size="[4, 0]">
       <n-button @click="handleMin" text>
         <n-icon size="20">
           <circle-minus/>
@@ -178,4 +178,70 @@ const pageChange = (page: number) => {
     <setting />
   </n-drawer>
 </template>
+
+<style scoped>
+.query-header-bar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 40px;
+  gap: 12px;
+}
+
+.header-identity,
+.header-controls,
+.header-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.header-identity {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.header-controls {
+  flex: 1 1 auto;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.search-input {
+  flex: 0 1 190px;
+  width: 190px;
+  min-width: 120px;
+}
+
+.search-button {
+  flex: 0 0 48px;
+  padding: 0 9px;
+}
+
+.mode-select {
+  flex: 0 0 108px;
+  width: 108px;
+  margin-left: 8px;
+}
+
+.match-pagination {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.header-actions {
+  flex: 0 0 auto;
+  padding-top: 0;
+}
+
+@media (max-width: 900px) {
+  .mode-select {
+    margin-left: 0;
+  }
+
+  .match-pagination {
+    display: none;
+  }
+}
+</style>
 

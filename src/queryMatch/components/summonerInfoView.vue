@@ -25,8 +25,8 @@ const matchStore = useMatchStore()
 </script>
 
 <template>
-  <div class="flex flex-col" style="width: 254px;">
-    <n-card size="small" class="shadow" content-style="padding-bottom:0">
+  <div class="summoner-panel">
+    <n-card size="small" class="profile-card shadow" content-style="padding-bottom:0">
       <!--    头像 昵称 等级-->
       <div class="h-14 flex gap-x-2">
         <n-avatar class="avatarEffect" round :bordered="false" :size="56"
@@ -72,7 +72,7 @@ const matchStore = useMatchStore()
       <!--    头像 昵称 等级-->
 
     </n-card>
-    <n-card size="small" class="mt-3 shadow" content-style="padding-top:10px" style="height: 337px">
+    <n-card size="small" class="profile-analysis-card shadow" content-style="padding-top:10px">
       <!--      战绩分析加载页面-->
       <div class="pl-0.5" v-if="matchStore.matchLoading">
         <n-steps size="small" vertical>
@@ -122,5 +122,34 @@ const matchStore = useMatchStore()
     </n-card>
   </div>
 </template>
+
+<style scoped>
+.summoner-panel {
+  display: flex;
+  flex: 0 0 254px;
+  flex-direction: column;
+  width: 254px;
+  min-height: 0;
+  gap: 12px;
+}
+
+.profile-card,
+.profile-analysis-card {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.profile-analysis-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.profile-analysis-card :deep(.n-card__content) {
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+</style>
 
 

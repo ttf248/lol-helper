@@ -19,8 +19,9 @@ const renderMatch = (index:number,gameId:number) => {
 </script>
 
 <template>
-  <n-list>
-    <n-list-item style="width: 186px" v-for="(match,index) in matchStore.matchList">
+  <div class="match-history-list">
+    <n-list>
+      <n-list-item v-for="(match,index) in matchStore.matchList" :key="match.gameId">
       <n-space @click="renderMatch(index,match.gameId)">
         <n-avatar
           :bordered="false"
@@ -62,6 +63,27 @@ const renderMatch = (index:number,gameId:number) => {
          </div>
         </n-space>
       </n-space>
-    </n-list-item>
-  </n-list>
+      </n-list-item>
+    </n-list>
+  </div>
 </template>
+
+<style scoped>
+.match-history-list {
+  flex: 0 0 186px;
+  width: 186px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.match-history-list :deep(.n-list-item) {
+  width: 100%;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.match-history-list :deep(.n-list-item__main) {
+  min-width: 0;
+}
+</style>

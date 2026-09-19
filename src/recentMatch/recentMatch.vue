@@ -351,8 +351,9 @@ const getChampInfoList = async (champId: number) => {
 </script>
 
 <template>
-    <div class="main bg-neutral-100 dark:bg-neutral-900">
+    <div class="main recent-page bg-neutral-100 dark:bg-neutral-900">
         <dashboard
+            class="recent-dashboard"
             @open-network="isNetworkModal = true"
             :win-count="winCount"
             :is-fri-count="isFriCount"
@@ -363,7 +364,7 @@ const getChampInfoList = async (champId: number) => {
 
         <null-page v-if="isLcuErr" />
 
-        <div v-else class="flex justify-between">
+        <div v-else class="team-columns">
             <recent-match-list
                 @show-detail="openDetailDrawer"
                 :sum-list="friendList"

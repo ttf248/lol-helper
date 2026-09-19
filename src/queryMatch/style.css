@@ -11,6 +11,15 @@
     font-size: 16px;
 }
 
+html,
+body,
+#app {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
 ::-webkit-scrollbar {
     width: 0;
 }
@@ -18,15 +27,79 @@
 body {
     font-family: DingTalk;
     -webkit-user-select: none;
+    min-width: 0;
 }
 
 .main {
-    height: calc(100vh - 1.5rem);
-    width: calc(100vw - 1.5rem);
-    padding: 12px;
+    height: 100vh;
+    width: 100vw;
+    box-sizing: border-box;
+    padding: 10px;
     position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
 }
 
+.query-header {
+    flex: 0 0 40px;
+    min-width: 0;
+}
+
+.query-workspace {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    gap: 12px;
+}
+
+.query-profile {
+    flex: 0 0 254px;
+    width: 254px;
+    min-height: 0;
+}
+
+.query-results {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.query-result-card {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+}
+
+.query-result-card :where(.n-card__content) {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.query-result-card :where(.n-tabs) {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+}
+
+.query-result-card :where(.n-tabs-pane-wrapper) {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.query-result-card :where(.n-tab-pane) {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
 
 .avatarEffect {
     animation: light 4s ease-in-out infinite;
