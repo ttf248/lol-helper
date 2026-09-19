@@ -14,7 +14,7 @@ use lcu::{
 use lol_window_tracker::{start_tracking_loop, sync_tracker_config};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Emitter, EventTarget, Manager};
 use tauri_plugin_window_state::StateFlags;
 
 pub struct LocalTestState {
@@ -56,11 +56,16 @@ pub async fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // 当尝试启动新实例时，聚焦主窗口
-            let _ = app
-                .get_webview_window("mainWindow")
-                .expect("no main window")
-                .show();
+            // 当尝试启动新实例时，聚焦主窗口，并让后台重新检查当前对局。
+            if let Some(main_window) = app.get_webview_window("mainWindow") {
+                let _ = main_window.show();
+                let _ = main_window.set_focus();
+            }
+            let _ = app.emit_to(
+                EventTarget::labeled("background"),
+                "recoverGameWindow",
+                (),
+            );
         }))
         .plugin(
             tauri_plugin_window_state::Builder::default()

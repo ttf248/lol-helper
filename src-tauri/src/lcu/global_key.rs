@@ -1,5 +1,5 @@
 use rdev::{listen, Event, EventType, Key};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, EventTarget, Manager};
 
 pub fn init_global_keyboard(app: AppHandle) {
     let mut shift_state: bool = false;
@@ -55,6 +55,14 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
                     eprintln!("Error checking window visibility: {}", e);
                 }
             }
+        } else {
+            // 软件可能在对局开始后才启动，或窗口曾被关闭。通知前端按当前
+            // LCU session 恢复窗口，而不是只对已存在的窗口做显隐切换。
+            let _ = app.emit_to(
+                EventTarget::labeled("background"),
+                "recoverGameWindow",
+                (),
+            );
         }
     }
 }

@@ -124,7 +124,10 @@ pub async fn start_listener(app: AppHandle) {
 
 #[tauri::command]
 pub async fn is_game_start() -> bool {
-    let client = ingame::IngameClient::new().expect("Game unstart");
+    let client = match ingame::IngameClient::new() {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
     client.active_game_loadingscreen().await
 }
 

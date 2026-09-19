@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { window } from "@tauri-apps/api";
 import { ConfigSettingTypes } from "../types";
 
 export class MainWindow {
@@ -33,7 +34,12 @@ export class MainWindow {
 }
 
 export class RecentMatchWindow {
+	private static creating = false;
+
 	constructor() {
+		if (RecentMatchWindow.creating) return;
+		RecentMatchWindow.creating = true;
+
 		const webview = new WebviewWindow("recentMatchWindow", {
 			title: "对局详情",
 			url: "src/recentMatch/index.html",
@@ -48,7 +54,26 @@ export class RecentMatchWindow {
 			transparent: true,
 		});
 		webview.once("tauri://created", async function () {
-			webview.show();
+			try {
+				await webview.show();
+			} finally {
+				RecentMatchWindow.creating = false;
+			}
 		});
+		webview.once("tauri://error", () => {
+			RecentMatchWindow.creating = false;
+		});
+	}
+
+	public static async ensure() {
+		const existing = await window.Window.getByLabel("recentMatchWindow");
+		if (existing !== null) {
+			await existing.show();
+			return;
+		}
+
+		if (!RecentMatchWindow.creating) {
+			new RecentMatchWindow();
+		}
 	}
 }

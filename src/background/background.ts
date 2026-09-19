@@ -15,15 +15,23 @@ class Background {
 		configInit();
 		this.gameFlow = new GameFlow();
 		this.taskTracker = new TaskTracker();
-		this.initializeListeners();
+		void this.initializeListeners();
 	}
 
-	private initializeListeners() {
-		invoke("listen_for_client_start").then(async () => {
-			listen<string>("client_status", (event) =>
-				this.handleClientStatus(event.payload),
-			);
+	private async initializeListeners() {
+		// 先注册监听，再启动 Rust 侧客户端探测，避免客户端已经运行时丢失首个事件。
+		await listen<string>("client_status", (event) =>
+			this.handleClientStatus(event.payload),
+		);
+		await listen("recoverGameWindow", () => {
+			void this.gameFlow.recoverGameInWindow();
 		});
+
+		try {
+			await invoke("listen_for_client_start");
+		} catch (error) {
+			console.error("启动客户端状态监听失败", error);
+		}
 	}
 
 	private initLocalTestLab() {
@@ -38,7 +46,14 @@ class Background {
 				clearInterval(lcuSuccess);
 				setTimeout(() => {
 					this.gameFlow.sendStartEvent();
-					invoke("start_listener");
+					void (async () => {
+						try {
+							await invoke("start_listener");
+						} finally {
+							// WebSocket 不会补发当前阶段，启动监听后主动恢复一次。
+							void this.gameFlow.recoverGameInWindow();
+						}
+					})();
 				}, 500);
 			}
 
@@ -57,10 +72,10 @@ class Background {
 				break;
 			case "GameStart":
 				this.gameFlow.showHideMainWin(false, "GameStart");
-				this.gameFlow.initGameInWindow();
+				void this.gameFlow.initGameInWindow();
 				break;
 			case "PreEndOfGame":
-				this.gameFlow.closeWin("recentMatchWindow");
+				void this.gameFlow.closeWin("recentMatchWindow");
 				this.gameFlow.showHideMainWin(true, "EndOfGame");
 				this.taskTracker.completeTask();
 				break;
@@ -68,7 +83,7 @@ class Background {
 				this.gameFlow.sendMesToMain("Matchmaking");
 				break;
 			case "ReadyCheck":
-				this.gameFlow.writeGameInfo();
+				void this.gameFlow.writeGameInfo();
 				break;
 			case "Lobby":
 				this.gameFlow.sendMesToMain("Lobby");

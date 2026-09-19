@@ -58,7 +58,7 @@ const menu = await Menu.new({
       action: () => {
         window.Window.getByLabel('recentMatchWindow').then(async (win) => {
           if (win === null) {
-            new RecentMatchWindow();
+            await RecentMatchWindow.ensure();
           }else{
             if (await win.isVisible()) {
               win.hide();
