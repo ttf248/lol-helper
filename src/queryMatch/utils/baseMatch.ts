@@ -350,11 +350,14 @@ export default class BaseMatch {
         puuid: string,
         onProgress?: (progress: HistoryCacheSyncProgress) => void,
         shouldContinue: () => boolean = () => true,
+        options?: { forceRefresh?: boolean },
     ): Promise<HistoryCacheSyncResult> => {
         const startedAt = Date.now();
         // 服务启动 / 登录后后台最多缓存最近 500 场，首屏不会等待这项任务；
         // 翻页仍可复用已写入 PG 的结果。
         const maxPages = HISTORY_COLD_START_PAGES;
+        const pageSize = HISTORY_SERVER_PAGE_SIZE;
+        const windowSize = maxPages * pageSize;
         logger.info({
             tag: "home.history",
             message: "冷启动同步发起",
@@ -363,11 +366,11 @@ export default class BaseMatch {
                 op: "syncCurrentUserHistory",
                 puuid,
                 max_pages: maxPages,
-                page_size: HISTORY_SERVER_PAGE_SIZE,
+                page_size: pageSize,
                 sync_limit: HISTORY_CACHE_SYNC_LIMIT,
+                force_refresh: options?.forceRefresh === true,
             },
         });
-        const pageSize = HISTORY_SERVER_PAGE_SIZE;
         let totalPages: number | null = null;
         let totalCount: number | null = null;
         let currentPage = 0;
@@ -428,6 +431,36 @@ export default class BaseMatch {
             onProgress?.(progress);
             return progress;
         };
+
+        // 缓存命中检测：本地 PG 已覆盖冷启动窗口（500 场）的全部参与者，
+        // 直接发 complete 跳过服务器循环，避免每次启动打 25 次 LCU 拿已知
+        // 数据。强制刷新场景会绕过这条短路。
+        if (!options?.forceRefresh && cachedGames.length >= windowSize) {
+            const allCompleteInWindow = cachedGames
+                .slice(0, windowSize)
+                .every((game) => historyGameQuality(game) === "complete");
+            if (allCompleteInWindow) {
+                logger.info({
+                    tag: "home.history",
+                    message: "冷启动同步：缓存命中，跳过服务器",
+                    context: {
+                        purpose: "主页当前用户后台逐页回填历史战绩到 PG",
+                        op: "syncCurrentUserHistory",
+                        puuid,
+                        cached_games: cachedGames.length,
+                        window_size: windowSize,
+                    },
+                });
+                currentPage = maxPages;
+                totalPages = maxPages;
+                downloadedGames = 0;
+                return emit(
+                    "complete",
+                    "历史战绩已全部缓存",
+                    `本地缓存已覆盖最近 ${windowSize} 场，无需重新拉取服务器。`,
+                );
+            }
+        }
 
         const cancelled = () =>
             emit(

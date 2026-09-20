@@ -2,7 +2,7 @@
 import {NButton, NInput, NSelect, NPagination, NTag,
   useMessage, NIcon, NSpace, MessageReactive, NDrawer} from "naive-ui"
 import {computed, ref, watch} from "vue";
-import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
+import {CircleMinus, CircleX, Refresh, Settings} from "@vicons/tabler";
 import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
 import {getCurrentWindow} from "@tauri-apps/api/window";
@@ -45,6 +45,21 @@ const historyCacheStatusType = computed(() => {
       return "info" as const
   }
 })
+
+// 本地缓存已经覆盖最近 500 场的情况下才允许强制同步。
+// 缓存还没拉满时按下按钮只会立即跑一次完整拉取，体感上是
+// "正常启动的同步过程"，没必要单独留按钮。
+const canForceRefreshHistory = computed(
+  () =>
+    matchStore.historyCacheFull === true &&
+    matchStore.historyCacheSync.kind !== "syncing",
+)
+
+const forceRefreshHistoryTitle = computed(() =>
+  canForceRefreshHistory.value
+    ? "忽略本地缓存，重新拉取最近 25 页战绩"
+    : "本地缓存未覆盖最近 500 场，暂无强制同步必要",
+)
 
 watch(() => matchStore.summonerId, () => {
   clearVal()
@@ -169,6 +184,20 @@ const pageChange = (page: number) => {
       >
         {{ historyCacheStatusLabel }}
       </n-tag>
+      <n-button
+        v-if="canForceRefreshHistory"
+        size="small"
+        quaternary
+        type="info"
+        class="force-refresh-history"
+        :title="forceRefreshHistoryTitle"
+        @click="matchStore.forceRefreshHistoryCache()"
+      >
+        <template #icon>
+          <n-icon :component="Refresh" :size="14" />
+        </template>
+        强制同步
+      </n-button>
     </div>
     <div class="header-controls">
       <n-input v-model:value="inputVal" type="text" spellcheck="false"
@@ -246,6 +275,10 @@ const pageChange = (page: number) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.force-refresh-history {
+  padding: 0 8px;
 }
 
 .header-controls {

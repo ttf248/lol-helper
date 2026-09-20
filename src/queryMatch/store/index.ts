@@ -95,6 +95,9 @@ const useMatchStore = defineStore("useMatchStore", {
 			// cancelled 行会被组件过滤掉不显示，complete / limited /
 			// error 行由组件定时器或用户手动关闭后移除。
 			historySyncStripRows: [] as HistoryCacheSyncStatus[],
+			// 当前召唤师的本地缓存是否已覆盖 500 场完整窗口；用于显示
+			// "强制同步" 按钮。
+			historyCacheFull: false,
 			analysisData: null as RencentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
@@ -119,6 +122,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchSourceEndpoints = [];
 			this.matchLocalCacheUsed = false;
 			this.historyCacheSync = createIdleHistoryCacheSync();
+			this.historyCacheFull = false;
 			this.participantsInfo = null;
 			try {
 				const sumResult = await baseMatch.gerSummonerInfo(summonerId);
@@ -363,6 +367,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			puuid: string,
 			requestId: number,
 			summonerName = "",
+			options?: { forceRefresh?: boolean },
 		) {
 			// 给底部进度条组件一个唯一 rowId，让它能把定时器和具体行绑定。
 			// 时间戳 + 随机后缀足以保证短时间内不会撞 id。
@@ -375,7 +380,9 @@ const useMatchStore = defineStore("useMatchStore", {
 				maxPages: HISTORY_COLD_START_PAGES,
 				cachedGames: 0,
 				downloadedGames: 0,
-				message: "准备开始同步",
+				message: options?.forceRefresh
+					? "强制全量同步"
+					: "准备开始同步",
 				detail: "",
 				summonerName,
 				rowId,
@@ -397,6 +404,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				puuid,
 				(progress) => updateRow(progress),
 				() => requestId === this.queryRequestId,
+				{ forceRefresh: options?.forceRefresh === true },
 			);
 
 			if (requestId !== this.queryRequestId) {
@@ -411,6 +419,12 @@ const useMatchStore = defineStore("useMatchStore", {
 			}
 
 			updateRow(result);
+
+			// 缓存命中 / 全量下载完成的两种情况都视为本地缓存已对齐服务器。
+			// 顶部 "强制同步" 按钮的可见性就靠这个开关控制。
+			if (result.kind === "complete") {
+				this.historyCacheFull = true;
+			}
 			// 主动缓存有明确窗口，但这不应把服务器总量误当成缓存页数。
 			// 只要服务器报告总数，顶部页数就严格按服务器总数计算；
 			// 没有总数时才回退到当前已缓存数量。
@@ -458,6 +472,21 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.historySyncStripRows = this.historySyncStripRows.filter(
 				(row) => row.rowId !== rowId,
 			);
+		},
+		async forceRefreshHistoryCache() {
+			// 用户主动要求忽略缓存重新拉最近 25 页。逻辑上 bump 一个新的
+			// queryRequestId，让任何进行中的旧同步走 cancelled 收尾，
+			// 然后用新的 requestId 触发强制同步。同步进行中再点按钮
+			// 是幂等的：会再次 bump 取消前一次、再起一次。
+			const puuid = this.sumInfo?.info?.puuid;
+			if (!puuid) return;
+			const name = this.sumInfo?.info?.name ?? "";
+			this.queryRequestId += 1;
+			const requestId = this.queryRequestId;
+			this.historyCacheFull = false;
+			await this.syncCurrentUserHistory(puuid, requestId, name, {
+				forceRefresh: true,
+			});
 		},
 		async getMatchFromPage(
 			page: number,
