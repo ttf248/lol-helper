@@ -69,6 +69,177 @@ CREATE INDEX IF NOT EXISTS idx_matches_queue_time
     ON matches(queue_id, game_creation DESC);
 CREATE INDEX IF NOT EXISTS idx_participants_puuid
     ON match_participants(puuid, game_id);
+
+-- ── 对局详情（单局） ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS game_details (
+    game_id BIGINT PRIMARY KEY REFERENCES matches(game_id) ON DELETE CASCADE,
+    game_creation BIGINT,
+    game_creation_date TIMESTAMPTZ,
+    game_duration INTEGER NOT NULL,
+    game_mode TEXT,
+    game_type TEXT,
+    game_version TEXT,
+    map_id INTEGER,
+    platform_id TEXT,
+    season_id INTEGER,
+    raw_payload JSONB NOT NULL,
+    raw_payload_sgp JSONB,
+    source TEXT NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_details_fetched_at
+    ON game_details(fetched_at);
+
+-- ── 对局详情（每位玩家） ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS game_detail_participants (
+    game_id BIGINT NOT NULL REFERENCES game_details(game_id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL,
+    puuid TEXT NOT NULL,
+    team_id INTEGER NOT NULL,
+    champion_id INTEGER NOT NULL,
+    spell1_id INTEGER,
+    spell2_id INTEGER,
+    champ_level INTEGER,
+    kills INTEGER,
+    deaths INTEGER,
+    assists INTEGER,
+    win TEXT,
+    item0 INTEGER,
+    item1 INTEGER,
+    item2 INTEGER,
+    item3 INTEGER,
+    item4 INTEGER,
+    item5 INTEGER,
+    item6 INTEGER,
+    gold_earned INTEGER,
+    gold_spent INTEGER,
+    physical_damage_dealt_to_champions INTEGER,
+    magic_damage_dealt_to_champions INTEGER,
+    true_damage_dealt_to_champions INTEGER,
+    total_damage_dealt_to_champions INTEGER,
+    total_damage_taken INTEGER,
+    total_minions_killed INTEGER,
+    neutral_minions_killed INTEGER,
+    vision_score INTEGER,
+    wards_placed INTEGER,
+    perk0 INTEGER,
+    perk1 INTEGER,
+    perk2 INTEGER,
+    perk3 INTEGER,
+    perk4 INTEGER,
+    perk5 INTEGER,
+    perk_primary_style INTEGER,
+    perk_sub_style INTEGER,
+    first_blood_kill BOOLEAN,
+    first_blood_assist BOOLEAN,
+    double_kills INTEGER,
+    triple_kills INTEGER,
+    quadra_kills INTEGER,
+    penta_kills INTEGER,
+    largest_killing_spree INTEGER,
+    turret_kills INTEGER,
+    account_id BIGINT,
+    summoner_id BIGINT,
+    summoner_name TEXT,
+    profile_icon_id INTEGER,
+    game_name TEXT,
+    tag_line TEXT,
+    raw_stats JSONB NOT NULL,
+    raw_timeline JSONB,
+    raw_identity JSONB NOT NULL,
+    PRIMARY KEY (game_id, participant_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_detail_participants_puuid
+    ON game_detail_participants(puuid);
+
+CREATE INDEX IF NOT EXISTS idx_detail_participants_summoner_id
+    ON game_detail_participants(summoner_id);
+
+-- ── 对局详情（双方队伍） ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS game_detail_teams (
+    game_id BIGINT NOT NULL REFERENCES game_details(game_id) ON DELETE CASCADE,
+    team_id INTEGER NOT NULL,
+    win BOOLEAN,
+    baron_kills INTEGER,
+    dragon_kills INTEGER,
+    tower_kills INTEGER,
+    inhibitor_kills INTEGER,
+    rift_herald_kills INTEGER,
+    first_baron BOOLEAN,
+    first_blood BOOLEAN,
+    first_inhibitor BOOLEAN,
+    first_tower BOOLEAN,
+    horde_kills INTEGER,
+    vilemaw_kills INTEGER,
+    bans JSONB,
+    objectives JSONB,
+    feats JSONB,
+    PRIMARY KEY (game_id, team_id)
+);
+
+-- ── 召唤师信息（主键 = puuid） ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS summoners (
+    puuid TEXT PRIMARY KEY,
+    summoner_id BIGINT NOT NULL UNIQUE,
+    account_id BIGINT,
+    display_name TEXT,
+    internal_name TEXT,
+    game_name TEXT,
+    tag_line TEXT,
+    summoner_name TEXT,
+    profile_icon_id INTEGER,
+    summoner_level BIGINT,
+    xp_since_last_level BIGINT,
+    xp_until_next_level BIGINT,
+    percent_complete_for_next_level INTEGER,
+    privacy TEXT,
+    name_change_flag BOOLEAN,
+    reroll_points JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── 对局内 10 人阵容快照（仅 PreEndOfGame 后落盘） ───────────────
+CREATE TABLE IF NOT EXISTS game_sessions (
+    game_id BIGINT PRIMARY KEY,
+    queue_id INTEGER NOT NULL,
+    map_id INTEGER,
+    game_mode TEXT,
+    platform_id TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_queue_started
+    ON game_sessions(queue_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_player_picks (
+    game_id BIGINT NOT NULL REFERENCES game_sessions(game_id) ON DELETE CASCADE,
+    puuid TEXT NOT NULL,
+    summoner_id BIGINT,
+    summoner_name TEXT,
+    game_name TEXT,
+    tag_line TEXT,
+    profile_icon_id INTEGER,
+    champion_id INTEGER,
+    spell1_id INTEGER,
+    spell2_id INTEGER,
+    team_id INTEGER,
+    PRIMARY KEY (game_id, puuid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_picks_puuid
+    ON session_player_picks(puuid);
+
+CREATE INDEX IF NOT EXISTS idx_session_picks_summoner
+    ON session_player_picks(summoner_id);
+
+-- ── 英雄详情（gtimg.com JSON） ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS champion_details (
+    champion_id INTEGER PRIMARY KEY,
+    payload JSONB NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 "#;
 
 #[derive(Debug, Clone, Serialize)]
