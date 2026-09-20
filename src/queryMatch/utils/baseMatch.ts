@@ -24,6 +24,7 @@ import {
     HISTORY_CACHE_PAGE_SIZE,
     HISTORY_CACHE_SYNC_LIMIT,
     HISTORY_COLD_START_PAGES,
+    HISTORY_PLAYER_MAX_GAMES,
     HISTORY_SERVER_PAGE_SIZE,
 } from "@/recentMatch/utils/historyConfig";
 import type {
@@ -44,7 +45,7 @@ export interface ProcessedMatchHistory {
 }
 
 // 分页和模式筛选共享最近服务器窗口。短 TTL 内翻页/切换模式不应重复
-// 请求相同的 60 场，也不应重复把同一批数据写入 PostgreSQL。
+// 请求相同的服务器窗口，也不应重复把同一批数据写入 PostgreSQL。
 const SERVER_HISTORY_CACHE_TTL_MS = 30_000;
 
 // 记录上次写入 PG 的内容指纹。同 PUUID + modeKey 在两次同步之间 gameId
@@ -271,9 +272,8 @@ export default class BaseMatch {
             limit: HISTORY_CACHE_PAGE_SIZE,
             offset: 0,
         });
-        // 列表路径只同步最近 20 场，分析面板路径同步全量 60 场；不同
-        // serverLimit 各自维护一份 TTL 窗口，避免主窗口首屏等 200ms
-        // 串行三页。
+        // 列表路径只同步最近 20 场，分析面板路径按调用方的窗口同步；不同
+        // serverLimit 各自维护一份 TTL 窗口，避免主窗口首屏重复请求。
         const serverHistory = this.recentServerHistory.get(
             `${puuid}|${serverLimit}`,
         );
@@ -308,7 +308,7 @@ export default class BaseMatch {
         }
         if (shouldSync && synced.games.length > 0 && synced.source) {
             // 历史查询面板也负责回填统一分析缓存，后续首页、分页和
-            // 模式分析都可以复用这三页 participant 数据。
+            // 模式分析都可以复用已经拉取的 participant 数据。
             this.cacheNormalizedGames(
                 puuid,
                 synced.games,
@@ -325,9 +325,9 @@ export default class BaseMatch {
                     : synced.source || (cachedGames.length > 0 ? "postgres" : null),
             sourceEndpoints: synced.sourceEndpoints,
             localCacheUsed: cachedGames.length > 0,
-            availableCount: Math.max(
-                cachedMatches.length,
-                synced.totalCount ?? 0,
+            availableCount: Math.min(
+                HISTORY_PLAYER_MAX_GAMES,
+                Math.max(cachedMatches.length, synced.totalCount ?? 0),
             ),
             totalCount: synced.totalCount,
         };
@@ -354,11 +354,11 @@ export default class BaseMatch {
     }
 
     /**
-     * 在主页后台补齐当前用户的历史战绩（冷启动最小集）。
+     * 在主页后台补齐当前用户的主动同步窗口。
      *
      * 每次只请求一页并在成功后等待 PostgreSQL 写入。整页已经存在时跳过
      * 写入但仍继续检查冷启动范围内的后续页；没有可靠总数时则用短页/空页
-     * 判断历史末尾，最多扫描 HISTORY_COLD_START_PAGES 页（默认 3 页 = 60 场）。
+     * 判断历史末尾，最多扫描 HISTORY_COLD_START_PAGES 页（当前为 25 页 = 500 场）。
      *
      * 翻页遇本地未覆盖时由 fetchAndCacheSinglePage 单页增量补齐，不会
      * 继续向更早历史走 scan 循环。
@@ -369,8 +369,8 @@ export default class BaseMatch {
         shouldContinue: () => boolean = () => true,
     ): Promise<HistoryCacheSyncResult> => {
         const startedAt = Date.now();
-        // 冷启动最小集：服务启动 / 登录后只后台缓存最近 3 页（60 场），
-        // 翻页未覆盖时由 fetchAndCacheSinglePage 增量补齐。
+        // 服务启动 / 登录后后台最多缓存最近 500 场，首屏不会等待这项任务；
+        // 翻页仍可复用已写入 PG 的结果。
         const maxPages = HISTORY_COLD_START_PAGES;
         logger.info({
             tag: "home.history",
@@ -503,8 +503,16 @@ export default class BaseMatch {
                 );
             }
 
-            const reportedTotalCount = Number(pageResult.totalCount);
-            if (Number.isFinite(reportedTotalCount) && reportedTotalCount >= 0) {
+            // null 表示接口没有可靠的全局总数。不能使用 Number(null)，
+            // 否则会把“未知总数”转换成 0，令 totalPages=1，后台同步
+            // 在第一页就提前结束（并把首页分页收缩成一页）。
+            const reportedTotalCount =
+                pageResult.totalCount !== null &&
+                Number.isFinite(pageResult.totalCount) &&
+                pageResult.totalCount >= 0
+                    ? pageResult.totalCount
+                    : null;
+            if (reportedTotalCount !== null) {
                 totalCount = Math.max(totalCount ?? 0, reportedTotalCount);
                 totalPages = Math.max(
                     currentPage,
@@ -532,9 +540,8 @@ export default class BaseMatch {
                 cachedGameIds.has(game.gameId),
             );
             if (pageAlreadyCached) {
-                // 冷启动缓存的目标是最近三页，而不是“遇到第一页已缓存
-                // 就停止”。数据库可能只存在第一页，仍要继续检查第二、
-                // 三页；只有接口明确到末尾或已达到报告的总页数才结束。
+                // 缓存目标是配置的最大窗口，而不是“遇到第一页已缓存
+                // 就停止”。只有接口明确到末尾或已达到报告的总页数才结束。
                 if (
                     pageResult.games.length < pageSize ||
                     (totalPages !== null && currentPage >= totalPages)
@@ -584,7 +591,7 @@ export default class BaseMatch {
         return emit(
             "limited",
             `已缓存最近 ${maxPages} 页历史战绩`,
-            `已达到冷启动同步上限，当前已缓存 ${cachedGameIds.size} 场；更早历史将在翻页时按需增量拉取。`,
+            `已达到主动同步上限，当前已缓存 ${cachedGameIds.size} 场；更早历史不在本次窗口内。`,
         );
     };
 
@@ -615,8 +622,25 @@ export default class BaseMatch {
             },
         });
         const safePageIndex = Math.max(0, Math.floor(pageIndex));
+        if (safePageIndex * pageSize >= HISTORY_PLAYER_MAX_GAMES) {
+            logger.info({
+                tag: "home.history",
+                message: "首页翻页达到单玩家主动同步上限",
+                context: {
+                    purpose: "首页翻页遇本地未覆盖时单页增量拉取并写入缓存",
+                    op: "fetchAndCacheSinglePage",
+                    puuid,
+                    page_index: safePageIndex,
+                    max_games: HISTORY_PLAYER_MAX_GAMES,
+                },
+            });
+            return { cachedGames: 0, reachedEnd: true };
+        }
         const begIndex = safePageIndex * pageSize;
-        const endIndex = begIndex + pageSize;
+        const endIndex = Math.min(
+            begIndex + pageSize,
+            HISTORY_PLAYER_MAX_GAMES,
+        );
 
         // 先看本地 PG：已经覆盖的页就不打服务器。
         const cached = await getCachedHistoryPage(puuid, begIndex, pageSize);

@@ -90,7 +90,7 @@ onBeforeMount(() => {
 
 onMounted(async () => {
     // 兜底：用户从未切到首页 / 客户端已登录但没进入战绩 tab 时，
-    // 也由主窗口挂载触发一次 init()，启动 3 页后台缓存同步。
+    // 也由主窗口挂载触发一次 init()，启动后台历史缓存同步。
     // init() 内部用 queryRequestId 防重入，多触发一次只会浪费一次首屏拉取。
     const localSum = JSON.parse(
         localStorage.getItem("sumInfo") || "null",

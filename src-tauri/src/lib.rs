@@ -14,8 +14,8 @@ use database::{
 use observability::log::write_frontend_log;
 use lcu::{
     check_borderless_mode, get_lol_region, get_match_list, init_keyboard, invoke_lcu,
-    get_ingame_players, is_game_start, launch_lol, listen_for_client_start, set_borderless_mode,
-    start_listener,
+    fetch_sgp_match_history, get_ingame_players, is_game_start, launch_lol,
+    listen_for_client_start, set_borderless_mode, start_listener,
 };
 use lol_window_tracker::{start_tracking_loop, sync_tracker_config};
 use std::sync::atomic::AtomicBool;
@@ -55,6 +55,7 @@ pub async fn run() {
             get_lol_region,
             start_listener,
             invoke_lcu,
+            fetch_sgp_match_history,
             get_match_list,
             is_game_start,
             get_ingame_players,

@@ -14,6 +14,7 @@ use once_cell::sync::OnceCell;
 use serde_json::{from_value, Value};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 // 定义全局的 REST 客户端
@@ -49,6 +50,87 @@ pub async fn invoke_lcu(method: &str, uri: &str, body: &str) -> Result<Value, Va
     };
     // 成功/失败日志由 RESTClient 的 lcu.http 输出覆盖；这里只兜底异常。
     result.map_err(|_| Value::Null)
+}
+
+/// 通过 Rust 的 reqwest 直连 SGP 历史服务。
+///
+/// Tauri HTTP 插件默认启用系统代理。在部分开发环境中，代理会让 Riot
+/// 区域 SGP 的 HTTPS 流式响应一直挂起，前端分页同步就会卡在第二页。
+/// 这里明确关闭代理，并把网络超时放在 Rust 请求本身，避免前端请求任务
+/// 失去响应后无法可靠取消。
+#[derive(serde::Serialize)]
+pub struct SgpHttpResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+#[tauri::command]
+pub async fn fetch_sgp_match_history(
+    url: &str,
+    authorization: &str,
+) -> Result<SgpHttpResponse, String> {
+    let parsed_url = reqwest::Url::parse(url).map_err(|error| format!("invalid SGP URL: {error}"))?;
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| "SGP URL has no host".to_string())?;
+    let allowed_host = host.ends_with(".lol.qq.com") || host.ends_with(".sgp.pvp.net");
+    let allowed_path = parsed_url
+        .path()
+        .starts_with("/match-history-query/v1/products/lol/player/")
+        && parsed_url.path().ends_with("/SUMMARY");
+    if parsed_url.scheme() != "https" || !allowed_host || !allowed_path {
+        return Err("SGP URL is outside the allowed match-history endpoint".to_string());
+    }
+    if !authorization.starts_with("Bearer ") {
+        return Err("SGP authorization header is invalid".to_string());
+    }
+
+    let cert = reqwest::Certificate::from_pem(include_bytes!("shaco/riotgames.pem"))
+        .map_err(|error| format!("failed to load Riot certificate: {error}"))?;
+    let client = reqwest::ClientBuilder::new()
+        .no_proxy()
+        .add_root_certificate(cert)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("failed to build SGP HTTP client: {error}"))?;
+
+    let response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "LeagueClient/14.3.558.1234 (SGP)")
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header("x-akari-force-stream-collect", "true")
+        .header("x-akari-token-type", "entitlements")
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "lcu.sgp",
+                url = %url,
+                error = %error,
+                "SGP Rust HTTP 请求失败"
+            );
+            format!("SGP request failed: {error}")
+        })?;
+
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("failed to read SGP response: {error}"))?;
+    if body.len() > 16 * 1024 * 1024 {
+        return Err("SGP response exceeds the 16 MiB safety limit".to_string());
+    }
+
+    tracing::info!(
+        target: "lcu.sgp",
+        url = %url,
+        status,
+        body_bytes = body.len(),
+        "SGP Rust HTTP 响应完成"
+    );
+    Ok(SgpHttpResponse { status, body })
 }
 
 #[tauri::command]

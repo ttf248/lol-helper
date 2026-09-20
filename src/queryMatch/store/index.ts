@@ -14,6 +14,7 @@ import {
 	HISTORY_COLD_START_PAGES,
 	HISTORY_HOMEPAGE_PAGE_SIZE,
 	HISTORY_CACHE_SYNC_LIMIT,
+	HISTORY_PLAYER_MAX_GAMES,
 	HISTORY_SERVER_PAGE_SIZE,
 } from "@/recentMatch/utils/historyConfig";
 import { getCachedHistory, getCachedHistoryPage } from "@/recentMatch/utils/databaseCache";
@@ -205,32 +206,45 @@ const useMatchStore = defineStore("useMatchStore", {
 			}
 
 			// 任意页：先查本地 PG。若目标页尚未缓存，按服务器 20 场一页
-			// 补齐到目标偏移；主动缓存只负责前三个服务器页，之后由翻页
+			// 补齐到目标偏移；主动缓存负责配置窗口，之后仍可由翻页
 			// 按需读取，不把主动缓存上限误当成分页上限。
 			let cached = await getCachedHistoryPage(puuid, offset, pageSize);
 			let reachedEnd = false;
 			if (cached.length < pageSize) {
-				const targetEnd = offset + pageSize;
+				const targetEnd = Math.min(
+					offset + pageSize,
+					HISTORY_PLAYER_MAX_GAMES,
+				);
+				if (offset >= HISTORY_PLAYER_MAX_GAMES) {
+					reachedEnd = true;
+				}
 				const lastServerPage = Math.floor(
 					(targetEnd - 1) / HISTORY_SERVER_PAGE_SIZE,
 				);
-				for (let serverPage = 0; serverPage <= lastServerPage; serverPage += 1) {
+				for (
+					let serverPage = 0;
+					serverPage <= lastServerPage && !reachedEnd;
+					serverPage += 1
+				) {
 					const result = await baseMatch.fetchAndCacheSinglePage(
 						puuid,
 						serverPage,
 					);
 					if (result.reachedEnd) {
-							reachedEnd = true;
-							break;
-						}
+						reachedEnd = true;
+						break;
 					}
+				}
 				cached = await getCachedHistoryPage(puuid, offset, pageSize);
 			}
 			this.matchList = baseMatch.getSimpleMatchList(cached, puuid);
 			if (reachedEnd && this.matchTotalCount === null) {
 				// 服务器已明确到末尾时，撤销“未知总数”场景下
 				// 为了允许继续翻页而临时多展示的页。
-				this.matchAvailableCount = offset + this.matchList.length;
+				this.matchAvailableCount = Math.min(
+					HISTORY_PLAYER_MAX_GAMES,
+					offset + this.matchList.length,
+				);
 				this.matchPageCount = Math.max(
 					1,
 					Math.ceil(
@@ -253,13 +267,16 @@ const useMatchStore = defineStore("useMatchStore", {
 		},
 		async refreshMatchAvailableCount(puuid: string, minimumCount = 0) {
 			if (this.matchTotalCount !== null) {
-				// 服务器已经给出总数时，PG 当前只缓存前三页也不能覆盖
+				// 服务器已经给出总数时，PG 当前只缓存部分页面也不能覆盖
 				// 这个值，否则翻页后会把顶部页数缩回缓存页数。
-				this.matchAvailableCount = this.matchTotalCount;
+				this.matchAvailableCount = Math.min(
+					this.matchTotalCount,
+					HISTORY_PLAYER_MAX_GAMES,
+				);
 				this.matchPageCount = Math.max(
 					1,
 					Math.ceil(
-						this.matchTotalCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
 					),
 				);
 				return;
@@ -286,8 +303,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			isCurrentUser = false,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
-			// 主窗口首屏只拉最近 20 场，避免触发服务器三页 (60 场) 的
-			// 200ms 串行延迟。分析面板 / 翻页时再走全量窗口。
+			// 主窗口首屏只拉最近 20 场，避免首屏等待更早历史；后台同步
+			// 会继续补齐当前玩家的主动同步窗口。
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				0,
@@ -312,9 +329,11 @@ const useMatchStore = defineStore("useMatchStore", {
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
 			this.matchTotalCount = matchResult.totalCount;
-			this.matchAvailableCount =
+			this.matchAvailableCount = Math.min(
+				HISTORY_PLAYER_MAX_GAMES,
 				matchResult.totalCount ??
-				Math.max(matchResult.availableCount, matchResults.length);
+				Math.max(matchResult.availableCount, matchResults.length),
+			);
 			this.matchPageCount = Math.max(
 				1,
 				Math.ceil(this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE),
@@ -351,16 +370,19 @@ const useMatchStore = defineStore("useMatchStore", {
 			if (requestId !== this.queryRequestId) return;
 
 			this.historyCacheSync = result;
-			// 主动缓存只扫描前三个服务器页，但这不应限制首页分页。
+			// 主动缓存有明确窗口，但这不应把服务器总量误当成缓存页数。
 			// 只要服务器报告总数，顶部页数就严格按服务器总数计算；
 			// 没有总数时才回退到当前已缓存数量。
 			if (result.totalCount !== null) {
 				this.matchTotalCount = result.totalCount;
-				this.matchAvailableCount = result.totalCount;
+				this.matchAvailableCount = Math.min(
+					result.totalCount,
+					HISTORY_PLAYER_MAX_GAMES,
+				);
 				this.matchPageCount = Math.max(
 					1,
 					Math.ceil(
-						result.totalCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
 					),
 				);
 				return;
@@ -371,17 +393,23 @@ const useMatchStore = defineStore("useMatchStore", {
 					result.cachedGames,
 					this.matchAvailableCount,
 				);
-				this.matchAvailableCount = availableCount;
-				this.matchPageCount = Math.max(
-					1,
-					Math.ceil(
-						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
-					),
-					result.kind === "limited"
-						? Math.ceil(
+				this.matchAvailableCount = Math.min(
+					HISTORY_PLAYER_MAX_GAMES,
+					availableCount,
+				);
+				this.matchPageCount = Math.min(
+					Math.ceil(HISTORY_PLAYER_MAX_GAMES / HISTORY_HOMEPAGE_PAGE_SIZE),
+					Math.max(
+						1,
+						Math.ceil(
 							this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
-						) + 1
-						: 1,
+						),
+						result.kind === "limited"
+							? Math.ceil(
+								this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+							) + 1
+							: 1,
+					),
 				);
 			}
 		},
@@ -391,8 +419,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			requestId?: number,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
-			// 翻页也只取最近 20 场窗口；超过 20 场的页面依赖 PG 缓存
-			// 提供，避免每次翻页都重新拉服务器 60 场。
+			// 翻页也只刷新最近 20 场窗口；更早页面优先依赖 PG 缓存，
+			// 未覆盖时再按单页向服务器增量拉取。
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				(page - 1) * HISTORY_HOMEPAGE_PAGE_SIZE,

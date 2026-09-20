@@ -53,7 +53,7 @@ flowchart TB
         H3["① 是当前召唤师?<br/>fetchCurrentSummonerMatchHistory<br/>GET /lol-match-history/v1/products/lol/current-summoner/matches"]:::lcu
         H4["② fetchSummonerMatchHistoryFromLcu<br/>GET /lol-match-history/v1/products/lol/{puuid}/matches<br/>hasParticipantRoster 校验完整十人"]:::lcu
         H5["③ SgpMatchHistoryService<br/>getMatchHistory / getFullMatchHistory<br/>tokenFetcher → GET /entitlements/v1/token<br/>Bearer 走 match-history-query SGP 区域服<br/>10s 超时 + 401 重试 + 内存缓存"]:::ext
-        H6["来源标签:<br/>lcu-current / lcu-puuid / sgp / mixed<br/>同时记录 endpoints 明细（接口路径）<br/>主页当前用户后台逐页回填，最多 20 页，命中缓存页停止"]:::proc
+        H6["来源标签:<br/>lcu-current / lcu-puuid / sgp / mixed<br/>同时记录 endpoints 明细（接口路径）<br/>主页当前用户后台逐页回填，最多 25 页（500 场），并校验接口分页索引"]:::proc
     end
 
     %% ===================== 6. PostgreSQL 缓存层 =====================
@@ -73,7 +73,7 @@ flowchart TB
 
     %% ===================== 8. 持久化与展示 =====================
     subgraph UI["⑧ 数据展示"]
-        U1["mainWindow / queryMatch.vue<br/>tabs: matches（matchMain） / analytics（historyAnalyticsPanel）<br/>最近 20 场缓存 + 服务器前 60 场 + 分页"]:::fe
+        U1["mainWindow / queryMatch.vue<br/>tabs: matches（matchMain） / analytics（historyAnalyticsPanel）<br/>最近 20 场缓存 + 服务器主动同步窗口（最多 500 场）+ 分页"]:::fe
         U2["recentMatchWindow / recentMatch.vue<br/>Dashboard + friend/enemy 双列<br/>顶部 winCount 即时统计 + 开黑关系图"]:::fe
     end
 
@@ -111,7 +111,7 @@ flowchart TB
     S3 -- "sumInfo.localStorage" --> H1
     S3 --> U1
 
-        H6 -- "最近 20 场 + 服务器三页；当前用户后台最多补齐 20 页" --> U1
+        H6 -- "最近 20 场 + 当前用户后台最多补齐 25 页（500 场）" --> U1
     H6 -- "玩家级 modeKey 数据" --> U2
 
     D3 -- "get_ingame_players" --> F5
@@ -132,6 +132,6 @@ flowchart TB
 
 1. **唯一真实数据源是本机 LCU**。所有调用最终都落到 `https://127.0.0.1:{app-port}`，由 `shaco/rest.rs` 里的 `RESTClient` 统一封装；`invoke_lcu` 是唯一的 Rust 命令桥，Vue 端任何 `invokeLcu(...)` 都通过它落地。
 2. **SGP 是区域服务的备胎**。`sgpMatch.ts` 在 LCU 历史接口拿不到（外部召唤师或返回残缺）时启用，前置条件是 `GET /entitlements/v1/token` 取 entitlements token。SGP 同时承担「单局详情」的兜底——`MatchDetails` 优先复用 `matchCache`，避免再次请求。
-3. **PostgreSQL 只做缓存，不做权威源**。`DatabaseState::initialize` 在 Tauri 启动期建表，前端常规分析用 `cacheHistory` 写入最近三页；主页当前用户的后台同步会逐页写入，最多扫描 20 页，命中已缓存整页后停止。`getCachedHistory` 按 `puuid + modeKey` 读回，再由 `mergeHistoryGames`（`recentAnalytics.ts`）按 `gameId` 与服务器结果合并去重。
+3. **PostgreSQL 只做缓存，不做权威源**。`DatabaseState::initialize` 在 Tauri 启动期建表，前端常规分析用 `cacheHistory` 写入服务器返回窗口；主页当前用户的后台同步会逐页写入，最多扫描 25 页（500 场），并根据响应分页索引决定是否切换到 SGP。`getCachedHistory` 按 `puuid + modeKey` 读回，再由 `mergeHistoryGames`（`recentAnalytics.ts`）按 `gameId` 与服务器结果合并去重。
 4. **对局内玩家 = gameflow session ∪ Live Client Data**。`QuerySummoner` 先用 `/lol-gameflow/v1/session`，缺人时再用 `get_ingame_players`（`IngameClient::player_list`，端口 2999）补齐；面板打开前还会用 `is_game_start`（`/Help` HEAD 探测）确认已进入对局。
 5. **WebSocket 只负责状态机**。`listener.rs` 订阅 `/lol-gameflow/v1/gameflow-phase`，把 `phase` 推到 `background`，由 `handleClientStatus` 决定开/关 `recentMatchWindow`、刷新主窗口 `clientStatus`、触发 `TaskTracker` 结算等动作，本身不返回任何业务数据。

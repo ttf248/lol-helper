@@ -1,4 +1,4 @@
-import { fetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
 import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
 import { SgpServers } from "@/resources/areaList";
 import { GamesBySgp, Participant } from "./types/queryMatchSgpGameTypes";
@@ -18,7 +18,6 @@ export class SgpMatchHistoryService {
 	private _tokenRequest: Promise<string | null> | null = null;
 	private sgpBaseUrl: string | null = null;
 	private readonly USER_AGENT = "LeagueClient/14.3.558.1234 (SGP)";
-	private readonly TIMEOUT = 5000;
 
 	/**
 	 * @param _tokenProvider 一个异步函数，调用你提到的“其他接口”来获取最新的 Token
@@ -59,7 +58,7 @@ export class SgpMatchHistoryService {
 					success: token !== null,
 				},
 				durationMs: Date.now() - startedAt,
-			}, token ?? undefined);
+			});
 			return token;
 		}).finally(() => {
 			this._tokenRequest = null;
@@ -96,49 +95,28 @@ export class SgpMatchHistoryService {
 
 	private fetchJsonWithTimeout = async <T = unknown>(
 		url: string,
-		options: Parameters<typeof fetch>[1],
-	): Promise<{ response: Response; body: string; data: T }> => {
-		const controller = new AbortController();
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const startedAt = Date.now();
-		try {
-			// SGP 的 SUMMARY 响应可能使用 chunked transfer。超时必须覆盖
-			// 建立连接、读取完整 body 和 JSON 解析，并真正中止底层请求，
-			// 避免多名玩家并发分析时积累已经失效的网络任务。
-			timer = setTimeout(() => controller.abort(), this.TIMEOUT);
-			const response = await fetch(url, {
-				...options,
-				signal: controller.signal,
-			});
-			const body = await response.text();
-			return {
-				response,
-				body,
-				data: JSON.parse(body) as T,
-			};
-		} catch (error) {
-			if (controller.signal.aborted) {
-				logger.warn({
-					tag: "lcu.sgp",
-					message: `SGP 请求超时（${this.TIMEOUT}ms）`,
-					context: {
-						url,
-						duration_ms: Date.now() - startedAt,
-						error: String(error).slice(0, 500),
-					},
-				}, undefined, undefined);
-				throw new Error(`SGP request timed out after ${this.TIMEOUT}ms`);
-			}
-			throw error;
-		} finally {
-			if (timer !== undefined) {
-				clearTimeout(timer);
-			}
-		}
+		token: string,
+	): Promise<{ response: { ok: boolean; status: number }; body: string; data: T }> => {
+		const result = await invoke<{ status: number; body: string }>(
+			"fetch_sgp_match_history",
+			{
+				url,
+				authorization: `Bearer ${token}`,
+			},
+		);
+		const body = result.body;
+		return {
+			response: {
+				ok: result.status >= 200 && result.status < 300,
+				status: result.status,
+			},
+			body,
+			data: JSON.parse(body) as T,
+		};
 	};
 
 	private isUnauthorizedError = (error: unknown): boolean =>
-		error instanceof Error && error.message.includes("SGP_HTTP_ERROR_401");
+		String(error).includes("SGP_HTTP_ERROR_401");
 
 	/**
 	 * 公开的查询方法：具备自动重试机制
@@ -233,13 +211,6 @@ export class SgpMatchHistoryService {
 			? "SGP SUMMARY 完整参与者历史（用于团队/开黑关系分析）"
 			: "SGP SUMMARY 摘要历史（用于胜率统计）";
 
-		const requestHeaders: Record<string, string> = {
-			"User-Agent": this.USER_AGENT,
-			Authorization: `Bearer ${token}`,
-			Accept: "application/json",
-			"x-akari-force-stream-collect": "true",
-			"x-akari-token-type": "entitlements",
-		};
 		logger.info({
 			tag: "lcu.sgp",
 			message: "SGP 请求发起",
@@ -253,17 +224,19 @@ export class SgpMatchHistoryService {
 				full_participants: fullParticipants,
 				tag: tag ?? null,
 				query: query.toString(),
-				headers: requestHeaders,
+				headers: {
+					"User-Agent": this.USER_AGENT,
+					Authorization: "<redacted>",
+					Accept: "application/json",
+					"x-akari-force-stream-collect": "true",
+					"x-akari-token-type": "entitlements",
+				},
 			},
 		}, undefined, undefined);
 
 		const { response, body, data } = await this.fetchJsonWithTimeout<{
 			games?: unknown;
-		}>(url, {
-			method: "GET",
-			headers: requestHeaders,
-			connectTimeout: this.TIMEOUT,
-		});
+		}>(url, token);
 
 		const bodyChars = body.length;
 		if (response.ok && bodyChars > 0) {
@@ -279,7 +252,7 @@ export class SgpMatchHistoryService {
 					duration_ms: Date.now() - startedAt,
 				},
 				durationMs: Date.now() - startedAt,
-			}, body);
+			});
 		}
 
 		if (!response.ok) {
@@ -289,7 +262,7 @@ export class SgpMatchHistoryService {
 					tag: "lcu.sgp",
 					message: "SGP 401 未授权，token 已失效",
 					context: { url, status: response.status, purpose },
-				}, body);
+				});
 			} else {
 				logger.warn({
 					tag: "lcu.sgp",
@@ -301,7 +274,7 @@ export class SgpMatchHistoryService {
 						duration_ms: Date.now() - startedAt,
 						purpose,
 					},
-				}, body);
+				});
 			}
 			throw new Error(`SGP_HTTP_ERROR_${response.status}: ${body.slice(0, 500)}`);
 		}
@@ -311,7 +284,7 @@ export class SgpMatchHistoryService {
 				tag: "lcu.sgp",
 				message: "SGP 响应缺少 games 数组",
 				context: { url, purpose, body_chars: bodyChars },
-			}, body);
+			});
 			throw new Error("SGP match history response has no games array");
 		}
 

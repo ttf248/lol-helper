@@ -525,7 +525,7 @@ class QueryMatch {
         if (!result) {
             requestFailed = true;
         } else {
-            // 缓存写入不阻塞首屏；三页服务器数据会在后台持久化，
+            // 缓存写入不阻塞首屏；服务器返回的数据会在后台持久化，
             // 下一次查询直接参与本地合并。
             // fingerprint 跳过：服务器最近一页没有新增，缓存层已经覆盖。
             const previousFingerprint =
