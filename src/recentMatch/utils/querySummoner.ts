@@ -11,7 +11,10 @@ import {
   TeamData,
 } from "@/recentMatch/utils/queryTypes";
 import { logger } from "@/utils/logger";
-import { getCachedSessionByLcuGameId } from "@/recentMatch/utils/databaseCache";
+import {
+  getCachedSessionByLcuGameId,
+  getCachedSummonerByPuuid,
+} from "@/recentMatch/utils/databaseCache";
 
 export interface CurrentMatchProgress {
   loaded: number;
@@ -346,33 +349,71 @@ class QuerySummoner {
     const knownPlayers = new Set(
       [...teamOne, ...teamTwo].flatMap((player) => [
         this.getPlayerKey(player),
+        player.puuid ? `puuid:${player.puuid}` : "",
         player.summonerInternalName ? `name:${player.summonerInternalName}` : "",
         player.summonerName ? `name:${player.summonerName}` : "",
       ]),
     );
     const missingSelections = gameData.playerChampionSelections.filter(
-      (selection: PlayerChampionSelection) =>
-        selection.summonerInternalName &&
-        !knownPlayers.has(`name:${selection.summonerInternalName}`),
+      (selection: PlayerChampionSelection) => {
+        const selectionKey = selection.puuid
+          ? `puuid:${selection.puuid}`
+          : selection.summonerInternalName
+            ? `name:${selection.summonerInternalName}`
+            : "";
+        return Boolean(selectionKey) && !knownPlayers.has(selectionKey);
+      },
     );
 
     const hydratedPlayers = await Promise.all(
       missingSelections.map(async (selection, index): Promise<TeamData | null> => {
-        const info = await this.querySummonerByName(selection.summonerInternalName);
-        if (info === null) {
-          return null;
+        const cachedInfo = selection.puuid
+          ? await getCachedSummonerByPuuid(selection.puuid)
+          : null;
+        const info = cachedInfo
+          ? {
+              currentId: cachedInfo.summonerId,
+              name:
+                cachedInfo.gameName ||
+                cachedInfo.displayName ||
+                cachedInfo.internalName ||
+                cachedInfo.summonerName ||
+                selection.puuid ||
+                selection.summonerInternalName,
+              puuid: cachedInfo.puuid,
+            }
+          : selection.puuid
+            ? {
+                currentId: 0,
+                name: selection.puuid,
+                puuid: selection.puuid,
+              }
+            : await this.querySummonerByName(selection.summonerInternalName);
+        if (info === null) return null;
+
+        if (!cachedInfo && selection.puuid) {
+          logger.warn({
+            tag: "query_summoner",
+            message: "本局玩家补齐：仅使用英雄选择中的 PUUID",
+            context: {
+              stage: "champion-selection",
+              puuid_suffix: selection.puuid.slice(-8),
+              reason: "召唤师缓存未命中，保留玩家以避免阵容缺人",
+            },
+          });
         }
 
         return {
           championId: selection.championId,
           lastSelectedSkinIndex: selection.selectedSkinIndex,
-          profileIconId: 0,
+          profileIconId: cachedInfo?.profileIconId || 0,
           puuid: info.puuid,
           selectedPosition: "NONE",
           selectedRole: "NONE",
           summonerId: info.currentId,
-          summonerInternalName: selection.summonerInternalName,
-          summonerName: info.name || selection.summonerInternalName,
+          summonerInternalName:
+            selection.summonerInternalName || info.name || selection.puuid || "未知玩家",
+          summonerName: info.name || selection.summonerInternalName || selection.puuid || "未知玩家",
           teamOwner: false,
           teamParticipantId: targetTeam.length + index + 1,
         };

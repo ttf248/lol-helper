@@ -4,6 +4,8 @@ export interface PlayerChampionSelection {
   spell1Id: number;
   spell2Id: number;
   summonerInternalName: string;
+  /** 新版 gameflow 在未完成阵容对象中可能只提供 PUUID。 */
+  puuid?: string;
 }
 
 export interface GameTypeConfig {
