@@ -438,6 +438,74 @@ pub struct CachedGameDetail {
     pub fetched_at: i64,
 }
 
+/// 单局对局内 10 人阵容快照请求。**只在 phase ∈ {PreEndOfGame, EndOfGame}
+/// 时调用**，避免游戏中的 gameData.gameId 在切换阶段被改写导致 key 冲突。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheGameSessionRequest {
+    pub game_id: i64,
+    pub queue_id: i32,
+    pub map_id: Option<i32>,
+    pub platform_id: Option<String>,
+    pub phase: String,
+    pub picks: Vec<SessionPlayerPick>,
+}
+
+/// session_player_picks 单行。puuid 必填，其余字段允许 LCU 在加载阶段缺省。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPlayerPick {
+    pub puuid: String,
+    #[serde(default)]
+    pub summoner_id: Option<i64>,
+    #[serde(default)]
+    pub summoner_name: Option<String>,
+    #[serde(default)]
+    pub game_name: Option<String>,
+    #[serde(default)]
+    pub tag_line: Option<String>,
+    #[serde(default)]
+    pub profile_icon_id: Option<i32>,
+    #[serde(default)]
+    pub champion_id: Option<i32>,
+    #[serde(default)]
+    pub spell1_id: Option<i32>,
+    #[serde(default)]
+    pub spell2_id: Option<i32>,
+    #[serde(default)]
+    pub team_id: Option<i32>,
+}
+
+/// 读取端返回的单局对局内阵容快照。前端按 teamOne / teamTwo 直接对接
+/// SessionTypes.gameData（保持顺序：先 ORDER 后 CHAOS，与 LCU 一致）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedGameSession {
+    pub game_id: i64,
+    pub queue_id: i32,
+    pub map_id: Option<i32>,
+    pub platform_id: Option<String>,
+    pub phase: String,
+    pub started_at: i64,
+    pub picks: Vec<SessionPlayerPickRow>,
+}
+
+/// session_player_picks 行的读出形态。team_id 用于前端分边。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPlayerPickRow {
+    pub puuid: String,
+    pub summoner_id: Option<i64>,
+    pub summoner_name: Option<String>,
+    pub game_name: Option<String>,
+    pub tag_line: Option<String>,
+    pub profile_icon_id: Option<i32>,
+    pub champion_id: Option<i32>,
+    pub spell1_id: Option<i32>,
+    pub spell2_id: Option<i32>,
+    pub team_id: Option<i32>,
+}
+
 pub struct DatabaseState {
     client: Arc<Mutex<Option<Client>>>,
     status: Arc<RwLock<DatabaseStatus>>,
@@ -1511,6 +1579,222 @@ impl DatabaseState {
         }
         Ok(result)
     }
+
+    pub async fn cache_game_session(
+        &self,
+        request: CacheGameSessionRequest,
+    ) -> Result<i64, String> {
+        let started = std::time::Instant::now();
+        let game_id = request.game_id;
+        if game_id <= 0 {
+            return Err("缓存对局内阵容缺少合法 gameId".to_string());
+        }
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_game_session",
+            purpose = "将对局内 10 人阵容（PreEndOfGame 快照）写入 PostgreSQL",
+            game_id,
+            queue_id = request.queue_id,
+            picks = request.picks.len(),
+            phase = %request.phase,
+            "缓存对局内阵容写入发起"
+        );
+
+        let mut client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_mut()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|error| error.to_string())?;
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO game_sessions(
+                    game_id, queue_id, map_id, platform_id, phase, started_at
+                )
+                VALUES($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT(game_id) DO UPDATE SET
+                    queue_id = EXCLUDED.queue_id,
+                    map_id = EXCLUDED.map_id,
+                    platform_id = EXCLUDED.platform_id,
+                    phase = EXCLUDED.phase,
+                    started_at = NOW()
+                "#,
+                &[
+                    &game_id,
+                    &request.queue_id,
+                    &request.map_id,
+                    &request.platform_id,
+                    &request.phase,
+                ],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        // 阵容级 upsert：先清后插，避免 pk 相同 puuid 跨多局的旧记录残留。
+        transaction
+            .execute(
+                "DELETE FROM session_player_picks WHERE game_id = $1",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if !request.picks.is_empty() {
+            let payload: Value = serde_json::to_value(&request.picks)
+                .map_err(|error| format!("阵容缓存序列化失败: {error}"))?;
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO session_player_picks(
+                        game_id, puuid, summoner_id, summoner_name, game_name,
+                        tag_line, profile_icon_id, champion_id, spell1_id, spell2_id,
+                        team_id
+                    )
+                    SELECT
+                        $1,
+                        p."puuid",
+                        p."summonerId",
+                        NULLIF(p."summonerName", ''),
+                        NULLIF(p."gameName", ''),
+                        NULLIF(p."tagLine", ''),
+                        p."profileIconId",
+                        p."championId",
+                        p."spell1Id",
+                        p."spell2Id",
+                        p."teamId"
+                    FROM jsonb_to_recordset($2::jsonb) AS p(
+                        "puuid" TEXT,
+                        "summonerId" BIGINT,
+                        "summonerName" TEXT,
+                        "gameName" TEXT,
+                        "tagLine" TEXT,
+                        "profileIconId" INTEGER,
+                        "championId" INTEGER,
+                        "spell1Id" INTEGER,
+                        "spell2Id" INTEGER,
+                        "teamId" INTEGER
+                    )
+                    "#,
+                    &[&game_id, &payload],
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+
+        transaction.commit().await.map_err(|error| error.to_string())?;
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_game_session",
+            purpose = "将对局内 10 人阵容（PreEndOfGame 快照）写入 PostgreSQL",
+            game_id,
+            queue_id = request.queue_id,
+            picks = request.picks.len(),
+            phase = %request.phase,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "缓存对局内阵容已写入"
+        );
+        Ok(game_id)
+    }
+
+    pub async fn get_cached_session_for_lcu_game_id(
+        &self,
+        game_id: i64,
+    ) -> Result<Option<CachedGameSession>, String> {
+        if game_id <= 0 {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_game_session",
+            purpose = "读取 PostgreSQL 对局内阵容缓存",
+            game_id,
+            "读取对局内阵容缓存发起"
+        );
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+
+        let header = client
+            .query_opt(
+                "SELECT queue_id, map_id, platform_id, phase,
+                        EXTRACT(EPOCH FROM started_at)::BIGINT AS started_at_epoch
+                   FROM game_sessions WHERE game_id = $1",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let header = match header {
+            Some(row) => row,
+            None => {
+                tracing::info!(
+                    target: "db.cache",
+                    op = "cached_game_session",
+                    purpose = "读取 PostgreSQL 对局内阵容缓存",
+                    game_id,
+                    found = false,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "读取对局内阵容缓存完成（未命中）"
+                );
+                return Ok(None);
+            }
+        };
+
+        // 顺序：先 team_id（ORDER 优先）后 puuid，保证 teamOne / teamTwo 顺序稳定。
+        let pick_rows = client
+            .query(
+                "SELECT puuid, summoner_id, summoner_name, game_name, tag_line,
+                        profile_icon_id, champion_id, spell1_id, spell2_id, team_id
+                   FROM session_player_picks
+                  WHERE game_id = $1
+                  ORDER BY team_id NULLS LAST, puuid",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let picks: Vec<SessionPlayerPickRow> = pick_rows
+            .iter()
+            .map(|row| SessionPlayerPickRow {
+                puuid: row.get("puuid"),
+                summoner_id: row.try_get("summoner_id").ok(),
+                summoner_name: row.try_get("summoner_name").ok(),
+                game_name: row.try_get("game_name").ok(),
+                tag_line: row.try_get("tag_line").ok(),
+                profile_icon_id: row.try_get("profile_icon_id").ok(),
+                champion_id: row.try_get("champion_id").ok(),
+                spell1_id: row.try_get("spell1_id").ok(),
+                spell2_id: row.try_get("spell2_id").ok(),
+                team_id: row.try_get("team_id").ok(),
+            })
+            .collect();
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_game_session",
+            purpose = "读取 PostgreSQL 对局内阵容缓存",
+            game_id,
+            found = true,
+            picks = picks.len() as i64,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "读取对局内阵容缓存完成"
+        );
+        Ok(Some(CachedGameSession {
+            game_id,
+            queue_id: header.get("queue_id"),
+            map_id: header.try_get("map_id").ok(),
+            platform_id: header.try_get("platform_id").ok(),
+            phase: header.get("phase"),
+            started_at: header.get("started_at_epoch"),
+            picks,
+        }))
+    }
 }
 
 /// 把 PostgreSQL NOTICE 翻译成中文（保留以便未来 NOTICE 来源接入时直接复用）。
@@ -1620,4 +1904,20 @@ pub async fn get_cached_game_detail(
     game_id: i64,
 ) -> Result<Option<CachedGameDetail>, String> {
     state.get_cached_game_detail(game_id).await
+}
+
+#[tauri::command]
+pub async fn cache_game_session(
+    state: tauri::State<'_, DatabaseState>,
+    request: CacheGameSessionRequest,
+) -> Result<i64, String> {
+    state.cache_game_session(request).await
+}
+
+#[tauri::command]
+pub async fn get_cached_session_for_lcu_game_id(
+    state: tauri::State<'_, DatabaseState>,
+    game_id: i64,
+) -> Result<Option<CachedGameSession>, String> {
+    state.get_cached_session_for_lcu_game_id(game_id).await
 }

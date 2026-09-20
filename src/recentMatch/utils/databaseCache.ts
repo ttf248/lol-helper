@@ -13,6 +13,7 @@ const PLAYER_SUMMARY_TTL_MS = 15_000;
 const HISTORY_TTL_MS = 10_000;
 const SUMMONER_TTL_MS = 30_000;
 const GAME_DETAIL_TTL_MS = 60_000;
+const GAME_SESSION_TTL_MS = 120_000;
 
 interface CachedEntry<T> {
   value: T;
@@ -27,6 +28,7 @@ const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
 const summonerByIdCache = new Map<number, CachedEntry<CachedSummonerRow>>();
 const summonerByPuuidCache = new Map<string, CachedEntry<CachedSummonerRow>>();
 const gameDetailCache = new Map<number, CachedEntry<CachedGameDetail>>();
+const gameSessionCache = new Map<number, CachedEntry<CachedGameSession>>();
 
 const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
   summonerByIdCache.delete(row.summonerId);
@@ -54,6 +56,7 @@ export const resetDatabaseCache = (reason?: string) => {
     summoner_by_id: summonerByIdCache.size,
     summoner_by_puuid: summonerByPuuidCache.size,
     game_detail: gameDetailCache.size,
+    game_session: gameSessionCache.size,
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
@@ -61,6 +64,7 @@ export const resetDatabaseCache = (reason?: string) => {
   summonerByIdCache.clear();
   summonerByPuuidCache.clear();
   gameDetailCache.clear();
+  gameSessionCache.clear();
   logger.info({
     tag: "db.cache",
     message: "TTL 缓存已重置",
@@ -809,6 +813,167 @@ export const getCachedGameDetail = async (
       message: "读取对局详情缓存失败",
       context: {
         op: "get_cached_game_detail",
+        game_id: gameId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return null;
+  }
+};
+
+/**
+ * 单局对局内 10 人阵容快照在 PG `game_sessions` + `session_player_picks` 中的
+ * 完整行。只在 phase ∈ {PreEndOfGame, EndOfGame} 时写入；前端不再用作当前对局
+ * 的实时数据源（LCU gameflow 才是），主要用于历史战局的 10 人复盘。
+ */
+export interface CachedGameSession {
+  gameId: number;
+  queueId: number;
+  mapId?: number | null;
+  platformId?: string | null;
+  phase: string;
+  startedAt: number;
+  picks: CachedSessionPlayerPick[];
+}
+
+export interface CachedSessionPlayerPick {
+  puuid: string;
+  summonerId?: number | null;
+  summonerName?: string | null;
+  gameName?: string | null;
+  tagLine?: string | null;
+  profileIconId?: number | null;
+  championId?: number | null;
+  spell1Id?: number | null;
+  spell2Id?: number | null;
+  teamId?: number | null;
+}
+
+/**
+ * 将当前 gameflow session 的 10 人阵容快照写入 PG。
+ * 仅当 phase ∈ {PreEndOfGame, EndOfGame} 时调用；其他阶段 gameData.gameId
+ * 不稳定，强行持久化会导致 key 冲突。await（非 fire-and-forget）以确保
+ * 一次性的"游戏结束"事件不会被静默丢失。
+ */
+export const cacheGameSession = async (
+  gameId: number,
+  queueId: number,
+  mapId: number | null,
+  platformId: string | null,
+  phase: string,
+  picks: CachedSessionPlayerPick[],
+): Promise<boolean> => {
+  if (!Number.isFinite(gameId) || gameId <= 0) {
+    return false;
+  }
+  if (!Array.isArray(picks) || picks.length === 0) {
+    return false;
+  }
+  const startedAt = Date.now();
+  logger.info({
+    tag: "db.cache",
+    message: "写入对局内阵容缓存发起",
+    context: {
+      purpose: "将 PreEndOfGame 阵容快照写入 PostgreSQL 缓存",
+      op: "cache_game_session",
+      game_id: gameId,
+      queue_id: queueId,
+      phase,
+      picks: picks.length,
+    },
+  }, JSON.stringify(picks));
+  try {
+    await invoke<number>("cache_game_session", {
+      request: {
+        gameId,
+        queueId,
+        mapId: mapId ?? null,
+        platformId: platformId ?? null,
+        phase,
+        picks,
+      },
+    });
+    gameSessionCache.delete(gameId);
+    logger.info({
+      tag: "db.cache",
+      message: "写入对局内阵容缓存完成",
+      context: {
+        purpose: "将 PreEndOfGame 阵容快照写入 PostgreSQL 缓存",
+        op: "cache_game_session",
+        game_id: gameId,
+        queue_id: queueId,
+        phase,
+        picks: picks.length,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
+    return true;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "写入对局内阵容缓存失败",
+      context: {
+        op: "cache_game_session",
+        game_id: gameId,
+        queue_id: queueId,
+        phase,
+        picks: picks.length,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return false;
+  }
+};
+
+/**
+ * 按 LCU gameId 读取 PG 中的对局内阵容快照；命中后回填 TTL 缓存并返回。
+ * 失败或未命中返回 null，调用方应继续走 LCU gameflow 路径。
+ */
+export const getCachedSessionByLcuGameId = async (
+  gameId: number,
+): Promise<CachedGameSession | null> => {
+  if (!Number.isFinite(gameId) || gameId <= 0) {
+    return null;
+  }
+  const cached = gameSessionCache.get(gameId);
+  if (isFresh(cached, GAME_SESSION_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "get_cached_session_for_lcu_game_id", game_id: gameId },
+    });
+    return cached!.value;
+  }
+  const startedAt = Date.now();
+  try {
+    const value = await invoke<CachedGameSession | null>(
+      "get_cached_session_for_lcu_game_id",
+      { gameId },
+    );
+    if (value) {
+      gameSessionCache.set(gameId, { value, fetchedAt: Date.now() });
+      logger.debug({
+        tag: "db.cache",
+        message: "PG 对局内阵容缓存命中",
+        context: {
+          op: "get_cached_session_for_lcu_game_id",
+          game_id: gameId,
+          picks: value.picks.length,
+          phase: value.phase,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取对局内阵容缓存失败",
+      context: {
+        op: "get_cached_session_for_lcu_game_id",
         game_id: gameId,
         duration_ms: Date.now() - startedAt,
         error: String(error).slice(0, 500),

@@ -5,8 +5,15 @@ import { RecentMatchWindow } from "@/background/utils/creatWindow.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { SessionTypes } from "@/recentMatch/utils/queryTypes";
 import { logger } from "@/utils/logger";
+import {
+    cacheGameSession,
+    CachedSessionPlayerPick,
+} from "@/recentMatch/utils/databaseCache";
 
 const ACTIVE_GAME_PHASES = new Set(["GameStart", "InProgress"]);
+// 只在终局阶段快照 10 人阵容：ChampSelect/InProgress 阶段 gameData.gameId
+// 不稳定（切换 / 退出时会被改写），强行落库会污染同一玩家的其他对局。
+const SESSION_CACHE_PHASES = new Set(["PreEndOfGame", "EndOfGame"]);
 const GAME_START_POLL_INTERVAL = 2000;
 const GAME_START_POLL_LIMIT = 10;
 
@@ -193,10 +200,91 @@ export class GameFlow {
 					JSON.stringify({
 						queueId: res.gameData.queue.id,
 						mapId: res.gameData.queue.mapId,
+						gameId: res.gameData.gameId,
 					}),
 				),
 			);
 		}
+
+		await this.persistEndedSession(res);
+
 		return res;
+	};
+
+	/**
+	 * PreEndOfGame / EndOfGame 阶段把 10 人阵容快照写入 PG。
+	 * 一次性事件，所以 await 而非 fire-and-forget —— 失败要在日志里响亮。
+	 */
+	private persistEndedSession = async (res: SessionTypes) => {
+		const phase = res.phase;
+		const gameData = res.gameData;
+		if (!gameData || !SESSION_CACHE_PHASES.has(phase)) return;
+		const gameId = gameData.gameId;
+		if (!Number.isFinite(gameId) || gameId <= 0) return;
+
+		const teamOnePicks: CachedSessionPlayerPick[] = (gameData.teamOne ?? [])
+			.filter((player) => player?.puuid)
+			.map((player) => ({
+				puuid: player.puuid,
+				summonerId: player.summonerId || undefined,
+				summonerName: player.summonerName || undefined,
+				gameName: undefined,
+				tagLine: undefined,
+				profileIconId: player.profileIconId || undefined,
+				championId: player.championId || undefined,
+				spell1Id: undefined,
+				spell2Id: undefined,
+				teamId: 100,
+			}));
+		const teamTwoPicks: CachedSessionPlayerPick[] = (gameData.teamTwo ?? [])
+			.filter((player) => player?.puuid)
+			.map((player) => ({
+				puuid: player.puuid,
+				summonerId: player.summonerId || undefined,
+				summonerName: player.summonerName || undefined,
+				gameName: undefined,
+				tagLine: undefined,
+				profileIconId: player.profileIconId || undefined,
+				championId: player.championId || undefined,
+				spell1Id: undefined,
+				spell2Id: undefined,
+				teamId: 200,
+			}));
+		const picks = [...teamOnePicks, ...teamTwoPicks];
+		if (picks.length === 0) return;
+
+		try {
+			const ok = await cacheGameSession(
+				gameId,
+				gameData.queue.id,
+				gameData.queue.mapId ?? null,
+				null,
+				phase,
+				picks,
+			);
+			if (ok) {
+				logger.info({
+					tag: "gameFlow.persist_session",
+					message: "对局内阵容快照已写入 PG",
+					context: {
+						purpose: "PreEndOfGame / EndOfGame 终局阵容持久化",
+						game_id: gameId,
+						phase,
+						picks: picks.length,
+					},
+				});
+			}
+		} catch (error) {
+			logger.warn({
+				tag: "gameFlow.persist_session",
+				message: "对局内阵容快照写入失败",
+				context: {
+					game_id: gameId,
+					phase,
+					picks: picks.length,
+					error: String(error).slice(0, 500),
+				},
+			});
+		}
 	};
 }

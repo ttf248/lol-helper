@@ -11,6 +11,7 @@ import {
   TeamData,
 } from "@/recentMatch/utils/queryTypes";
 import { logger } from "@/utils/logger";
+import { getCachedSessionByLcuGameId } from "@/recentMatch/utils/databaseCache";
 
 export interface CurrentMatchProgress {
   loaded: number;
@@ -81,6 +82,144 @@ class QuerySummoner {
       ),
     );
     return champion === undefined ? 0 : Number(champion[0]);
+  };
+
+  /**
+   * 从 PG `game_sessions` + `session_player_picks` 还原一局对局内阵容。
+   * 只在 `phase ∈ {PreEndOfGame, EndOfGame}` 命中时返回非空；
+   * 进行中的对局不会触发该缓存，因此 init() 仍走原 LCU poll。
+   */
+  private tryLoadCachedSession = async (): Promise<SessionTypes | null> => {
+    let gameId = 0;
+    try {
+      const rawGameInfo = localStorage.getItem("gameInfo");
+      if (rawGameInfo) {
+        const parsed = JSON.parse(rawGameInfo) as { gameId?: number };
+        if (typeof parsed?.gameId === "number" && parsed.gameId > 0) {
+          gameId = parsed.gameId;
+        }
+      }
+    } catch {
+      return null;
+    }
+    if (gameId <= 0) return null;
+
+    const cached = await getCachedSessionByLcuGameId(gameId);
+    if (cached === null) return null;
+    if (cached.picks.length === 0) return null;
+
+    // team_id 100 → ORDER (teamOne)，200 → CHAOS (teamTwo)。
+    const teamOne: TeamData[] = [];
+    const teamTwo: TeamData[] = [];
+    let order = 1;
+    for (const pick of cached.picks) {
+      const participantId = order++;
+      const entry: TeamData = {
+        championId: pick.championId ?? 0,
+        lastSelectedSkinIndex: 0,
+        profileIconId: pick.profileIconId ?? 0,
+        puuid: pick.puuid,
+        selectedPosition: "NONE",
+        selectedRole: "NONE",
+        summonerId: pick.summonerId ?? 0,
+        summonerInternalName:
+          pick.summonerName ?? pick.gameName ?? pick.puuid,
+        summonerName: pick.summonerName ?? pick.gameName ?? pick.puuid,
+        teamOwner: false,
+        teamParticipantId: participantId,
+      };
+      if (pick.teamId === 200) {
+        teamTwo.push(entry);
+      } else {
+        teamOne.push(entry);
+      }
+    }
+
+    // 构造与 LCU `/lol-gameflow/v1/session` 同形的 SessionTypes。
+    // 其他字段（gameClient / gameDodge / map）保持 any，不影响本面板消费。
+    const session: SessionTypes = {
+      gameClient: null,
+      gameDodge: null,
+      map: null,
+      phase: cached.phase,
+      gameData: {
+        gameId: cached.gameId,
+        gameName: "",
+        isCustomGame: false,
+        password: "",
+        playerChampionSelections: cached.picks
+        .filter((pick) => pick.summonerName || pick.puuid)
+        .map((pick) => ({
+          championId: pick.championId ?? 0,
+          selectedSkinIndex: 0,
+          spell1Id: pick.spell1Id ?? 0,
+          spell2Id: pick.spell2Id ?? 0,
+          summonerInternalName:
+            pick.summonerName ?? pick.puuid,
+        })),
+        queue: {
+          allowablePremadeSizes: [],
+          areFreeChampionsAllowed: false,
+          assetMutator: "",
+          category: "",
+          championsRequiredToPlay: 0,
+          description: "",
+          detailedDescription: "",
+          gameMode: "",
+          gameTypeConfig: {
+            advancedLearningQuests: false,
+            allowTrades: false,
+            banMode: "",
+            banTimerDuration: 0,
+            battleBoost: false,
+            crossTeamChampionPool: false,
+            deathMatch: false,
+            doNotRemove: false,
+            duplicatePick: false,
+            exclusivePick: false,
+            id: cached.queueId,
+            learningQuests: false,
+            mainPickTimerDuration: 0,
+            maxAllowableBans: 0,
+            name: "",
+            onboardCoopBeginner: false,
+            pickMode: "",
+            postPickTimerDuration: 0,
+            reroll: false,
+            teamChampionPool: false,
+          },
+          id: cached.queueId,
+          isRanked: false,
+          isTeamBuilderManaged: false,
+          lastToggledOffTime: 0,
+          lastToggledOnTime: 0,
+          mapId: cached.mapId ?? 0,
+          maximumParticipantListSize: 10,
+          minLevel: 0,
+          minimumParticipantListSize: 0,
+          name: "",
+          numPlayersPerTeam:
+            teamOne.length > 0 ? teamOne.length : teamTwo.length > 0 ? teamTwo.length : 5,
+          queueAvailability: "",
+          queueRewards: {
+            isChampionPointsEnabled: false,
+            isIpEnabled: false,
+            isXpEnabled: false,
+            partySizeIpRewards: [],
+          },
+          removalFromGameAllowed: false,
+          removalFromGameDelayMinutes: 0,
+          shortName: "",
+          showPositionSelector: false,
+          spectatorEnabled: false,
+          type: "",
+        },
+        spectatorsAllowed: false,
+        teamOne,
+        teamTwo,
+      },
+    };
+    return session;
   };
 
   /**
@@ -261,10 +400,32 @@ class QuerySummoner {
     let liveStageLogged = false;
     let championSelectionStageLogged = false;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const session = await invokeLcu<SessionTypes>('get','/lol-gameflow/v1/session');
-      if (session?.gameData) {
-        if (!firstStageLogged) {
+    // PG 优先：PreEndOfGame / EndOfGame 时 gameFlow 已经把 10 人阵容落库，
+    // 直接命中 PG 就跳过整段 gameflow poll。游戏进行中的实时对局不命中
+    // 这条路径（gameData.gameId 在切换阶段不稳定），依旧走原 LCU 轮询。
+    const cachedSession = await this.tryLoadCachedSession();
+    if (cachedSession !== null) {
+      latestSession = cachedSession;
+      if (!firstStageLogged) {
+        firstStageLogged = true;
+        logger.info({
+          tag: "query_summoner",
+          message: "本局玩家阶段：PG 缓存命中",
+          context: {
+            stage: "postgres-session",
+            phase: cachedSession.phase,
+            queue_id: cachedSession.gameData.queue?.id,
+            detected:
+              cachedSession.gameData.teamOne.length +
+              cachedSession.gameData.teamTwo.length,
+          },
+        });
+      }
+    } else {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const session = await invokeLcu<SessionTypes>('get','/lol-gameflow/v1/session');
+        if (session?.gameData) {
+          if (!firstStageLogged) {
           firstStageLogged = true;
           logger.info({
             tag: "query_summoner",
@@ -340,6 +501,7 @@ class QuerySummoner {
       if (attempt < maxAttempts - 1) {
         await this.wait(500);
       }
+    }
     }
 
     if (latestSession === null) {
