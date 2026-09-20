@@ -56,7 +56,7 @@ export const partyGroupNames = (
     .map((member) =>
       selfPuuid !== undefined && member.puuid === selfPuuid
         ? "我"
-        : member.summonerName,
+        : member.summonerName?.trim() || "未知玩家",
     )
     .join(" + ");
 

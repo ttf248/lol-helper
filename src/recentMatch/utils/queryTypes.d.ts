@@ -320,7 +320,7 @@ export interface PlayerRecentAnalysis {
 }
 
 export interface PlayerAnalysisProgress {
-  stage: "cache" | "personal" | "relations" | "done";
+  stage: "cache" | "personal" | "full" | "relations" | "done";
   completed: number;
   total: number;
   percentage: number;

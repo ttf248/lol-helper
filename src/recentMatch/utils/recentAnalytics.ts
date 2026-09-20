@@ -38,7 +38,7 @@ import {
   HISTORY_CACHE_PAGE_SIZE,
   HISTORY_FRIEND_FALLBACK_LIMIT,
   HISTORY_PANEL_PREVIEW_COUNT,
-  HISTORY_SERVER_PAGE_SIZE,
+  HISTORY_PLAYER_MAX_GAMES,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
 
@@ -53,6 +53,9 @@ export interface NormalizedHistoryParticipant {
   puuid: string;
   summonerId?: number;
   summonerName?: string;
+  /** Riot ID 的游戏昵称，不使用 PUUID 作为展示名。 */
+  gameName?: string;
+  tagLine?: string;
   teamId: number;
   championId: number;
   position: string;
@@ -152,6 +155,45 @@ const getPosition = (participant: any): string => {
 const normalizeIdentityName = (name: unknown): string =>
   String(name || "").trim().toLocaleLowerCase();
 
+const normalizedText = (value: unknown): string | undefined => {
+  const text = String(value ?? "").trim();
+  return text || undefined;
+};
+
+/**
+ * LCU 使用 gameName/tagLine，SGP 使用 riotIdGameName/riotIdTagline，
+ * 老接口才可能只提供 summonerName。统一成可读的 Riot 游戏昵称，
+ * 绝不把 PUUID 当成用户名称写入分析结果。
+ */
+const getParticipantDisplayName = (
+  participant: any,
+  identity?: any,
+): { gameName?: string; tagLine?: string; summonerName?: string } => {
+  const gameName = normalizedText(
+    participant?.gameName ??
+      participant?.riotIdGameName ??
+      identity?.player?.gameName,
+  );
+  const tagLine = normalizedText(
+    participant?.tagLine ??
+      participant?.riotIdTagline ??
+      identity?.player?.tagLine,
+  );
+  const legacyName = normalizedText(
+    participant?.summonerName ?? identity?.player?.summonerName,
+  );
+  if (gameName) {
+    const hasTagLine = tagLine &&
+      gameName.toLocaleLowerCase().endsWith(`#${tagLine.toLocaleLowerCase()}`);
+    return {
+      gameName,
+      tagLine,
+      summonerName: hasTagLine ? gameName : `${gameName}${tagLine ? `#${tagLine}` : ""}`,
+    };
+  }
+  return { summonerName: legacyName };
+};
+
 const getIdentityKey = (
   puuid: unknown,
   summonerId: number | undefined,
@@ -174,8 +216,8 @@ const participantStats = (
   const summonerId = asOptionalNumber(
     participant?.summonerId ?? identity?.player?.summonerId,
   );
-  const summonerName =
-    participant?.summonerName || identity?.player?.summonerName || undefined;
+  const display = getParticipantDisplayName(participant, identity);
+  const summonerName = display.summonerName;
   const puuid = getIdentityKey(
     participant?.puuid || identity?.player?.puuid,
     summonerId,
@@ -190,6 +232,8 @@ const participantStats = (
     puuid,
     summonerId,
     summonerName,
+    gameName: display.gameName,
+    tagLine: display.tagLine,
     teamId: asNumber(participant?.teamId),
     championId: asNumber(participant?.championId),
     position: getPosition(participant),
@@ -213,8 +257,10 @@ const participantMatchesPlayer = (
   }
   return (
     normalizeIdentityName(participant.summonerName) !== "" &&
-    normalizeIdentityName(participant.summonerName) ===
-      normalizeIdentityName(player.summonerName)
+    (normalizeIdentityName(participant.summonerName) ===
+      normalizeIdentityName(player.summonerName) ||
+      normalizeIdentityName(participant.summonerName).split("#", 1)[0] ===
+        normalizeIdentityName(player.summonerName).split("#", 1)[0])
   );
 };
 
@@ -609,22 +655,6 @@ type PlayerAnalysisProgressHandler = (
   progress: PlayerAnalysisProgress,
 ) => void;
 
-const toHistorySnapshot = (
-  player: RecentSumInfo,
-  games: NormalizedHistoryGame[],
-  source: string,
-  sourceEndpoints: string[] = [],
-  dataCoverage?: HistoryCoverageInfo,
-): PlayerHistorySnapshot => ({
-  puuid: player.puuid,
-  games: new Map(games.map((game) => [game.gameId, game])),
-  source,
-  sourceEndpoints,
-  complete:
-    games.length >= HISTORY_CACHE_PAGE_SIZE && hasParticipantRoster(games),
-  dataCoverage,
-});
-
 const mapWithConcurrency = async <T, R>(
   items: T[],
   limit: number,
@@ -887,8 +917,38 @@ const toPartyMember = (
   moderationMap: Map<string, PlayerModerationInfo>,
 ): PartyMember => ({
   puuid: player.puuid,
-  summonerName: player.summonerName,
+  summonerName: normalizedText(player.summonerName) || "未知玩家",
   moderation: moderationMap.get(player.puuid) || emptyModeration(),
+});
+
+const participantDisplayName = (
+  participant: NormalizedHistoryParticipant,
+): string =>
+  normalizedText(
+    participant.summonerName ||
+      participant.gameName ||
+      "",
+  ) || "未知玩家";
+
+const participantToRecentPlayer = (
+  participant: NormalizedHistoryParticipant,
+): RecentSumInfo => ({
+  summonerId: participant.summonerId || 0,
+  summonerName: participantDisplayName(participant),
+  puuid: participant.puuid,
+  championUrl: "",
+  champId: participant.championId,
+  teamParticipantId: 0,
+  matchList: [],
+});
+
+const toPartyMemberFromParticipant = (
+  participant: NormalizedHistoryParticipant,
+  moderationMap: Map<string, PlayerModerationInfo>,
+): PartyMember => ({
+  puuid: participant.puuid,
+  summonerName: participantDisplayName(participant),
+  moderation: moderationMap.get(participant.puuid) || emptyModeration(),
 });
 
 const buildOpponentStats = (
@@ -1231,11 +1291,9 @@ const buildPlayerPartyGroups = (
       );
       const members = [
         toPartyMember(player, moderationMap),
-        ...group.teammates.map((participant) => ({
-          puuid: participant.puuid,
-          summonerName: participant.summonerName || participant.puuid,
-          moderation: moderationMap.get(participant.puuid) || emptyModeration(),
-        })),
+        ...group.teammates.map((participant) =>
+          toPartyMemberFromParticipant(participant, moderationMap),
+        ),
       ];
       const blacklistedMembers = members.filter(
         (member) => member.moderation?.marked === true,
@@ -1311,15 +1369,7 @@ const buildTeammateSynergy = (
       }
 
       const existing = teammateGames.get(participant.puuid) || {
-        player: {
-          summonerId: participant.summonerId || 0,
-          summonerName: participant.summonerName || participant.puuid,
-          puuid: participant.puuid,
-          championUrl: "",
-          champId: participant.championId,
-          teamParticipantId: 0,
-          matchList: [],
-        },
+        player: participantToRecentPlayer(participant),
         games: [],
       };
       existing.games.push(game);
@@ -1428,15 +1478,7 @@ const computePlayerRelations = async (
       if (participantMatchesPlayer(participant, player)) continue;
       if (participant.teamId <= 0) continue;
       const existing = related.get(participant.puuid) || {
-        player: {
-          summonerId: participant.summonerId || 0,
-          summonerName: participant.summonerName || participant.puuid,
-          puuid: participant.puuid,
-          championUrl: "",
-          champId: participant.championId,
-          teamParticipantId: 0,
-          matchList: [],
-        },
+        player: participantToRecentPlayer(participant),
         sameTeamGames: 0,
         opposedGames: 0,
         games: new Map<number, NormalizedHistoryGame>(),
@@ -1527,9 +1569,8 @@ const computePlayerRelations = async (
 };
 
 /**
- * 首页"历史分析"专用入口：完全运行在 PostgreSQL 本地缓存上，
- * 按 gameCreation DESC 读取该玩家在该模式下的全部缓存对局。
- * 不再向服务器发起任何请求。
+ * 首页"历史分析"专用入口：优先按 gameCreation DESC 读取 PostgreSQL
+ * 本地缓存；发现参与者不完整时，补拉完整队伍并回写同一批对局。
  */
 export const loadPlayerCacheAnalysis = async (
   player: RecentSumInfo,
@@ -1538,8 +1579,8 @@ export const loadPlayerCacheAnalysis = async (
 ): Promise<PlayerRecentAnalysis> => {
   const startedAt = Date.now();
   logger.info({
-    tag: "recent.analysis.cache_only",
-    message: "首页历史分析发起（仅本地缓存）",
+    tag: "recent.analysis.cache_first",
+    message: "首页历史分析发起（本地优先）",
     context: {
       purpose: "按 puuid + mode_key 全量读取本地缓存并做预定分析",
       puuid: player.puuid,
@@ -1590,7 +1631,7 @@ export const loadPlayerCacheAnalysis = async (
   // 把列表转成 PlayerHistorySnapshot。snapshot.source 固定为本地缓存。
   const gamesMap = new Map<number, NormalizedHistoryGame>();
   collected.forEach((game) => gamesMap.set(game.gameId, game));
-  const snapshot: PlayerHistorySnapshot = {
+  let snapshot: PlayerHistorySnapshot = {
     puuid: player.puuid,
     games: gamesMap,
     source: "PostgreSQL 本地缓存",
@@ -1623,10 +1664,119 @@ export const loadPlayerCacheAnalysis = async (
     analysis: personalAnalysis,
   });
 
+  // 历史分析不能把“只含当前玩家的摘要缓存”当作完整数据。旧版本的
+  // 冷启动同步已经把 498 场摘要写入 PG，所以这里在发现参与者不完整时
+  // 主动补拉完整 participant；成功后立即回写同一批 gameId，后续分析和
+  // 下一次打开页面都只需读取 PG。
+  let relationBaseAnalysis = personalAnalysis;
+  if (snapshot.games.size > 0 && !snapshot.complete) {
+    const hydrateStartedAt = Date.now();
+    onProgress?.({
+      stage: "full",
+      completed: 0,
+      total: 1,
+      percentage: 74,
+      message: `发现部分对局只有单人摘要，正在补齐最近 ${HISTORY_PLAYER_MAX_GAMES} 场参与者`,
+    });
+    logger.info({
+      tag: "recent.analysis.cache_first",
+      message: "本地历史参与者不完整，开始补齐",
+      context: {
+        purpose: "历史分析前补拉完整 participants 并回写 PostgreSQL",
+        puuid: player.puuid,
+        mode_key: modeKey,
+        cached_games: snapshot.games.size,
+        server_limit: HISTORY_PLAYER_MAX_GAMES,
+      },
+    });
+
+    const fullResult = await queryMatchHistoryFullWithSource(
+      player.puuid,
+      0,
+      HISTORY_PLAYER_MAX_GAMES,
+    );
+    const fullGames = uniqueGames(
+      fullResult?.games ?? [],
+      modeKey,
+      player,
+      fullResult?.source || "interface-full",
+    );
+    const merged = mergeHistoryGames(
+      Array.from(snapshot.games.values()),
+      Array.from(fullGames.values()),
+      HISTORY_CACHE_PAGE_SIZE,
+      { puuid: player.puuid, modeKey },
+    );
+    const mergedMap = new Map(merged.games.map((game) => [game.gameId, game]));
+    const hydratedComplete =
+      mergedMap.size > 0 && hasParticipantRoster(Array.from(mergedMap.values()));
+
+    if (fullGames.size > 0) {
+      const source = fullResult?.source || "历史接口完整参与者";
+      await cacheHistory({
+        puuid: player.puuid,
+        summonerId: player.summonerId,
+        summonerName: player.summonerName,
+        modeKey,
+        source,
+        games: merged.games,
+      });
+      snapshot = {
+        ...snapshot,
+        games: mergedMap,
+        source,
+        sourceEndpoints: fullResult?.endpoints || snapshot.sourceEndpoints,
+        complete: hydratedComplete,
+        dataCoverage: merged.coverage,
+      };
+      relationBaseAnalysis = buildPlayerAnalysis(
+        player,
+        snapshot,
+        [],
+        [],
+        emptyModeration(),
+      );
+      onProgress?.({
+        stage: "full",
+        completed: 1,
+        total: 1,
+        percentage: 82,
+        message: hydratedComplete
+          ? `参与者补齐完成：${merged.games.length} 场可用于开黑分析`
+          : `已补回 ${fullGames.size} 场，仍有部分历史缺少参与者`,
+        analysis: relationBaseAnalysis,
+      });
+    } else {
+      onProgress?.({
+        stage: "full",
+        completed: 1,
+        total: 1,
+        percentage: 82,
+        message: "完整参与者接口暂不可用，继续使用本地摘要分析",
+        analysis: personalAnalysis,
+      });
+    }
+
+    logger.info({
+      tag: "recent.analysis.cache_first",
+      message: "本地历史参与者补齐完成",
+      context: {
+        purpose: "历史分析前补拉完整 participants 并回写 PostgreSQL",
+        puuid: player.puuid,
+        mode_key: modeKey,
+        cached_games: snapshot.games.size,
+        full_games: fullGames.size,
+        complete: snapshot.complete,
+        duration_ms: Date.now() - hydrateStartedAt,
+      },
+      durationMs: Date.now() - hydrateStartedAt,
+    });
+  }
+
   const finalAnalysis = await computePlayerRelations(
     player,
     snapshot,
-    personalAnalysis,
+    relationBaseAnalysis,
     onProgress,
   );
 
@@ -1640,7 +1790,7 @@ export const loadPlayerCacheAnalysis = async (
   });
 
   logger.info({
-    tag: "recent.analysis.cache_only",
+    tag: "recent.analysis.cache_first",
     message: "首页历史分析完成",
     context: {
       puuid: player.puuid,
