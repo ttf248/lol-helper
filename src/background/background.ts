@@ -42,14 +42,17 @@ class Background {
 
 	private initLocalTestLab() {
 		const TIME_LIMIT = 30000;
-		let elapsedTime = 0;
-		const intervalTime = 3000;
+		const BACKOFF_INTERVAL = 3000;
 
 		invoke("init_keyboard");
-		const lcuSuccess = setInterval(async () => {
+		// ClientStarted 事件触发后立即尝试一次探测，而不是等 setInterval
+		// 跑满 3 秒。LCU 大多数情况下立刻可读，省下的 3 秒用于把 WS
+		// 订阅和 recentMatchWindow 打开都提前。失败时按 3 秒退避重试，
+		// 直到 30 秒上限。
+		let elapsedTime = 0;
+		const probe = async () => {
 			const isGetPath = await getClientPath();
 			if (isGetPath) {
-				clearInterval(lcuSuccess);
 				setTimeout(() => {
 					this.gameFlow.sendStartEvent();
 					void (async () => {
@@ -61,18 +64,20 @@ class Background {
 						}
 					})();
 				}, 500);
+				return;
 			}
-
-			elapsedTime += intervalTime;
+			elapsedTime += BACKOFF_INTERVAL;
 			if (elapsedTime >= TIME_LIMIT) {
-				clearInterval(lcuSuccess);
 				logger.warn({
 					tag: "background.client_probe_timeout",
 					message: "超时，客户端未启动",
 					context: { elapsed_ms: elapsedTime, time_limit_ms: TIME_LIMIT },
 				});
+				return;
 			}
-		}, intervalTime);
+			setTimeout(probe, BACKOFF_INTERVAL);
+		};
+		void probe();
 	}
 
 	private handleClientStatus(status: string) {
