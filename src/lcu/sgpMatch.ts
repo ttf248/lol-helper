@@ -14,15 +14,33 @@ export interface SgpRequestParams {
 // learn from https://github.com/LeagueAkari/LeagueAkari
 export class SgpMatchHistoryService {
 	private _cachedToken: string | null = null;
+	private _tokenRequest: Promise<string | null> | null = null;
 	private sgpBaseUrl: string | null = null;
 	private readonly matchCache = new Map<number, GamesBySgp>();
 	private readonly USER_AGENT = "LeagueClient/14.3.558.1234 (SGP)";
-	private readonly TIMEOUT = 10000;
+	private readonly TIMEOUT = 5000;
 
 	/**
 	 * @param _tokenProvider 一个异步函数，调用你提到的“其他接口”来获取最新的 Token
 	 */
 	constructor(private _tokenProvider: () => Promise<string | null>) {}
+
+	private getToken = async (): Promise<string | null> => {
+		if (this._cachedToken) {
+			return this._cachedToken;
+		}
+		if (this._tokenRequest) {
+			return this._tokenRequest;
+		}
+
+		this._tokenRequest = this._tokenProvider().then((token) => {
+			if (token) this._cachedToken = token;
+			return token;
+		}).finally(() => {
+			this._tokenRequest = null;
+		});
+		return this._tokenRequest;
+	};
 
 	/**
 	 * SUMMARY 返回的是完整对局数据。保留最近请求过的对局，供详情页在
@@ -117,16 +135,13 @@ export class SgpMatchHistoryService {
 		params: SgpRequestParams,
 		fullParticipants: boolean,
 	): Promise<GamesBySgp[]> {
-		if (!this._cachedToken) {
-			const token = await this._tokenProvider();
-			if (!token) {
-				throw new Error("Failed to fetch SGP entitlement token");
-			}
-			this._cachedToken = token;
+		const token = this._cachedToken || await this.getToken();
+		if (!token) {
+			throw new Error("Failed to fetch SGP entitlement token");
 		}
 
 		try {
-			return await this._doRequest(params, this._cachedToken, fullParticipants);
+			return await this._doRequest(params, token, fullParticipants);
 		} catch (error) {
 			// 只有令牌过期才刷新重试；网络超时等错误应尽快交给界面处理。
 			if (!this.isUnauthorizedError(error)) {
@@ -144,11 +159,13 @@ export class SgpMatchHistoryService {
 				},
 			});
 
-			const refreshedToken = await this._tokenProvider();
+			// 清掉旧 token 后走 getToken()，并发 401 重试会共享同一个
+			// _tokenRequest Promise，避免向 LCU 重复刷 token。
+			this._cachedToken = null;
+			const refreshedToken = await this.getToken();
 			if (!refreshedToken) {
 				throw new Error("Failed to refresh SGP entitlement token");
 			}
-			this._cachedToken = refreshedToken;
 			return await this._doRequest(params, refreshedToken, fullParticipants);
 		}
 	}
@@ -170,6 +187,7 @@ export class SgpMatchHistoryService {
 		}
 
 		const { playerPuuid, start, count, tag } = params;
+		const startedAt = Date.now();
 
 		// 构建 URL
 		const query = new URLSearchParams({
@@ -249,6 +267,18 @@ export class SgpMatchHistoryService {
 			[],
 		);
 
+		logger.info({
+			tag: "lcu.sgp",
+			message: "SGP match history resolved",
+			context: {
+				start,
+				count,
+				fullParticipants,
+				status: response.status,
+				games: gamesList.length,
+			},
+			durationMs: Date.now() - startedAt,
+		});
 		return gamesList;
 	}
 }
