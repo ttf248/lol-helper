@@ -139,14 +139,7 @@ export const getCachedHistory = async (
   }
 };
 
-/**
- * 按"时间倒序 + 偏移"读取缓存中的某一页历史。
- *
- * Rust 端 get_cached_match_history 当前只接收 limit，按 (puuid, limit) 取
- * 足够多条再客户端切片。这里的 offset / limit 语义是"按时间倒序、跳过前
- * offset 条、取 limit 条"，调用方主要用于首页翻页：翻到第 N 页时按
- * (N-1) * pageSize 跳过。
- */
+/** 按"时间倒序 + 偏移"读取缓存中的某一页历史。 */
 export const getCachedHistoryPage = async (
   puuid: string,
   offset: number,
@@ -156,9 +149,10 @@ export const getCachedHistoryPage = async (
   const safeOffset = Math.max(0, offset);
   const games = await getCachedHistory({
     puuid,
-    limit: safeOffset + limit,
+    offset: safeOffset,
+    limit,
   });
-  return games.slice(safeOffset, safeOffset + limit);
+  return games;
 };
 
 export const cacheHistory = async (request: {

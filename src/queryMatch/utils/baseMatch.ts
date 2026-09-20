@@ -321,9 +321,9 @@ export default class BaseMatch {
     /**
      * 在主页后台补齐当前用户的历史战绩（冷启动最小集）。
      *
-     * 每次只请求一页并在成功后等待 PostgreSQL 写入。整页已经存在时不再
-     * 继续向更早历史请求；没有可靠总数时则用短页/空页判断历史末尾，最多
-     * 扫描 HISTORY_COLD_START_PAGES 页（默认 3 页 = 60 场）。
+     * 每次只请求一页并在成功后等待 PostgreSQL 写入。整页已经存在时跳过
+     * 写入但仍继续检查冷启动范围内的后续页；没有可靠总数时则用短页/空页
+     * 判断历史末尾，最多扫描 HISTORY_COLD_START_PAGES 页（默认 3 页 = 60 场）。
      *
      * 翻页遇本地未覆盖时由 fetchAndCacheSinglePage 单页增量补齐，不会
      * 继续向更早历史走 scan 循环。
@@ -447,11 +447,20 @@ export default class BaseMatch {
                 cachedGameIds.has(game.gameId),
             );
             if (pageAlreadyCached) {
-                return emit(
-                    "complete",
-                    "当前历史战绩已全部缓存到数据库",
-                    `第 ${currentPage} 页数据已在数据库中，停止继续下载；共缓存 ${cachedGameIds.size} 场。`,
-                );
+                // 冷启动缓存的目标是最近三页，而不是“遇到第一页已缓存
+                // 就停止”。数据库可能只存在第一页，仍要继续检查第二、
+                // 三页；只有接口明确到末尾或已达到报告的总页数才结束。
+                if (
+                    pageResult.games.length < pageSize ||
+                    (totalPages !== null && currentPage >= totalPages)
+                ) {
+                    return emit(
+                        "complete",
+                        "当前历史战绩已全部缓存到数据库",
+                        `历史接口已到末尾或已覆盖全部记录，共缓存 ${cachedGameIds.size} 场。`,
+                    );
+                }
+                continue;
             }
 
             const writeSucceeded = await this.cacheNormalizedGames(
@@ -512,7 +521,7 @@ export default class BaseMatch {
 
         // 先看本地 PG：已经覆盖的页就不打服务器。
         const cached = await getCachedHistoryPage(puuid, begIndex, pageSize);
-        if (cached.length > 0) {
+        if (cached.length >= pageSize) {
             return { cachedGames: cached.length, reachedEnd: false };
         }
 
@@ -552,7 +561,7 @@ export default class BaseMatch {
 
         return {
             cachedGames: writeSucceeded ? pageGames.length : 0,
-            reachedEnd: false,
+            reachedEnd: pageResult.games.length < pageSize,
         };
     };
 
@@ -604,6 +613,17 @@ export default class BaseMatch {
             queueId: match.queueId,
         };
     };
+
+    /** 将 PostgreSQL 中的统一历史结构转换成首页列表使用的结构。 */
+    public getSimpleMatchList = (
+        matches: NormalizedHistoryGame[],
+        targetPuuid?: string,
+    ): SimpleMatchDetailsTypes[] =>
+        matches
+            .map((match) => this.getSimpleCachedMatch(match, targetPuuid))
+            .filter(
+                (match): match is SimpleMatchDetailsTypes => match !== null,
+            );
 
     public querySpecialMatchWithSource = async (
         puuid: string,

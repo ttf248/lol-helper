@@ -13,7 +13,8 @@ import { logger } from "@/utils/logger";
 import {
 	HISTORY_COLD_START_PAGES,
 	HISTORY_HOMEPAGE_PAGE_SIZE,
-	HISTORY_ANALYSIS_LIMIT,
+	HISTORY_CACHE_SYNC_LIMIT,
+	HISTORY_SERVER_PAGE_SIZE,
 } from "@/recentMatch/utils/historyConfig";
 import { getCachedHistory, getCachedHistoryPage } from "@/recentMatch/utils/databaseCache";
 import type { HistoryCacheSyncStatus } from "@/recentMatch/utils/queryTypes";
@@ -199,14 +200,45 @@ const useMatchStore = defineStore("useMatchStore", {
 				return true;
 			}
 
-			// 任意页：先查本地 PG；空则触发单页增量拉取并写缓存
+			// 任意页：先查本地 PG。若目标页尚未缓存，按服务器 20 场一页
+			// 补齐到目标偏移；主动缓存只负责前三个服务器页，之后由翻页
+			// 按需读取，不把主动缓存上限误当成分页上限。
 			let cached = await getCachedHistoryPage(puuid, offset, pageSize);
-			if (cached.length === 0) {
-				await baseMatch.fetchAndCacheSinglePage(puuid, page - 1);
+			let reachedEnd = false;
+			if (cached.length < pageSize) {
+				const targetEnd = offset + pageSize;
+				const lastServerPage = Math.floor(
+					(targetEnd - 1) / HISTORY_SERVER_PAGE_SIZE,
+				);
+				for (let serverPage = 0; serverPage <= lastServerPage; serverPage += 1) {
+					const result = await baseMatch.fetchAndCacheSinglePage(
+						puuid,
+						serverPage,
+					);
+					if (result.reachedEnd) {
+							reachedEnd = true;
+							break;
+						}
+					}
 				cached = await getCachedHistoryPage(puuid, offset, pageSize);
 			}
-			this.matchList = cached as unknown as SimpleMatchDetailsTypes[];
-			await this.refreshMatchAvailableCount(puuid);
+			this.matchList = baseMatch.getSimpleMatchList(cached, puuid);
+			if (reachedEnd) {
+				// 服务器已明确到末尾时，撤销“未知总数”场景下
+				// 为了允许继续翻页而临时多展示的页。
+				this.matchAvailableCount = offset + this.matchList.length;
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
+				);
+			} else {
+				await this.refreshMatchAvailableCount(
+					puuid,
+					offset + this.matchList.length,
+				);
+			}
 
 			if (this.matchList.length === 0) {
 				this.matchError = "本地暂无更早战绩。";
@@ -215,15 +247,21 @@ const useMatchStore = defineStore("useMatchStore", {
 			await this.getMatchDetail(this.matchList[0].gameId);
 			return true;
 		},
-		async refreshMatchAvailableCount(puuid: string) {
+		async refreshMatchAvailableCount(puuid: string, minimumCount = 0) {
 			const all = await getCachedHistory({
 				puuid,
-				limit: HISTORY_ANALYSIS_LIMIT,
+				limit: Math.max(HISTORY_CACHE_SYNC_LIMIT, minimumCount),
 			});
-			this.matchAvailableCount = all.length;
+			this.matchAvailableCount = Math.max(
+				this.matchAvailableCount,
+				minimumCount,
+				all.length,
+			);
 			this.matchPageCount = Math.max(
 				1,
-				Math.ceil(all.length / HISTORY_HOMEPAGE_PAGE_SIZE),
+				Math.ceil(
+					this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+				),
 			);
 		},
 		async fetchAndProcessMatches(
@@ -237,8 +275,8 @@ const useMatchStore = defineStore("useMatchStore", {
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				0,
-				20,
-				20,
+				HISTORY_SERVER_PAGE_SIZE,
+				HISTORY_SERVER_PAGE_SIZE,
 			);
 			if (queryRequestId !== this.queryRequestId) {
 				return false;
@@ -257,14 +295,28 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchLocalCacheUsed = matchResult.localCacheUsed;
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
+			this.matchAvailableCount = Math.max(
+				matchResult.availableCount,
+				matchResults.length,
+			);
+			this.matchPageCount = Math.max(
+				1,
+				Math.ceil(this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE),
+			);
+			// totalCount 可能暂时不可得。首页数据达到一整页服务器
+			// 返回量时先开放一个按需页，避免“主动缓存三页”被误解成
+			// “只能翻三页”；同步确认末尾后会自动收回空页。
+			if (
+				matchResult.totalCount === null &&
+				matchResults.length >= HISTORY_SERVER_PAGE_SIZE
+			) {
+				this.matchPageCount += 1;
+			}
 			this.matchList = this.recentMatchList20.slice(0, HISTORY_HOMEPAGE_PAGE_SIZE);
 			this.analysisData =
 				this.recentMatchList20.length === 0
 					? null
 					: findTopChamp(this.recentMatchList20 as any);
-			// 首屏分页计数以本地缓存为基准（翻页增量会持续刷新）
-			await this.refreshMatchAvailableCount(puuid);
-
 			if (this.matchList.length === 0) {
 				this.matchError = "该召唤师没有可展示的公开战绩。";
 				return false;
@@ -292,13 +344,37 @@ const useMatchStore = defineStore("useMatchStore", {
 			if (requestId !== this.queryRequestId) return;
 
 			this.historyCacheSync = result;
-			// 当接口没有提供总场数时，后台同步完成后用数据库中的真实
-			// 数量修正分页器；有总场数时保留接口识别出的页数。
-			if (result.cachedGames > this.matchAvailableCount) {
-				this.matchAvailableCount = result.cachedGames;
+			// 主动缓存只扫描前三个服务器页，但这不应限制首页分页。
+			// 接口报告的总页数优先用于分页；没有总数时至少使用当前已
+			// 缓存的记录数，翻到更早页时再继续扩展。
+			const reportedCount = result.totalPages
+				? result.totalPages * HISTORY_SERVER_PAGE_SIZE
+				: 0;
+			const availableCount = Math.max(
+				result.cachedGames,
+				reportedCount,
+			);
+			if (availableCount > this.matchAvailableCount) {
+				this.matchAvailableCount = availableCount;
+			}
+			if (result.kind === "complete" && result.totalPages === null) {
 				this.matchPageCount = Math.max(
 					1,
-					Math.ceil(this.matchAvailableCount / 9),
+					Math.ceil(
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
+				);
+			} else {
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
+					result.kind === "limited" && result.totalPages === null
+						? Math.ceil(
+							this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+						) + 1
+						: 1,
 				);
 			}
 		},
@@ -312,9 +388,9 @@ const useMatchStore = defineStore("useMatchStore", {
 			// 提供，避免每次翻页都重新拉服务器 60 场。
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
-				(page - 1) * 9,
-				page * 9,
-				20,
+				(page - 1) * HISTORY_HOMEPAGE_PAGE_SIZE,
+				page * HISTORY_HOMEPAGE_PAGE_SIZE,
+				HISTORY_SERVER_PAGE_SIZE,
 			);
 			if (queryRequestId !== this.queryRequestId) {
 				return false;
@@ -327,7 +403,9 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.matchAvailableCount = matchResult.availableCount;
 				this.matchPageCount = Math.max(
 					1,
-					Math.ceil(this.matchAvailableCount / 9),
+					Math.ceil(
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
 				);
 			}
 			const matchItems = matchResult?.matches ?? [];
@@ -376,7 +454,9 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.matchAvailableCount = matchSpecialList.length;
 				this.matchPageCount = Math.max(
 					1,
-					Math.ceil(this.matchAvailableCount / 9),
+					Math.ceil(
+						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
 				);
 				this.fromSpecialToMatchList();
 			} else {
@@ -437,7 +517,10 @@ const useMatchStore = defineStore("useMatchStore", {
 			);
 		},
 		fromSpecialToMatchList(page = 1) {
-			this.matchList = this.specialMatchList.slice(9 * (page - 1), 9 * page);
+			this.matchList = this.specialMatchList.slice(
+				HISTORY_HOMEPAGE_PAGE_SIZE * (page - 1),
+				HISTORY_HOMEPAGE_PAGE_SIZE * page,
+			);
 			if (this.matchList.length !== 0) {
 				this.getMatchDetail(this.matchList[0].gameId);
 			}
