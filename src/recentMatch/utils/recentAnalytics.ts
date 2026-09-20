@@ -1,4 +1,5 @@
 import {
+  queryMatchHistoryWithSource,
   queryMatchHistoryFullWithSource,
   MatchHistoryGame,
 } from "@/lcu/aboutMatch";
@@ -37,6 +38,7 @@ import {
 import {
   HISTORY_ANALYSIS_LIMIT,
   HISTORY_FAST_WINDOW,
+  HISTORY_SERVER_PAGE_SIZE,
   HISTORY_SERVER_FETCH_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
@@ -48,6 +50,7 @@ export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MODERATION_TIMEOUT_MS = 2500;
 
 export interface NormalizedHistoryParticipant {
   puuid: string;
@@ -321,9 +324,15 @@ interface QueueHydrationResult {
   games: NormalizedHistoryGame[];
   source: string;
   sourceEndpoints: string[];
+  coverage: HistoryCoverageInfo;
 }
 
-const queueHydration = new Map<string, Promise<QueueHydrationResult>>();
+interface QueueHydrationEntry {
+  serverLimit: number;
+  request: Promise<QueueHydrationResult>;
+}
+
+const queueHydration = new Map<string, QueueHydrationEntry>();
 
 const historyKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}:${modeKey}`;
@@ -332,50 +341,128 @@ const syncPlayerModeGames = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingGames: NormalizedHistoryGame[],
+  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
 ): Promise<{
   games: NormalizedHistoryGame[];
   source: string;
   sourceEndpoints: string[];
   coverage: HistoryCoverageInfo;
 }> => {
-  // 服务器只取最近三页。更早的记录全部交给 PostgreSQL，避免为了
-  // “追到缓存边界”继续翻页，也避免服务器返回异常时放大请求范围。
-  const result = await queryMatchHistoryFullWithSource(
+  const startedAt = Date.now();
+  const boundedServerLimit = Math.min(
+    HISTORY_SERVER_FETCH_LIMIT,
+    Math.max(1, serverLimit),
+  );
+
+  // 先走和战绩分页相同的轻量摘要接口。当前模式没有记录时，
+  // 不再继续进入完整参与者/SGP 链路。
+  const summaryResult = await queryMatchHistoryWithSource(
     player.puuid,
     0,
-    HISTORY_SERVER_FETCH_LIMIT,
+    boundedServerLimit,
   );
-  const fetchedGames = uniqueGames(
-    result?.games ?? [],
+  const summaryGames = uniqueGames(
+    summaryResult?.games ?? [],
     modeKey,
     player,
-    result?.source || "interface",
+    summaryResult?.source || "interface",
   );
-  const merged = mergeHistoryGames(
+  const summaryMerged = mergeHistoryGames(
     existingGames,
-    Array.from(fetchedGames.values()),
+    Array.from(summaryGames.values()),
     RECENT_ANALYSIS_GAME_COUNT,
   );
+
+  // 本地已有完整窗口时，摘要只负责刷新最近数据，不必再请求完整参与者。
+  const needsFullParticipants =
+    existingGames.length < RECENT_ANALYSIS_GAME_COUNT ||
+    !hasParticipantRoster(existingGames);
+
+  let finalGames = summaryMerged.games;
+  let finalSource =
+    summaryResult?.source ||
+    (existingGames.length > 0 ? "PostgreSQL 本地缓存" : "unavailable");
+  let finalEndpoints = summaryResult?.endpoints || [];
+  let finalCoverage = summaryMerged.coverage;
+  const fullRequested =
+    needsFullParticipants &&
+    (summaryGames.size > 0 || existingGames.length > 0);
+
+  if (fullRequested) {
+    // 只有确认当前模式有数据（或已有本地样本）后，才进入较慢的完整参与者链路。
+    const fullResult = await queryMatchHistoryFullWithSource(
+      player.puuid,
+      0,
+      boundedServerLimit,
+    );
+    const fullGames = uniqueGames(
+      fullResult?.games ?? [],
+      modeKey,
+      player,
+      fullResult?.source || "interface-full",
+    );
+    const merged = mergeHistoryGames(
+      existingGames,
+      [...summaryGames.values(), ...fullGames.values()],
+      RECENT_ANALYSIS_GAME_COUNT,
+    );
+    finalGames = merged.games;
+    finalCoverage = merged.coverage;
+    finalSource = fullResult?.source || summaryResult?.source || finalSource;
+    finalEndpoints = Array.from(
+      new Set([
+        ...(summaryResult?.endpoints || []),
+        ...(fullResult?.endpoints || []),
+      ]),
+    );
+  }
+
+  logger.info({
+    tag: "recent.analysis",
+    message: "history sync resolved",
+    context: {
+      puuid: `…${player.puuid.slice(-8)}`,
+      modeKey,
+      serverLimit: boundedServerLimit,
+      cachedGames: existingGames.length,
+      summaryGames: summaryGames.size,
+      mergedGames: finalGames.length,
+      fullRequested,
+    },
+    durationMs: Date.now() - startedAt,
+  });
+
   return {
-    games: merged.games,
-    source: result?.source || (existingGames.length > 0 ? "PostgreSQL 本地缓存" : "unavailable"),
-    sourceEndpoints: result?.endpoints || [],
-    coverage: merged.coverage,
+    games: finalGames,
+    source: finalSource,
+    sourceEndpoints: finalEndpoints,
+    coverage: finalCoverage,
   };
 };
 
 const hydratePlayerQueueHistory = (
   player: RecentSumInfo,
-  queueId: number,
+  modeKey: MatchModeKey,
   existingGames: NormalizedHistoryGame[],
-) => {
-  const modeKey = modeForQueue(queueId);
+  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
+): Promise<QueueHydrationResult> => {
   const key = historyKey(player.puuid, modeKey);
+  const boundedServerLimit = Math.min(
+    HISTORY_SERVER_FETCH_LIMIT,
+    Math.max(1, serverLimit),
+  );
   const existing = queueHydration.get(key);
-  if (existing) return existing;
+  if (existing && existing.serverLimit >= boundedServerLimit) {
+    return existing.request;
+  }
 
   const request = (async (): Promise<QueueHydrationResult> => {
-    const synced = await syncPlayerModeGames(player, modeKey, existingGames);
+    const synced = await syncPlayerModeGames(
+      player,
+      modeKey,
+      existingGames,
+      boundedServerLimit,
+    );
     const games = synced.games;
     if (games.length > 0) {
       await cacheHistory({
@@ -391,6 +478,7 @@ const hydratePlayerQueueHistory = (
       games,
       source: synced.source,
       sourceEndpoints: synced.sourceEndpoints,
+      coverage: synced.coverage,
     };
   })().catch((error) => {
     logger.warn({
@@ -402,9 +490,17 @@ const hydratePlayerQueueHistory = (
       games: existingGames,
       source: "PostgreSQL 本地缓存",
       sourceEndpoints: [],
+      coverage: mergeHistoryGames(
+        existingGames,
+        [],
+        RECENT_ANALYSIS_GAME_COUNT,
+      ).coverage,
     };
   });
-  queueHydration.set(key, request);
+  queueHydration.set(key, {
+    serverLimit: boundedServerLimit,
+    request,
+  });
   // 任务结果保留在当前面板生命周期内，保证极快返回的完整历史也能被
   // loadRecentTeamAnalysis 捕获并刷新 UI。新一局开始时由
   // clearRecentAnalysisCache 一并清理，避免跨对局复用。
@@ -431,7 +527,7 @@ const loadPlayerHistory = async (
     if (cachedGames.length > 0) {
       // 即使本地已经有 100 场，也只向服务器同步最近三页；
       // 合并时通过 gameId 去重并让接口的完整 participant 覆盖旧缓存。
-      void hydratePlayerQueueHistory(player, queueId, cachedGames);
+      void hydratePlayerQueueHistory(player, modeKey, cachedGames);
       const limitedGames = new Map(
         cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
           game.gameId,
@@ -463,7 +559,7 @@ const loadPlayerHistory = async (
         .map((match, index) => quickMatchToGame(match, player, index)),
     );
     if (quickGames.length > 0) {
-      void hydratePlayerQueueHistory(player, queueId, quickGames);
+      void hydratePlayerQueueHistory(player, modeKey, quickGames);
       return {
         puuid: player.puuid,
         games: new Map(quickGames.map((game) => [game.gameId, game])),
@@ -477,7 +573,7 @@ const loadPlayerHistory = async (
 
     // 没有首屏摘要时也不要让一个玩家阻塞其它玩家的最近 10 场分析。
     // 由统一的后台任务异步拉取服务器最近三页，完成后再刷新整队分析。
-    void hydratePlayerQueueHistory(player, queueId, []);
+    void hydratePlayerQueueHistory(player, modeKey, []);
     return {
       puuid: player.puuid,
       games: new Map(),
@@ -583,6 +679,7 @@ const hydratePlayerModeHistory = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingSnapshot: PlayerHistorySnapshot,
+  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerHistorySnapshot> => {
   const existingGames = Array.from(existingSnapshot.games.values());
@@ -591,30 +688,27 @@ const hydratePlayerModeHistory = async (
     completed: 0,
     total: 1,
     percentage: 45,
-    message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场），并与本地缓存按 gameId 合并`,
+    message: `正在查询服务器最近 ${Math.ceil(serverLimit / HISTORY_SERVER_PAGE_SIZE)} 页（最多 ${serverLimit} 场），并与本地缓存按 gameId 合并`,
   });
-  const synced = await syncPlayerModeGames(player, modeKey, existingGames);
-  const mergedGames = synced.games;
-  if (mergedGames.length > 0) {
-    void cacheHistory({
-      puuid: player.puuid,
-      summonerId: player.summonerId,
-      summonerName: player.summonerName,
-      modeKey,
-      source: synced.source || existingSnapshot.source,
-      games: mergedGames,
-    });
-  }
+  // 与对局内分析共用同一份补全任务，避免打开历史分析后再重复请求
+  // 同一玩家/模式的完整历史。
+  const hydrated = await hydratePlayerQueueHistory(
+    player,
+    modeKey,
+    existingGames,
+    serverLimit,
+  );
+  const mergedGames = hydrated.games;
   const result = toHistorySnapshot(
     player,
     mergedGames,
-    mergedGames.length > existingGames.length
-      ? synced.source || "历史接口完整参与者"
+    mergedGames.length > existingGames.length || hydrated.source !== "PostgreSQL 本地缓存"
+      ? hydrated.source || "历史接口完整参与者"
       : existingSnapshot.source,
-    synced.sourceEndpoints.length > 0
-      ? synced.sourceEndpoints
+    hydrated.sourceEndpoints.length > 0
+      ? hydrated.sourceEndpoints
       : existingSnapshot.sourceEndpoints,
-    synced.coverage,
+    hydrated.coverage,
   );
   onProgress?.({
     stage: "full",
@@ -622,7 +716,7 @@ const hydratePlayerModeHistory = async (
     total: 1,
     percentage: 72,
     message:
-      `服务器最近 3 页已与本地缓存合并，共 ${mergedGames.length} 场，正在计算关系`,
+      `服务器最近 ${serverLimit} 场已与本地缓存合并，共 ${mergedGames.length} 场，正在计算关系`,
   });
   return result;
 };
@@ -685,11 +779,18 @@ const loadModerationMap = async (
   }
 
   try {
-    const haterList: Hater[] | null = await new BlackList().querySumDetails(
-      sumIds,
-      false,
-    );
+    const haterList: Hater[] | null = await Promise.race([
+      new BlackList().querySumDetails(sumIds, false),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), MODERATION_TIMEOUT_MS),
+      ),
+    ]);
     if (haterList === null) {
+      logger.warn({
+        tag: "recent.analysis.moderation",
+        message: "Moderation lookup unavailable or timed out",
+        context: { players: players.length, timeoutMs: MODERATION_TIMEOUT_MS },
+      });
       return result;
     }
 
@@ -709,8 +810,8 @@ const loadModerationMap = async (
     }
   } catch (error) {
     logger.warn({
-      tag: "recent.analysis",
-      message: "Failed to load recent-match moderation records",
+      tag: "recent.analysis.moderation",
+      message: "Failed to load moderation records",
       context: { error: String(error).slice(0, 200) },
     });
   }
@@ -1355,7 +1456,11 @@ export const loadPlayerModeAnalysis = async (
     requestedGames,
     onProgress,
   );
-  // 先交付本地缓存/页面摘要；服务器只在下一步读取最近三页，
+  const serverLimit = Math.min(
+    HISTORY_SERVER_FETCH_LIMIT,
+    Math.max(HISTORY_FAST_WINDOW, requestedGames),
+  );
+  // 先交付本地缓存/页面摘要；服务器只在下一步读取当前窗口，
   // 不会因为本地缓存较多而继续向更早分页扩展。
   const personalAnalysis = snapshot.games.size > 0
     ? buildPlayerAnalysis(
@@ -1372,7 +1477,7 @@ export const loadPlayerModeAnalysis = async (
     completed: Math.min(personalAnalysis.actualGames, requestedGames),
     total: Math.max(requestedGames, 1),
     percentage: 38,
-    message: `个人战绩已展示 ${personalAnalysis.actualGames} 场，正在查询服务器最近 3 页`,
+    message: `个人战绩已展示 ${personalAnalysis.actualGames} 场，正在查询服务器最近 ${Math.ceil(serverLimit / HISTORY_SERVER_PAGE_SIZE)} 页`,
     analysis: personalAnalysis,
   });
 
@@ -1380,6 +1485,7 @@ export const loadPlayerModeAnalysis = async (
     player,
     modeKey,
     snapshot,
+    serverLimit,
     onProgress,
   );
   if (snapshot.games.size === 0) {
@@ -1388,7 +1494,7 @@ export const loadPlayerModeAnalysis = async (
       completed: 0,
       total: Math.max(requestedGames, 1),
       percentage: 100,
-      message: "服务器最近 3 页和本地缓存均没有可用历史数据",
+      message: `服务器最近 ${serverLimit} 场和本地缓存均没有可用历史数据`,
       analysis: personalAnalysis,
     });
     return personalAnalysis;
@@ -1708,10 +1814,33 @@ export const loadRecentTeamAnalysis = async (
 
   const hydrationEntries = players
     .map((player) => {
-      const request = queueHydration.get(
-        historyKey(player.puuid, modeForQueue(queueId)),
-      );
-      return request ? { player, request } : null;
+      const modeKey = modeForQueue(queueId);
+      const entry = queueHydration.get(historyKey(player.puuid, modeKey));
+      if (!entry) {
+        return {
+          player,
+          request: hydratePlayerQueueHistory(
+            player,
+            modeKey,
+            [],
+            HISTORY_SERVER_FETCH_LIMIT,
+          ),
+        };
+      }
+      if (entry.serverLimit >= HISTORY_SERVER_FETCH_LIMIT) {
+        return { player, request: entry.request };
+      }
+      return {
+        player,
+        request: entry.request.then((result) =>
+          hydratePlayerQueueHistory(
+            player,
+            modeKey,
+            result.games,
+            HISTORY_SERVER_FETCH_LIMIT,
+          ),
+        ),
+      };
     })
     .filter(
       (
