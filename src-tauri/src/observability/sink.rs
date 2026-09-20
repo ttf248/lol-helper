@@ -1,7 +1,9 @@
-//! 异步文件 sink：单写线程 + NDJSON 追加 + 7 天滚动保留。
+//! 异步文件 sink：单写线程 + 文本追加 + 7 天滚动保留。
 //!
 //! 所有写入走 `tokio::sync::mpsc` 通道，由后台任务串行化，避免在
 //! `tracing` 调用点阻塞业务线程。
+//!
+//! 文件名：`app-YYYY-MM-DD.log`，单日滚动到 `.1.log`，按 50 MB 切分。
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -22,8 +24,12 @@ const FILE_PREFIX: &str = "app";
 /// 保留天数。
 const RETENTION_DAYS: i64 = 7;
 
-/// 文件最大尺寸（默认 50MB），超出后滚动到 `.1.ndjson`。
+/// 文件最大尺寸（默认 50MB），超出后滚动到 `.1.log`。
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// 单条日志写入字节上限（UTF-8 字节），超过则截断并追加丢弃提示。
+/// 防止个别请求把单行写到几 MB 把整份日志撑爆。
+const MAX_LINE_BYTES: usize = 4 * 1024;
 
 /// 当前写入的文件句柄（被写线程独占）。
 /// `file` 为 `None` 时表示日志目录不可写，进入静默兜底模式。
@@ -73,10 +79,11 @@ impl FileSink {
                             Err(poisoned) => poisoned.into_inner(),
                         };
                         ensure_writer_for_today(&log_dir_for_task, &mut guard);
-                        let line_len = line.len() as u64 + 1;
+                        let sanitized = sanitize_for_single_line(&line);
+                        let line_len = sanitized.len() as u64 + 1;
                         let write_ok = match guard.file.as_mut() {
                             Some(file) => {
-                                let ok = writeln!(file, "{}", line).is_ok();
+                                let ok = writeln!(file, "{}", sanitized).is_ok();
                                 if ok {
                                     let _ = file.flush();
                                 }
@@ -112,10 +119,47 @@ impl FileSink {
         Arc::new(Self { tx })
     }
 
-    /// 非阻塞追加一行 NDJSON。
+    /// 非阻塞追加一行文本日志。内部会做单行转义与 4KB 截断兜底。
     pub fn append(&self, line: String) {
         let _ = self.tx.send(line);
     }
+}
+
+/// 把多行内容压成单行：替换换行为 `\n`/`\r`，控制字符替换为空。
+/// 超过 `MAX_LINE_BYTES` 字节则截断并在末尾追加丢弃提示。
+fn sanitize_for_single_line(input: &str) -> String {
+    // 快速路径：长度已经在上限内且没有特殊字符
+    if input.len() <= MAX_LINE_BYTES
+        && !input.contains(['\n', '\r', '\0'])
+    {
+        return input.to_string();
+    }
+
+    let mut out = String::with_capacity(input.len().min(MAX_LINE_BYTES + 64));
+    for ch in input.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 => {
+                // 其它控制字符丢弃
+            }
+            c => out.push(c),
+        }
+    }
+
+    if out.len() > MAX_LINE_BYTES {
+        // 在 UTF-8 字符边界上截断，避免截到半个字符产生乱码。
+        let mut cut = MAX_LINE_BYTES;
+        while cut > 0 && !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let dropped = out.len() - cut;
+        out.truncate(cut);
+        out.push_str(&format!("…(剩余 {} 字节已丢弃)", dropped));
+    }
+
+    out
 }
 
 fn dead_sender() -> mpsc::UnboundedSender<String> {
@@ -216,7 +260,7 @@ fn is_leap(year: i64) -> bool {
 
 fn open_writer_for_today(log_dir: &Path) -> CurrentWriter {
     let date = today_string();
-    let path = log_dir.join(format!("{}-{}.ndjson", FILE_PREFIX, date));
+    let path = log_dir.join(format!("{}-{}.log", FILE_PREFIX, date));
     match OpenOptions::new()
         .create(true)
         .append(true)
@@ -261,8 +305,8 @@ fn ensure_writer_for_today(log_dir: &Path, writer: &mut CurrentWriter) {
 }
 
 fn rotate_file(log_dir: &Path, date: &str) {
-    let current = log_dir.join(format!("{}-{}.ndjson", FILE_PREFIX, date));
-    let rotated = log_dir.join(format!("{}-{}.1.ndjson", FILE_PREFIX, date));
+    let current = log_dir.join(format!("{}-{}.log", FILE_PREFIX, date));
+    let rotated = log_dir.join(format!("{}-{}.1.log", FILE_PREFIX, date));
     if current.exists() {
         // 只保留一个同日滚动文件；先删除旧的 .1，避免 Windows rename 因目标
         // 已存在而失败。
@@ -288,7 +332,7 @@ fn cleanup_old_files(log_dir: &Path) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with(FILE_PREFIX) || !name.ends_with(".ndjson") {
+        if !name.starts_with(FILE_PREFIX) || !name.ends_with(".log") {
             continue;
         }
         let Ok(meta) = entry.metadata() else {

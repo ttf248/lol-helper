@@ -46,6 +46,7 @@ windows = { version = "0.52", features = [
 configparser = "3.1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.release]
 opt-level = "s"     # Optimize for size.
