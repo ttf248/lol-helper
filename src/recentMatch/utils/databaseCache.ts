@@ -3,6 +3,44 @@ import type { NormalizedHistoryGame } from "./recentAnalytics";
 import { MatchModeKey } from "./matchMode";
 import { logger } from "@/utils/logger";
 
+// 客户端 TTL 缓存：避免切模式 tab / 翻页 / 切换玩家时反复打 LCU → Rust → PG
+// 这条链路。日志里 db.summary / db.player_summary / db.cached_history 在单次
+// 会话中常出现 8+ 次重复调用，返回完全相同的数据。把同一查询合并到 TTL 内
+// 即可消除冗余，同时不破坏 cacheHistory 的写入语义。
+const SUMMARY_TTL_MS = 30_000;
+const PLAYER_SUMMARY_TTL_MS = 15_000;
+const HISTORY_TTL_MS = 10_000;
+
+interface CachedEntry<T> {
+  value: T;
+  fetchedAt: number;
+}
+
+const summaryCache: { current: CachedEntry<DatabaseSummary> | null } = {
+  current: null,
+};
+const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
+const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
+
+const isFresh = <T>(entry: CachedEntry<T> | undefined, ttl: number) =>
+  entry !== undefined && Date.now() - entry.fetchedAt < ttl;
+
+const historyCacheKey = (query: CachedHistoryQuery) =>
+  `${query.puuid}|${query.modeKey ?? ""}|${query.queueId ?? ""}|${query.offset ?? 0}|${query.limit}`;
+
+const playerSummaryCacheKey = (puuid: string, modeKey?: MatchModeKey | null) =>
+  `${puuid}|${modeKey ?? ""}`;
+
+/**
+ * 清空客户端 TTL 缓存。手动刷新（数据库写入、切换账号、用户点击
+ * refresh 按钮）时应调用，避免读到旧数据。
+ */
+export const resetDatabaseCache = () => {
+  summaryCache.current = null;
+  playerSummaryCache.clear();
+  historyCache.clear();
+};
+
 export interface CachedHistoryQuery {
   puuid: string;
   queueId?: number;
@@ -36,11 +74,16 @@ interface CachedGame {
 export const getCachedHistory = async (
   query: CachedHistoryQuery,
 ): Promise<NormalizedHistoryGame[]> => {
+  const cacheKey = historyCacheKey(query);
+  const cached = historyCache.get(cacheKey);
+  if (isFresh(cached, HISTORY_TTL_MS)) {
+    return cached!.value;
+  }
   try {
     const games = await invoke<CachedGame[]>("get_cached_match_history", {
       request: query,
     });
-    return (games || []).map((game) => ({
+    const value = (games || []).map((game) => ({
       gameId: game.gameId,
       gameCreation: game.gameCreation,
       queueId: game.queueId,
@@ -58,6 +101,8 @@ export const getCachedHistory = async (
         win: participant.win,
       })),
     }));
+    historyCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    return value;
   } catch (error) {
     logger.warn({
       tag: "db.cache_read",
@@ -96,6 +141,14 @@ export const cacheHistory = async (request: {
         })),
       },
     });
+    // 写入成功后清掉同 puuid 的 history / playerSummary 缓存，下次读取会
+    // 重新走 invoke。summaryCache 是全局统计，不受影响。
+    for (const key of Array.from(historyCache.keys())) {
+      if (key.startsWith(`${request.puuid}|`)) {
+        historyCache.delete(key);
+      }
+    }
+    playerSummaryCache.delete(`${request.puuid}|${request.modeKey}`);
     return true;
   } catch (error) {
     logger.warn({
@@ -156,8 +209,13 @@ export interface CachedPlayerSummary {
 }
 
 export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
+  if (isFresh(summaryCache.current ?? undefined, SUMMARY_TTL_MS)) {
+    return summaryCache.current!.value;
+  }
   try {
-    return await invoke<DatabaseSummary>("database_summary");
+    const value = await invoke<DatabaseSummary>("database_summary");
+    summaryCache.current = { value, fetchedAt: Date.now() };
+    return value;
   } catch (error) {
     logger.warn({
       tag: "db.cache_summary",
@@ -180,6 +238,11 @@ export const getCachedPlayerSummary = async (
   puuid: string,
   modeKey?: MatchModeKey,
 ): Promise<CachedPlayerSummary> => {
+  const cacheKey = playerSummaryCacheKey(puuid, modeKey);
+  const cached = playerSummaryCache.get(cacheKey);
+  if (isFresh(cached, PLAYER_SUMMARY_TTL_MS)) {
+    return cached!.value;
+  }
   const empty: CachedPlayerSummary = {
     puuid,
     modeKey: modeKey || null,
@@ -190,9 +253,11 @@ export const getCachedPlayerSummary = async (
     sources: [],
   };
   try {
-    return await invoke<CachedPlayerSummary>("get_cached_player_summary", {
+    const value = await invoke<CachedPlayerSummary>("get_cached_player_summary", {
       request: { puuid, modeKey: modeKey || null },
     });
+    playerSummaryCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    return value;
   } catch (error) {
     logger.warn({
       tag: "db.cache_summary",
