@@ -4,9 +4,9 @@ mod lol_window_tracker;
 mod observability;
 mod shaco;
 use database::{
-    cache_match_history, database_status, database_summary, get_cached_match_history,
-    get_cached_player_summary,
-    DatabaseState,
+    cache_match_history, cache_summoners, database_status, database_summary,
+    get_cached_match_history, get_cached_player_summary, get_cached_summoner_by_id,
+    get_cached_summoner_by_puuid, DatabaseState,
 };
 use observability::log::write_frontend_log;
 use lcu::{
@@ -67,6 +67,9 @@ pub async fn run() {
             get_cached_match_history,
             database_summary,
             get_cached_player_summary,
+            cache_summoners,
+            get_cached_summoner_by_puuid,
+            get_cached_summoner_by_id,
             write_frontend_log,
         ])
         .plugin(tauri_plugin_http::init())

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { NormalizedHistoryGame } from "./recentAnalytics";
 import { MatchModeKey } from "./matchMode";
 import { logger } from "@/utils/logger";
+import type { lcuSummonerInfo } from "@/lcu/types/SummonerTypes";
 
 // 客户端 TTL 缓存：避免切模式 tab / 翻页 / 切换玩家时反复打 LCU → Rust → PG
 // 这条链路。日志里 db.summary / db.player_summary / db.cached_history 在单次
@@ -10,6 +11,7 @@ import { logger } from "@/utils/logger";
 const SUMMARY_TTL_MS = 30_000;
 const PLAYER_SUMMARY_TTL_MS = 15_000;
 const HISTORY_TTL_MS = 10_000;
+const SUMMONER_TTL_MS = 30_000;
 
 interface CachedEntry<T> {
   value: T;
@@ -21,6 +23,13 @@ const summaryCache: { current: CachedEntry<DatabaseSummary> | null } = {
 };
 const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
 const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
+const summonerByIdCache = new Map<number, CachedEntry<CachedSummonerRow>>();
+const summonerByPuuidCache = new Map<string, CachedEntry<CachedSummonerRow>>();
+
+const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
+  summonerByIdCache.delete(row.summonerId);
+  summonerByPuuidCache.delete(row.puuid);
+};
 
 const isFresh = <T>(entry: CachedEntry<T> | undefined, ttl: number) =>
   entry !== undefined && Date.now() - entry.fetchedAt < ttl;
@@ -40,10 +49,14 @@ export const resetDatabaseCache = (reason?: string) => {
     summary: summaryCache.current !== null ? 1 : 0,
     player_summary: playerSummaryCache.size,
     history: historyCache.size,
+    summoner_by_id: summonerByIdCache.size,
+    summoner_by_puuid: summonerByPuuidCache.size,
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
   historyCache.clear();
+  summonerByIdCache.clear();
+  summonerByPuuidCache.clear();
   logger.info({
     tag: "db.cache",
     message: "TTL 缓存已重置",
@@ -311,6 +324,31 @@ export interface CachedPlayerSummary {
   sources: DatabaseSourceSummary[];
 }
 
+/**
+ * 单个召唤师在 PostgreSQL `summoners` 表中的完整行。
+ * 所有字段都为可空，因为旧版本 LCU 可能不回填部分字段；
+ * 写回 PG 后服务端会保持原值（LCU "Win"/"Fail" 字符串不归一化）。
+ */
+export interface CachedSummonerRow {
+  puuid: string;
+  summonerId: number;
+  accountId?: number | null;
+  displayName?: string | null;
+  internalName?: string | null;
+  gameName?: string | null;
+  tagLine?: string | null;
+  summonerName?: string | null;
+  profileIconId?: number | null;
+  summonerLevel?: number | null;
+  xpSinceLastLevel?: number | null;
+  xpUntilNextLevel?: number | null;
+  percentCompleteForNextLevel?: number | null;
+  privacy?: string | null;
+  nameChangeFlag?: boolean | null;
+  rerollPoints?: unknown;
+  updatedAt: number;
+}
+
 export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
   if (isFresh(summaryCache.current ?? undefined, SUMMARY_TTL_MS)) {
     logger.debug({
@@ -443,3 +481,191 @@ export const getCachedPlayerSummary = async (
     return empty;
   }
 };
+
+/**
+ * 将刚通过 LCU 拿到的召唤师信息 fire-and-forget 写入 PostgreSQL。
+ * 即使写入失败也不影响调用方 —— 查询路径走 TTL miss → LCU 已保证本次可用。
+ */
+export const cacheSummoner = async (
+  info: lcuSummonerInfo,
+): Promise<boolean> => {
+  if (!info || typeof info.summonerId !== "number" || !info.puuid) {
+    return false;
+  }
+  const startedAt = Date.now();
+  try {
+    await invoke<number>("cache_summoners", {
+      request: { summoners: [info] },
+    });
+    // 写入成功后清掉本地 TTL 缓存，避免出现"刚刚写入 → 旧 TTL 命中 → 看不到新值"的延迟。
+    dropSummonerCacheEntry({
+      puuid: info.puuid,
+      summonerId: info.summonerId,
+      updatedAt: Math.floor(Date.now() / 1000),
+    });
+    logger.info({
+      tag: "db.cache",
+      message: "写入召唤师缓存完成",
+      context: {
+        purpose: "将 LCU 召唤师信息写入 PostgreSQL 缓存",
+        op: "cache_summoners",
+        puuid: info.puuid,
+        summoner_id: info.summonerId,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
+    return true;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "写入召唤师缓存失败",
+      context: {
+        op: "cache_summoners",
+        puuid: info.puuid,
+        summoner_id: info.summonerId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return false;
+  }
+};
+
+/**
+ * 按 summoner_id 查 PG 中的召唤师行，命中后回填两层 TTL 缓存并返回。
+ * 失败或未命中返回 null，调用方应继续走 LCU 路径。
+ */
+export const getCachedSummonerById = async (
+  summonerId: number,
+): Promise<CachedSummonerRow | null> => {
+  if (!Number.isFinite(summonerId) || summonerId <= 0) {
+    return null;
+  }
+  const cached = summonerByIdCache.get(summonerId);
+  if (isFresh(cached, SUMMONER_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "get_cached_summoner_by_id", summoner_id: summonerId },
+    });
+    return cached!.value;
+  }
+  const startedAt = Date.now();
+  try {
+    const value = await invoke<CachedSummonerRow | null>(
+      "get_cached_summoner_by_id",
+      { summonerId },
+    );
+    if (value) {
+      summonerByIdCache.set(summonerId, { value, fetchedAt: Date.now() });
+      summonerByPuuidCache.set(value.puuid, { value, fetchedAt: Date.now() });
+      logger.debug({
+        tag: "db.cache",
+        message: "PG 召唤师缓存命中",
+        context: {
+          op: "get_cached_summoner_by_id",
+          summoner_id: summonerId,
+          puuid: value.puuid,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取召唤师缓存失败",
+      context: {
+        op: "get_cached_summoner_by_id",
+        summoner_id: summonerId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return null;
+  }
+};
+
+export const getCachedSummonerByPuuid = async (
+  puuid: string,
+): Promise<CachedSummonerRow | null> => {
+  if (!puuid || puuid.trim() === "") {
+    return null;
+  }
+  const cached = summonerByPuuidCache.get(puuid);
+  if (isFresh(cached, SUMMONER_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "get_cached_summoner_by_puuid", puuid },
+    });
+    return cached!.value;
+  }
+  const startedAt = Date.now();
+  try {
+    const value = await invoke<CachedSummonerRow | null>(
+      "get_cached_summoner_by_puuid",
+      { puuid },
+    );
+    if (value) {
+      summonerByPuuidCache.set(puuid, { value, fetchedAt: Date.now() });
+      summonerByIdCache.set(value.summonerId, { value, fetchedAt: Date.now() });
+      logger.debug({
+        tag: "db.cache",
+        message: "PG 召唤师缓存命中",
+        context: {
+          op: "get_cached_summoner_by_puuid",
+          puuid,
+          summoner_id: value.summonerId,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取召唤师缓存失败",
+      context: {
+        op: "get_cached_summoner_by_puuid",
+        puuid,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return null;
+  }
+};
+
+/**
+ * 把 PG 行还原回 LCU `lcuSummonerInfo` 形状，便于复用现有 `querySummonerInfo`
+ * 调用点或写入 `cacheSummoner()` 触发重新落库。
+ */
+export const summonerRowToLcuInfo = (
+  row: CachedSummonerRow,
+): lcuSummonerInfo => ({
+  accountId: row.accountId ?? 0,
+  displayName: row.displayName ?? "",
+  gameName: row.gameName ?? "",
+  internalName: row.internalName ?? "",
+  nameChangeFlag: row.nameChangeFlag ?? false,
+  percentCompleteForNextLevel: row.percentCompleteForNextLevel ?? 0,
+  privacy: row.privacy ?? "",
+  profileIconId: row.profileIconId ?? 0,
+  puuid: row.puuid,
+  rerollPoints:
+    (row.rerollPoints as lcuSummonerInfo["rerollPoints"]) ?? {
+      currentPoints: 0,
+      maxRolls: 0,
+      numberOfRolls: 0,
+      pointsCostToRoll: 0,
+      pointsToReroll: 0,
+    },
+  summonerId: row.summonerId,
+  summonerLevel: row.summonerLevel ?? 0,
+  unnamed: false,
+  xpSinceLastLevel: row.xpSinceLastLevel ?? 0,
+  xpUntilNextLevel: row.xpUntilNextLevel ?? 0,
+  tagLine: row.tagLine ?? "",
+});

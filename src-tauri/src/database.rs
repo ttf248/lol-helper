@@ -341,6 +341,66 @@ pub struct CachedPlayerSummary {
     pub sources: Vec<DatabaseSourceSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LcuSummonerInfo {
+    pub account_id: i64,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub game_name: String,
+    #[serde(default)]
+    pub internal_name: String,
+    #[serde(default)]
+    pub name_change_flag: bool,
+    #[serde(default)]
+    pub percent_complete_for_next_level: i32,
+    #[serde(default)]
+    pub privacy: String,
+    pub profile_icon_id: i32,
+    pub puuid: String,
+    #[serde(default)]
+    pub reroll_points: serde_json::Value,
+    pub summoner_id: i64,
+    pub summoner_level: i64,
+    #[serde(default)]
+    pub unnamed: bool,
+    #[serde(default)]
+    pub xp_since_last_level: i64,
+    #[serde(default)]
+    pub xp_until_next_level: i64,
+    #[serde(default)]
+    pub tag_line: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSummonerRequest {
+    pub summoners: Vec<LcuSummonerInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedSummonerRow {
+    pub puuid: String,
+    pub summoner_id: i64,
+    pub account_id: Option<i64>,
+    pub display_name: Option<String>,
+    pub internal_name: Option<String>,
+    pub game_name: Option<String>,
+    pub tag_line: Option<String>,
+    pub summoner_name: Option<String>,
+    pub profile_icon_id: Option<i32>,
+    pub summoner_level: Option<i64>,
+    pub xp_since_last_level: Option<i64>,
+    pub xp_until_next_level: Option<i64>,
+    pub percent_complete_for_next_level: Option<i32>,
+    pub privacy: Option<String>,
+    pub name_change_flag: Option<bool>,
+    pub reroll_points: Option<serde_json::Value>,
+    pub updated_at: i64,
+}
+
 pub struct DatabaseState {
     client: Arc<Mutex<Option<Client>>>,
     status: Arc<RwLock<DatabaseStatus>>,
@@ -931,6 +991,261 @@ impl DatabaseState {
         );
         Ok(result)
     }
+
+    pub async fn cache_summoners(
+        &self,
+        request: CacheSummonerRequest,
+    ) -> Result<usize, String> {
+        let started = std::time::Instant::now();
+        if request.summoners.is_empty() {
+            return Ok(0);
+        }
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_summoners",
+            purpose = "将 LCU 召唤师信息写入 PostgreSQL 缓存",
+            count = request.summoners.len(),
+            "缓存召唤师写入发起"
+        );
+
+        let mut client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_mut()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let payload: Value = serde_json::to_value(&request.summoners)
+            .map_err(|error| format!("召唤师缓存序列化失败: {error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO summoners(
+                    puuid, summoner_id, account_id, display_name, internal_name,
+                    game_name, tag_line, summoner_name, profile_icon_id,
+                    summoner_level, xp_since_last_level, xp_until_next_level,
+                    percent_complete_for_next_level, privacy, name_change_flag,
+                    reroll_points, updated_at
+                )
+                SELECT
+                    s."puuid",
+                    s."summonerId",
+                    s."accountId",
+                    NULLIF(s."displayName", ''),
+                    NULLIF(s."internalName", ''),
+                    NULLIF(s."gameName", ''),
+                    NULLIF(s."tagLine", ''),
+                    COALESCE(NULLIF(s."gameName", ''), NULLIF(s."displayName", ''), NULLIF(s."internalName", '')),
+                    s."profileIconId",
+                    s."summonerLevel",
+                    s."xpSinceLastLevel",
+                    s."xpUntilNextLevel",
+                    s."percentCompleteForNextLevel",
+                    NULLIF(s."privacy", ''),
+                    s."nameChangeFlag",
+                    s."rerollPoints",
+                    NOW()
+                FROM jsonb_to_recordset($1::jsonb) AS s(
+                    "puuid" TEXT,
+                    "summonerId" BIGINT,
+                    "accountId" BIGINT,
+                    "displayName" TEXT,
+                    "internalName" TEXT,
+                    "gameName" TEXT,
+                    "tagLine" TEXT,
+                    "profileIconId" INTEGER,
+                    "summonerLevel" BIGINT,
+                    "xpSinceLastLevel" BIGINT,
+                    "xpUntilNextLevel" BIGINT,
+                    "percentCompleteForNextLevel" INTEGER,
+                    "privacy" TEXT,
+                    "nameChangeFlag" BOOLEAN,
+                    "rerollPoints" JSONB
+                )
+                ON CONFLICT(puuid) DO UPDATE SET
+                    summoner_id = EXCLUDED.summoner_id,
+                    account_id = EXCLUDED.account_id,
+                    display_name = EXCLUDED.display_name,
+                    internal_name = EXCLUDED.internal_name,
+                    game_name = EXCLUDED.game_name,
+                    tag_line = EXCLUDED.tag_line,
+                    summoner_name = EXCLUDED.summoner_name,
+                    profile_icon_id = EXCLUDED.profile_icon_id,
+                    summoner_level = EXCLUDED.summoner_level,
+                    xp_since_last_level = EXCLUDED.xp_since_last_level,
+                    xp_until_next_level = EXCLUDED.xp_until_next_level,
+                    percent_complete_for_next_level = EXCLUDED.percent_complete_for_next_level,
+                    privacy = EXCLUDED.privacy,
+                    name_change_flag = EXCLUDED.name_change_flag,
+                    reroll_points = EXCLUDED.reroll_points,
+                    updated_at = NOW()
+                "#,
+                &[&payload],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        transaction.commit().await.map_err(|error| error.to_string())?;
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_summoners",
+            purpose = "将 LCU 召唤师信息写入 PostgreSQL 缓存",
+            count = request.summoners.len(),
+            duration_ms = started.elapsed().as_millis() as u64,
+            "缓存召唤师已写入"
+        );
+        Ok(request.summoners.len())
+    }
+
+    fn parse_cached_summoner(row: &tokio_postgres::Row) -> Result<CachedSummonerRow, String> {
+        Ok(CachedSummonerRow {
+            puuid: row.get("puuid"),
+            summoner_id: row.get("summoner_id"),
+            account_id: row.try_get("account_id").ok(),
+            display_name: row.try_get("display_name").ok(),
+            internal_name: row.try_get("internal_name").ok(),
+            game_name: row.try_get("game_name").ok(),
+            tag_line: row.try_get("tag_line").ok(),
+            summoner_name: row.try_get("summoner_name").ok(),
+            profile_icon_id: row.try_get("profile_icon_id").ok(),
+            summoner_level: row.try_get("summoner_level").ok(),
+            xp_since_last_level: row.try_get("xp_since_last_level").ok(),
+            xp_until_next_level: row.try_get("xp_until_next_level").ok(),
+            percent_complete_for_next_level: row
+                .try_get("percent_complete_for_next_level")
+                .ok(),
+            privacy: row.try_get("privacy").ok(),
+            name_change_flag: row.try_get("name_change_flag").ok(),
+            reroll_points: row.try_get("reroll_points").ok(),
+            updated_at: row.get("updated_at_epoch"),
+        })
+    }
+
+    pub async fn get_cached_summoner_by_puuid(
+        &self,
+        puuid: String,
+    ) -> Result<Option<CachedSummonerRow>, String> {
+        if puuid.trim().is_empty() {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_summoner_by_puuid",
+            purpose = "读取 PostgreSQL 召唤师缓存",
+            puuid = %puuid,
+            "读取召唤师缓存发起"
+        );
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let row = client
+            .query_opt(
+                "SELECT puuid, summoner_id, account_id, display_name, internal_name,
+                        game_name, tag_line, summoner_name, profile_icon_id,
+                        summoner_level, xp_since_last_level, xp_until_next_level,
+                        percent_complete_for_next_level, privacy, name_change_flag,
+                        reroll_points,
+                        EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_epoch
+                 FROM summoners WHERE puuid = $1",
+                &[&puuid],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = row
+            .as_ref()
+            .map(Self::parse_cached_summoner)
+            .transpose()?;
+        match &result {
+            Some(row) => tracing::info!(
+                target: "db.cache",
+                op = "cached_summoner_by_puuid",
+                purpose = "读取 PostgreSQL 召唤师缓存",
+                puuid = %puuid,
+                found = true,
+                updated_at = row.updated_at,
+                duration_ms = started.elapsed().as_millis() as u64,
+                raw_body = %serde_json::to_string(row).unwrap_or_default(),
+                "读取召唤师缓存命中"
+            ),
+            None => tracing::info!(
+                target: "db.cache",
+                op = "cached_summoner_by_puuid",
+                purpose = "读取 PostgreSQL 召唤师缓存",
+                puuid = %puuid,
+                found = false,
+                duration_ms = started.elapsed().as_millis() as u64,
+                "读取召唤师缓存未命中"
+            ),
+        }
+        Ok(result)
+    }
+
+    pub async fn get_cached_summoner_by_id(
+        &self,
+        summoner_id: i64,
+    ) -> Result<Option<CachedSummonerRow>, String> {
+        if summoner_id <= 0 {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_summoner_by_id",
+            purpose = "读取 PostgreSQL 召唤师缓存",
+            summoner_id,
+            "读取召唤师缓存发起"
+        );
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let row = client
+            .query_opt(
+                "SELECT puuid, summoner_id, account_id, display_name, internal_name,
+                        game_name, tag_line, summoner_name, profile_icon_id,
+                        summoner_level, xp_since_last_level, xp_until_next_level,
+                        percent_complete_for_next_level, privacy, name_change_flag,
+                        reroll_points,
+                        EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_epoch
+                 FROM summoners WHERE summoner_id = $1",
+                &[&summoner_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = row
+            .as_ref()
+            .map(Self::parse_cached_summoner)
+            .transpose()?;
+        match &result {
+            Some(row) => tracing::info!(
+                target: "db.cache",
+                op = "cached_summoner_by_id",
+                purpose = "读取 PostgreSQL 召唤师缓存",
+                summoner_id,
+                found = true,
+                puuid = %row.puuid,
+                updated_at = row.updated_at,
+                duration_ms = started.elapsed().as_millis() as u64,
+                raw_body = %serde_json::to_string(row).unwrap_or_default(),
+                "读取召唤师缓存命中"
+            ),
+            None => tracing::info!(
+                target: "db.cache",
+                op = "cached_summoner_by_id",
+                purpose = "读取 PostgreSQL 召唤师缓存",
+                summoner_id,
+                found = false,
+                duration_ms = started.elapsed().as_millis() as u64,
+                "读取召唤师缓存未命中"
+            ),
+        }
+        Ok(result)
+    }
 }
 
 /// 把 PostgreSQL NOTICE 翻译成中文（保留以便未来 NOTICE 来源接入时直接复用）。
@@ -1000,4 +1315,28 @@ pub async fn get_cached_player_summary(
     request: CachedPlayerSummaryQuery,
 ) -> Result<CachedPlayerSummary, String> {
     state.player_summary(request).await
+}
+
+#[tauri::command]
+pub async fn cache_summoners(
+    state: tauri::State<'_, DatabaseState>,
+    request: CacheSummonerRequest,
+) -> Result<usize, String> {
+    state.cache_summoners(request).await
+}
+
+#[tauri::command]
+pub async fn get_cached_summoner_by_puuid(
+    state: tauri::State<'_, DatabaseState>,
+    puuid: String,
+) -> Result<Option<CachedSummonerRow>, String> {
+    state.get_cached_summoner_by_puuid(puuid).await
+}
+
+#[tauri::command]
+pub async fn get_cached_summoner_by_id(
+    state: tauri::State<'_, DatabaseState>,
+    summoner_id: i64,
+) -> Result<Option<CachedSummonerRow>, String> {
+    state.get_cached_summoner_by_id(summoner_id).await
 }
