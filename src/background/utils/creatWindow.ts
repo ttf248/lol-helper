@@ -5,7 +5,9 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { ConfigSettingTypes } from "../types";
 
 const MAIN_WINDOW_SIZE = { width: 1174, height: 760 };
-const RECENT_MATCH_WINDOW_SIZE = { width: 1254, height: 720 };
+// 对局内面板需要同时容纳双方各 5 名玩家；固定窗口过窄时，
+// 玩家卡片会被压缩，历史战绩也无法保持同一条基线。
+const RECENT_MATCH_WINDOW_SIZE = { width: 1440, height: 820 };
 
 export class MainWindow {
 	constructor() {

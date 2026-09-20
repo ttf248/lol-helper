@@ -93,7 +93,7 @@ const changeConfig = () => {
 			<BrandLockup compact />
 			<div class="team-win-summary">
 				<div class="team-win-stat">
-					<text class="text-gray-400 text-xs">友方胜利次数</text>
+					<text class="text-gray-400 text-xs">友方胜</text>
 					<n-tag
 						:bordered="false"
 						:type="isFriCount ? 'success' : 'error'"
@@ -101,7 +101,7 @@ const changeConfig = () => {
 					>
 						<template #icon>
 							<n-icon
-								:size="15"
+								:size="14"
 								:component="isFriCount ? ThumbUp : ThumbDown"
 							/>
 						</template>
@@ -109,7 +109,7 @@ const changeConfig = () => {
 					</n-tag>
 				</div>
 				<div class="team-win-stat">
-					<text class="text-gray-400 text-xs">敌方胜利次数</text>
+					<text class="text-gray-400 text-xs">敌方胜</text>
 					<n-tag
 						:bordered="false"
 						:type="!isFriCount ? 'success' : 'error'"
@@ -117,7 +117,7 @@ const changeConfig = () => {
 					>
 						<template #icon>
 							<n-icon
-								:size="15"
+								:size="14"
 								:component="!isFriCount ? ThumbUp : ThumbDown"
 							/>
 						</template>
@@ -297,14 +297,21 @@ const changeConfig = () => {
 }
 
 .team-win-stat {
-	flex-direction: column;
-	align-items: stretch;
-	gap: 2px;
+	flex-direction: row;
+	align-items: center;
+	gap: 4px;
 }
 
 .win-count-tag {
 	justify-content: center;
-	width: 72px;
+	width: 80px;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.win-count-tag :deep(.n-tag__content) {
+	font-size: 13px;
+	font-weight: 600;
 }
 
 .dashboard-shortcut,

@@ -34,7 +34,7 @@ body {
 	height: 100vh;
 	width: 100vw;
 	box-sizing: border-box;
-	padding: 0.5rem;
+	padding: 0.625rem;
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -42,7 +42,7 @@ body {
 }
 
 .recent-dashboard {
-	flex: 0 0 40px;
+	flex: 0 0 44px;
 	min-width: 0;
 }
 
@@ -51,7 +51,8 @@ body {
 	flex: 1 1 auto;
 	min-height: 0;
 	min-width: 0;
-	gap: 10px;
+	gap: 12px;
+	align-items: stretch;
 }
 
 .text-ss {

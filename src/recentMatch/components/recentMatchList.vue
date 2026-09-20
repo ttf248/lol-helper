@@ -16,7 +16,6 @@ import {
   MATCH_HISTORY_ENDPOINT_PATHS,
   MATCH_HISTORY_SOURCE_LABELS,
 } from "@/lcu/aboutMatch";
-import { HISTORY_PANEL_PREVIEW_COUNT } from "@/recentMatch/utils/historyConfig";
 import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
 import {
   confidenceLabel,
@@ -51,9 +50,9 @@ const selectedPlayer = computed(() =>
 // 缓存里可能有更多对局（首页后台同步过来的 60 场），
 // 但对局面板首屏只显示前 N 场；展示容器内部可滚动查看更多。
 const previewedMatches = (matchList: RecentSumInfo["matchList"]) =>
-  matchList.slice(0, HISTORY_PANEL_PREVIEW_COUNT);
+  matchList.slice(0, 5);
 const hasMoreMatches = (matchList: RecentSumInfo["matchList"]) =>
-  matchList.length > HISTORY_PANEL_PREVIEW_COUNT;
+  matchList.length > 5;
 
 const showDetail = (
   gameId: number,
@@ -102,6 +101,19 @@ const positionHeroSummary = (position: PositionRecentStats) =>
 
 const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
   status !== undefined && status.kind !== "ready";
+
+const historyStatusLabel = (status?: RecentHistoryStatus) => {
+  if (!status) return "";
+  const labels: Record<string, string> = {
+    loading: "历史读取中",
+    "cache-fallback": "本地缓存",
+    "no-data": "暂无历史",
+    "mode-empty": "本模式暂无历史",
+    "identity-mismatch": "身份待确认",
+    error: "历史读取失败",
+  };
+  return labels[status.kind] || status.title;
+};
 
 const sourceEndpointLabel = (endpoint: string) =>
   MATCH_HISTORY_ENDPOINT_LABELS[
@@ -190,9 +202,8 @@ const teamInsight = computed(() => {
         <div class="team-insight-top">
           <span class="team-insight-title">{{ isFri ? "友方" : "敌方" }}历史摘要</span>
           <div class="team-insight-stats">
-            <span><i>样本</i><strong>{{ teamInsight.totalGames }}场</strong></span>
             <span><i>胜率</i><strong>{{ formatRate(teamInsight.winRate) }}</strong></span>
-            <span><i>胜场</i><strong>{{ teamInsight.totalWins }}</strong></span>
+            <span><i>样本</i><strong>{{ teamInsight.totalGames }}场</strong></span>
           </div>
           <n-tag
             size="tiny"
@@ -207,28 +218,18 @@ const teamInsight = computed(() => {
           v-if="teamInsight.best || teamInsight.risk || teamInsight.groups.length"
           class="team-insight-details"
         >
-          <span v-if="teamInsight.best" class="team-insight-detail">
-            <b>优势</b>{{ teamInsight.best.summonerName }} {{ formatRate(teamInsight.best.recentAnalysis?.winRate) }}
+          <span v-if="teamInsight.best" class="insight-pill insight-pill-good">
+            优势 {{ teamInsight.best.summonerName }} · {{ formatRate(teamInsight.best.recentAnalysis?.winRate) }}
           </span>
           <span
             v-if="teamInsight.risk && teamInsight.risk.puuid !== teamInsight.best?.puuid"
-            class="team-insight-detail"
+            class="insight-pill insight-pill-risk"
           >
-            <b>风险</b>{{ teamInsight.risk.summonerName }} {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
+            风险 {{ teamInsight.risk.summonerName }} · {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
-          <div
-            v-if="teamInsight.groups.length"
-            class="team-insight-detail team-insight-party"
-          >
-            <div class="team-insight-party-stack">
-              <DuoGroupCard
-                v-for="group in teamInsight.groups"
-                :key="group.members.map((member) => member.puuid).sort().join('|')"
-                :group="group"
-                mode="inline"
-              />
-            </div>
-          </div>
+          <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
+            疑似开黑 {{ teamInsight.groups[0].members.length }}人 · {{ teamInsight.groups[0].games }}场
+          </span>
         </div>
       </div>
       <div class="team-grid">
@@ -237,141 +238,100 @@ const teamInsight = computed(() => {
           :key="summoner.puuid"
           class="team-player"
         >
-          <div class="team-player-avatar">
+          <div class="player-overview">
+            <div class="player-card-head">
             <n-avatar
               @click.stop="showDetail(0, 0, summoner.champId)"
-              :size="55"
+              :size="44"
               :src="summoner.championUrl"
               fallback-src="https://wegame.gtimg.com/g.26-r.c2d3c/helper/lol/assis/images/resources/usericon/4027.png"
             />
-          </div>
-
-          <div class="text-xs text-center truncate" :title="summoner.summonerName">
-            {{ summoner.summonerName }}
-          </div>
-
-          <n-tag
-            class="p-0"
-            :bordered="false"
-            type="default"
-            style="height: 30px; width: 100%; font-size: 12px; justify-content: center; margin: 0"
-          >
-            {{ getChampionName(summoner.champId) }}
-          </n-tag>
-
-          <div v-if="summoner.recentAnalysis" class="text-xs leading-5">
-            <div
-              v-if="summoner.recentAnalysis.actualGames > 0"
-              class="flex justify-between"
-            >
-              <span>
-                近{{ summoner.recentAnalysis.actualGames }}场
-                {{ summoner.recentAnalysis.wins }}胜
-              </span>
-              <span class="font-medium">
-                {{ formatRate(summoner.recentAnalysis.winRate) }}
-              </span>
+              <div class="player-identity">
+                <div class="player-name" :title="summoner.summonerName">
+                  {{ summoner.summonerName }}
+                </div>
+                <div class="player-champion">{{ getChampionName(summoner.champId) }}</div>
+              </div>
             </div>
-            <div v-else class="text-gray-500">
-              暂无可用历史样本
-            </div>
-            <div class="text-gray-500 truncate">
-              {{ getChampionName(summoner.champId) }}
-              {{ summoner.recentAnalysis.currentChampion ? heroSummary(summoner.recentAnalysis.currentChampion) : "暂无记录" }}
-            </div>
-            <div class="text-gray-500">
-              置信度 {{ confidenceLabel(summoner.recentAnalysis.confidence) }}
-            </div>
-          </div>
-          <div v-else class="text-xs text-gray-400 text-center leading-5">
-            {{ loadingState.stage === "history" || analysisLoading ? "最近10场数据加载中" : "暂无完整分析" }}
-          </div>
 
-          <div
-            v-if="shouldShowHistoryStatus(summoner.historyStatus)"
-            class="history-status"
-            :class="`history-status-${summoner.historyStatus?.kind}`"
-          >
-            <div class="font-medium">{{ summoner.historyStatus?.title }}</div>
-            <div>{{ summoner.historyStatus?.detail }}</div>
-            <div
-              v-if="summoner.historyStatus?.sourceEndpoints?.length"
-              class="mt-1"
-              :title="sourceEndpointTitle(summoner.historyStatus.sourceEndpoints)"
-            >
-              服务器接口：{{ sourceEndpointSummary(summoner.historyStatus.sourceEndpoints) }}
-            </div>
-          </div>
-
-          <div
-            v-if="summoner.recentAnalysis?.partyGroups.length"
-            class="text-center"
-          >
-            <DuoGroupCard
-              :group="summoner.recentAnalysis.partyGroups[0]"
-              mode="compact"
-              :expanded="selectedPuuid === summoner.puuid"
-              @click="toggleAnalysis(summoner.puuid)"
-            >
-              <template #evidence>
-                <div class="text-xs leading-5">
-                  <div class="font-medium mb-1">疑似开黑判定依据</div>
-                  <div
-                    v-for="group in summoner.recentAnalysis.partyGroups"
-                    :key="group.members.map((member) => member.puuid).join('-')"
-                    class="mb-2 last:mb-0"
-                  >
-                    <div class="font-medium truncate" :title="partyGroupNames(group)">
-                      {{ partyGroupNames(group) }}
-                    </div>
-                    <div>{{ partyEvidenceSummary(group) }}</div>
-                    <div>
-                      近30天 {{ group.recentGames }} 场 · 胜率 {{ formatRate(group.winRate) }}
-                    </div>
-                    <div
-                      v-for="evidence in group.evidence.slice(0, 3)"
-                      :key="evidence.gameId"
-                      class="text-gray-500"
-                    >
-                      证据 {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
-                    </div>
+            <div v-if="summoner.recentAnalysis" class="text-xs leading-5">
+              <div v-if="summoner.recentAnalysis.actualGames > 0" class="player-metrics">
+                <div class="player-metrics-hero">
+                  <strong>{{ formatRate(summoner.recentAnalysis.winRate) }}</strong>
+                  <span class="player-metrics-label">胜率</span>
+                </div>
+                <div class="player-metrics-meta">
+                  <div>
+                    <strong>{{ summoner.recentAnalysis.wins }}/{{ summoner.recentAnalysis.actualGames }}</strong>
+                    <span>近况</span>
                   </div>
-                  <div class="text-gray-500 mt-1">
-                    取所有成员历史 gameId 的交集，并确认这些对局中处于同一队；个人最近 10/100 场列表、英雄和胜率不需要完全相同。接口没有官方组队 ID，因此结论仅为“疑似”。
+                  <div>
+                    <strong>{{ confidenceLabel(summoner.recentAnalysis.confidence) }}</strong>
+                    <span>置信</span>
                   </div>
                 </div>
-              </template>
-            </DuoGroupCard>
-            <div
-              v-if="summoner.recentAnalysis.partyGroups.length > 1"
-              class="text-gray-500"
-              style="font-size: 10px; margin-top: 2px"
-            >
-              共 {{ summoner.recentAnalysis.partyGroups.length }} 组，点击查看全部
+              </div>
+              <div v-else class="player-no-data">
+                暂无可用历史样本
+              </div>
+              <div v-if="summoner.recentAnalysis.currentChampion" class="player-current-form">
+                {{ heroSummary(summoner.recentAnalysis.currentChampion) }} · 当前英雄表现
+              </div>
             </div>
-          </div>
+            <div v-else class="player-no-data">
+              {{ loadingState.stage === "history" || analysisLoading ? "分析中…" : "暂无分析" }}
+            </div>
 
-          <div v-if="summoner.recentAnalysis?.moderation.reportCount" class="text-center">
-            <n-tag
-              size="small"
-              :bordered="false"
-              :type="summoner.recentAnalysis.moderation.marked ? 'error' : 'info'"
-              @click.stop="toggleAnalysis(summoner.puuid)"
+            <div
+              v-if="
+                shouldShowHistoryStatus(summoner.historyStatus) ||
+                summoner.recentAnalysis?.partyGroups.length ||
+                summoner.recentAnalysis?.moderation.reportCount
+              "
+              class="player-status-row"
             >
-              {{ summoner.recentAnalysis.moderation.marked ? "黑名单" : "有举报记录" }}
-            </n-tag>
-          </div>
+              <span
+                v-if="shouldShowHistoryStatus(summoner.historyStatus)"
+                class="status-chip status-chip-history"
+                :class="`history-status-${summoner.historyStatus?.kind}`"
+                :title="summoner.historyStatus?.detail"
+              >
+                {{ historyStatusLabel(summoner.historyStatus) }}
+                <span v-if="summoner.historyStatus?.cachedGames" class="status-chip-detail">
+                  ·{{ summoner.historyStatus.cachedGames }}场
+                </span>
+              </span>
+              <button
+                v-if="summoner.recentAnalysis?.partyGroups.length"
+                class="status-chip status-chip-party"
+                type="button"
+                :title="partyGroupNames(summoner.recentAnalysis.partyGroups[0])"
+                @click="toggleAnalysis(summoner.puuid)"
+              >
+                开黑 {{ summoner.recentAnalysis.partyGroups[0].members.length }}人
+                <span v-if="summoner.recentAnalysis.partyGroups.length > 1" class="status-chip-extra">
+                  +{{ summoner.recentAnalysis.partyGroups.length - 1 }}
+                </span>
+              </button>
+              <n-tag
+                v-if="summoner.recentAnalysis?.moderation.reportCount"
+                size="small"
+                :bordered="false"
+                :type="summoner.recentAnalysis.moderation.marked ? 'error' : 'info'"
+                @click.stop="toggleAnalysis(summoner.puuid)"
+                class="status-chip"
+              >
+                {{ summoner.recentAnalysis.moderation.marked ? "黑名单" : "举报" }}
+              </n-tag>
+            </div>
 
-          <n-button
-            text
-            size="tiny"
-            class="w-full"
-            @click="toggleAnalysis(summoner.puuid)"
-          >
-            {{ selectedPuuid === summoner.puuid ? "收起分析" : "展开分析" }}
-          </n-button>
+            <n-button text size="tiny" class="player-expand-button" @click="toggleAnalysis(summoner.puuid)">
+              {{ selectedPuuid === summoner.puuid ? "收起分析" : "展开分析" }}
+            </n-button>
+          </div>
 
           <div v-if="summoner.matchList.length" class="match-history">
+            <div class="match-history-title">最近战绩</div>
             <div
               v-for="match in previewedMatches(summoner.matchList)"
               :key="match.gameId"
@@ -379,7 +339,7 @@ const teamInsight = computed(() => {
               class="match-history-row cursor-pointer"
             >
               <n-avatar
-                :size="27"
+                :size="32"
                 :src="match.champImg"
                 fallback-src="https://wegame.gtimg.com/g.26-r.c2d3c/helper/lol/assis/images/resources/usericon/4027.png"
               />
@@ -396,7 +356,7 @@ const teamInsight = computed(() => {
               class="history-more-hint"
               :title="`本地缓存共 ${summoner.matchList.length} 场`"
             >
-              …还有 {{ summoner.matchList.length - HISTORY_PANEL_PREVIEW_COUNT }} 场在本地缓存
+              还有 {{ summoner.matchList.length - 5 }} 场 · 点击展开分析查看
             </div>
           </div>
           <div v-else-if="summoner.historyStatus?.kind !== 'loading'" class="history-empty">
@@ -613,7 +573,7 @@ const teamInsight = computed(() => {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  margin-top: 6px;
+  margin-top: 4px;
   overflow: hidden;
 }
 
@@ -623,6 +583,7 @@ const teamInsight = computed(() => {
   box-sizing: border-box;
   overflow-y: auto;
   overflow-x: hidden;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.82), rgba(255, 255, 255, 0.98));
 }
 
 .team-panel-content {
@@ -630,14 +591,15 @@ const teamInsight = computed(() => {
 }
 
 .team-insight {
-	margin-bottom: 8px;
-	padding: 5px 7px;
-	border: 1px solid rgba(16, 185, 129, 0.16);
-	border-radius: 6px;
-	background: rgba(236, 253, 245, 0.78);
+	margin-bottom: 9px;
+	padding: 8px 9px 7px;
+	border: 1px solid rgba(16, 185, 129, 0.2);
+	border-radius: 9px;
+	background: rgba(236, 253, 245, 0.7);
 	color: #374151;
-	font-size: 11px;
-	line-height: 1.25;
+	font-size: 12px;
+	line-height: 1.4;
+	box-shadow: 0 2px 8px rgba(15, 118, 110, 0.05);
 }
 
 .team-insight-top,
@@ -649,8 +611,8 @@ const teamInsight = computed(() => {
 }
 
 .team-insight-top {
-	justify-content: space-between;
-	min-height: 22px;
+	justify-content: flex-start;
+	min-height: 24px;
 	white-space: nowrap;
 }
 
@@ -670,7 +632,7 @@ const teamInsight = computed(() => {
 	display: inline-flex;
 	align-items: baseline;
 	min-width: 0;
-	padding: 0 8px;
+	padding: 0 7px;
 	border-right: 1px solid rgba(16, 185, 129, 0.18);
 }
 
@@ -683,21 +645,25 @@ const teamInsight = computed(() => {
 }
 
 .team-insight-stats i {
-	margin-right: 3px;
+	margin-right: 4px;
 	font-style: normal;
-	color: #6b7280;
+	font-variant-caps: small-caps;
+	letter-spacing: 0.3px;
+	color: #4b5563;
+	font-weight: 500;
 }
 
 .team-insight-stats strong {
-	font-size: 12px;
+	font-size: 13px;
 	color: #111827;
 }
 
 .team-insight-details {
-	margin-top: 3px;
-	padding-top: 3px;
+	margin-top: 6px;
+	padding-top: 6px;
 	border-top: 1px solid rgba(16, 185, 129, 0.12);
 	overflow: hidden;
+	gap: 5px;
 }
 
 .team-insight-detail {
@@ -709,6 +675,34 @@ const teamInsight = computed(() => {
 	white-space: nowrap;
 	text-overflow: ellipsis;
 	color: #4b5563;
+}
+
+.insight-pill {
+	display: inline-flex;
+	align-items: center;
+	max-width: 48%;
+	padding: 3px 7px;
+	border-radius: 999px;
+	font-size: 11px;
+	line-height: 14px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.insight-pill-good {
+	color: #047857;
+	background: rgba(209, 250, 229, 0.9);
+}
+
+.insight-pill-risk {
+	color: #b45309;
+	background: rgba(254, 243, 199, 0.9);
+}
+
+.insight-pill-party {
+	color: #4338ca;
+	background: rgba(224, 231, 255, 0.9);
 }
 
 .team-insight-detail b {
@@ -761,7 +755,7 @@ const teamInsight = computed(() => {
 .team-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -769,17 +763,193 @@ const teamInsight = computed(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 8px;
+  gap: 7px;
+  padding: 9px 8px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.045);
 }
 
-.team-player-avatar {
+/* 概览区固定高度，保证两队五列的“最近战绩”从同一条基线开始。 */
+.player-overview {
   display: flex;
-  justify-content: center;
+  flex: 0 0 246px;
+  flex-direction: column;
+  min-width: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.player-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   min-height: 55px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
 }
 
 .team-player :deep(.n-avatar) {
   flex: 0 0 auto;
+  border: 2px solid rgba(148, 163, 184, 0.32);
+}
+
+.player-identity {
+  min-width: 0;
+}
+
+.player-name {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-champion {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 2px;
+}
+
+.player-metrics-hero {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  min-height: 24px;
+}
+
+.player-metrics-hero strong {
+  color: #0f766e;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 22px;
+}
+
+.player-metrics-label,
+.player-metrics-meta span {
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.player-metrics-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  min-width: 0;
+}
+
+.player-metrics-meta > div {
+  min-width: 0;
+  padding: 2px 1px;
+  border-radius: 4px;
+  background: #f8fafc;
+  text-align: center;
+}
+
+.player-metrics-meta strong {
+  display: block;
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-metrics-meta span {
+  display: block;
+}
+
+.player-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+  padding: 1px 0 2px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  background: #f1f5f9;
+  color: #475569;
+  border: none;
+  font-family: inherit;
+}
+
+.status-chip-history {
+  cursor: default;
+  flex: 0 1 auto;
+}
+
+.status-chip-detail {
+  opacity: 0.75;
+  font-size: 10px;
+  margin-left: 2px;
+}
+
+.status-chip-extra {
+  color: #94a3b8;
+  font-size: 10px;
+  margin-left: 3px;
+}
+
+.status-chip-party {
+  background: rgba(224, 231, 255, 0.9);
+  color: #4338ca;
+  border: 1px solid rgba(67, 56, 202, 0.18);
+}
+
+.status-chip-party:hover {
+  background: rgba(199, 210, 254, 0.95);
+}
+
+.player-current-form,
+.player-no-data {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-current-form {
+  min-height: 16px;
+}
+
+.player-no-data {
+  padding: 5px 0;
+  color: #94a3b8;
 }
 
 .team-player :deep(.n-tag) {
@@ -791,15 +961,21 @@ const teamInsight = computed(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 6px;
-  /* 对局内面板首屏固定展示前 10 场，超出部分在容器内滚动；
-     团队列高度不再被无界缓存撑高。 */
-  max-height: 360px;
-  overflow-y: auto;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding-top: 7px;
+  border-top: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.match-history-title {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
 }
 
 .history-more-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: rgba(140, 140, 140, 0.9);
   text-align: center;
   padding: 4px 0 2px 0;
@@ -808,11 +984,46 @@ const teamInsight = computed(() => {
 
 .history-status,
 .history-empty {
-  border-radius: 4px;
-  padding: 4px 6px;
-  font-size: 11px;
-  line-height: 1.45;
-  text-align: center;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	border-radius: 4px;
+	min-width: 0;
+	height: 27px;
+	padding: 0 5px;
+	font-size: 9px;
+	line-height: 13px;
+	text-align: center;
+}
+
+.history-status-detail {
+	overflow: hidden;
+	color: inherit;
+	opacity: 0.78;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.party-badge {
+	width: 100%;
+	min-width: 0;
+	padding: 5px 4px;
+	border: 1px solid rgba(45, 212, 191, 0.24);
+	border-radius: 5px;
+	background: rgba(236, 253, 245, 0.85);
+	color: #047857;
+	cursor: pointer;
+	font-family: inherit;
+	font-size: 10px;
+	line-height: 13px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.party-badge:hover {
+	background: rgba(209, 250, 229, 0.95);
 }
 
 .history-empty {
@@ -844,19 +1055,103 @@ const teamInsight = computed(() => {
 
 .match-history-row {
   display: grid;
-  grid-template-columns: 27px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
   gap: 4px;
+  height: 26px;
 }
 
 .match-kda {
   width: 100%;
-  height: 27px;
+  height: 26px;
   min-width: 0;
   justify-content: center;
-  padding: 0 2px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.match-history-row :deep(.n-avatar) {
+  width: 26px;
+  height: 26px;
+}
+
+.player-expand-button {
+  margin-top: 1px;
+  min-height: 22px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.32);
+  color: #64748b;
   font-size: 11px;
+}
+
+:global(.dark) .team-panel :deep(.n-card__content) {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(17, 24, 39, 0.98));
+}
+
+:global(.dark) .team-player {
+  border-color: rgba(71, 85, 105, 0.48);
+  background: rgba(30, 41, 59, 0.82);
+}
+
+:global(.dark) .player-name {
+  color: #e2e8f0;
+}
+
+:global(.dark) .player-metrics-meta > div {
+  background: rgba(15, 23, 42, 0.65);
+}
+
+:global(.dark) .player-metrics-hero strong,
+:global(.dark) .player-metrics-meta strong {
+  color: #5eead4;
+}
+
+:global(.dark) .status-chip {
+  background: rgba(30, 41, 59, 0.7);
+  color: #cbd5e1;
+}
+
+:global(.dark) .status-chip-party {
+  background: rgba(67, 56, 202, 0.25);
+  color: #c7d2fe;
+  border-color: rgba(199, 210, 254, 0.2);
+}
+
+:global(.dark) .status-chip-party:hover {
+  background: rgba(67, 56, 202, 0.35);
+}
+
+:global(.dark) .history-status-loading {
+  color: #93c5fd;
+  background: rgba(30, 58, 138, 0.35);
+}
+
+:global(.dark) .history-status-cache-fallback {
+  color: #fcd34d;
+  background: rgba(120, 53, 15, 0.35);
+}
+
+:global(.dark) .history-status-no-data,
+:global(.dark) .history-status-mode-empty {
+  color: #cbd5e1;
+  background: rgba(51, 65, 85, 0.45);
+}
+
+:global(.dark) .history-status-identity-mismatch,
+:global(.dark) .history-status-error {
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.35);
+}
+
+:global(.dark) .match-history-title {
+  color: #cbd5e1;
+}
+
+:global(.dark) .party-badge {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(6, 78, 59, 0.45);
+  color: #a7f3d0;
 }
 
 @media (max-width: 980px) {
