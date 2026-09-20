@@ -170,9 +170,12 @@ const useMatchStore = defineStore("useMatchStore", {
 			requestId?: number,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
+			// 主窗口首屏只拉最近 20 场，避免触发服务器三页 (60 场) 的
+			// 200ms 串行延迟。分析面板 / 翻页时再走全量窗口。
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				0,
+				20,
 				20,
 			);
 			if (queryRequestId !== this.queryRequestId) {
@@ -219,10 +222,13 @@ const useMatchStore = defineStore("useMatchStore", {
 			requestId?: number,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
+			// 翻页也只取最近 20 场窗口；超过 20 场的页面依赖 PG 缓存
+			// 提供，避免每次翻页都重新拉服务器 60 场。
 			const matchResult = await baseMatch.dealMatchHistoryWithSource(
 				puuid,
 				(page - 1) * 9,
 				page * 9,
+				20,
 			);
 			if (queryRequestId !== this.queryRequestId) {
 				return false;

@@ -442,6 +442,11 @@ const splitRequestsSequential = async (
 
 		if (result.games.length > 0) {
 			allGames = allGames.concat(result.games);
+			// 短页（不足 step）说明服务器历史已经到末尾，再去请求下一页
+			// 也只会拿到更旧的、可能无关的数据，反而拉满 200ms 间隔。
+			if (result.games.length < step) {
+				break;
+			}
 		} else {
 			// 已经到达历史末尾，避免为不存在的分页继续请求。
 			break;

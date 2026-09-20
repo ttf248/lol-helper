@@ -51,11 +51,13 @@ export default class BaseMatch {
             source: MatchHistorySource;
             sourceEndpoints: MatchHistoryEndpoint[];
             fetchedAt: number;
+            serverLimit: number;
         }
     >();
 
     private syncRecentServerHistory = async (
         puuid: string,
+        serverLimit: number,
     ): Promise<{
         games: (Games | GamesBySgp)[];
         source: MatchHistorySource | null;
@@ -65,14 +67,16 @@ export default class BaseMatch {
         const result = await queryMatchHistoryWithSource(
             puuid,
             0,
-            HISTORY_SERVER_FETCH_LIMIT,
+            serverLimit,
         );
+        const cacheKey = `${puuid}|${serverLimit}`;
         if (result) {
-            this.recentServerHistory.set(puuid, {
+            this.recentServerHistory.set(cacheKey, {
                 games: result.games,
                 source: result.source,
                 sourceEndpoints: result.endpoints,
                 fetchedAt: Date.now(),
+                serverLimit,
             });
         }
         return {
@@ -156,6 +160,7 @@ export default class BaseMatch {
         puuid: string,
         begIndex: number,
         endIndex: number,
+        serverLimit: number = HISTORY_SERVER_FETCH_LIMIT,
     ): Promise<ProcessedMatchHistory | null> => {
         // 写入玩家id
         let localSumInfo: Partial<sumInfoTypes> = {};
@@ -188,15 +193,18 @@ export default class BaseMatch {
             limit: HISTORY_ANALYSIS_LIMIT,
             offset: 0,
         });
-        // 首次查询或短缓存过期后刷新服务器窗口；同一玩家的模式切换和
-        // 后续翻页复用窗口，第四页及更早页面只读本地缓存。
-        const serverHistory = this.recentServerHistory.get(puuid);
+        // 列表路径只同步最近 20 场，分析面板路径同步全量 60 场；不同
+        // serverLimit 各自维护一份 TTL 窗口，避免主窗口首屏等 200ms
+        // 串行三页。
+        const serverHistory = this.recentServerHistory.get(
+            `${puuid}|${serverLimit}`,
+        );
         const shouldSync =
             !serverHistory ||
             Date.now() - serverHistory.fetchedAt >= SERVER_HISTORY_CACHE_TTL_MS;
         const synced =
             shouldSync
-                ? await this.syncRecentServerHistory(puuid)
+                ? await this.syncRecentServerHistory(puuid, serverLimit)
                 : {
                       games: serverHistory.games,
                       source: serverHistory.source,
