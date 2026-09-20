@@ -26,6 +26,7 @@ const createIdleHistoryCacheSync = (): HistoryCacheSyncStatus => ({
 	kind: "idle",
 	currentPage: 0,
 	totalPages: null,
+	totalCount: null,
 	maxPages: HISTORY_COLD_START_PAGES,
 	cachedGames: 0,
 	downloadedGames: 0,
@@ -78,6 +79,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			recentMatchList20: [] as SimpleMatchDetailsTypes[],
 			specialMatchList: [] as SimpleMatchDetailsTypes[],
 			matchAvailableCount: 0,
+			matchTotalCount: null as number | null,
 			matchPageCount: 1,
 			participantsInfo: null as null | ParticipantsInfo,
 			sumInfo: null as { info: summonerInfo } | null,
@@ -134,6 +136,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.recentMatchList20 = [];
 				this.analysisData = null;
 				this.matchAvailableCount = 0;
+				this.matchTotalCount = null;
 				this.matchPageCount = 1;
 				const localPuuid = (() => {
 					try {
@@ -169,6 +172,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.recentMatchList20 = [];
 				this.analysisData = null;
 				this.matchAvailableCount = 0;
+				this.matchTotalCount = null;
 				this.matchPageCount = 1;
 				this.matchError =
 					"战绩接口请求失败，请稍后重试；如果该账号没有公开战绩，客户端不会返回对局数据。";
@@ -223,7 +227,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				cached = await getCachedHistoryPage(puuid, offset, pageSize);
 			}
 			this.matchList = baseMatch.getSimpleMatchList(cached, puuid);
-			if (reachedEnd) {
+			if (reachedEnd && this.matchTotalCount === null) {
 				// 服务器已明确到末尾时，撤销“未知总数”场景下
 				// 为了允许继续翻页而临时多展示的页。
 				this.matchAvailableCount = offset + this.matchList.length;
@@ -248,6 +252,18 @@ const useMatchStore = defineStore("useMatchStore", {
 			return true;
 		},
 		async refreshMatchAvailableCount(puuid: string, minimumCount = 0) {
+			if (this.matchTotalCount !== null) {
+				// 服务器已经给出总数时，PG 当前只缓存前三页也不能覆盖
+				// 这个值，否则翻页后会把顶部页数缩回缓存页数。
+				this.matchAvailableCount = this.matchTotalCount;
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(
+						this.matchTotalCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+					),
+				);
+				return;
+			}
 			const all = await getCachedHistory({
 				puuid,
 				limit: Math.max(HISTORY_CACHE_SYNC_LIMIT, minimumCount),
@@ -295,23 +311,14 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchLocalCacheUsed = matchResult.localCacheUsed;
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
-			this.matchAvailableCount = Math.max(
-				matchResult.availableCount,
-				matchResults.length,
-			);
+			this.matchTotalCount = matchResult.totalCount;
+			this.matchAvailableCount =
+				matchResult.totalCount ??
+				Math.max(matchResult.availableCount, matchResults.length);
 			this.matchPageCount = Math.max(
 				1,
 				Math.ceil(this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE),
 			);
-			// totalCount 可能暂时不可得。首页数据达到一整页服务器
-			// 返回量时先开放一个按需页，避免“主动缓存三页”被误解成
-			// “只能翻三页”；同步确认末尾后会自动收回空页。
-			if (
-				matchResult.totalCount === null &&
-				matchResults.length >= HISTORY_SERVER_PAGE_SIZE
-			) {
-				this.matchPageCount += 1;
-			}
 			this.matchList = this.recentMatchList20.slice(0, HISTORY_HOMEPAGE_PAGE_SIZE);
 			this.analysisData =
 				this.recentMatchList20.length === 0
@@ -345,32 +352,32 @@ const useMatchStore = defineStore("useMatchStore", {
 
 			this.historyCacheSync = result;
 			// 主动缓存只扫描前三个服务器页，但这不应限制首页分页。
-			// 接口报告的总页数优先用于分页；没有总数时至少使用当前已
-			// 缓存的记录数，翻到更早页时再继续扩展。
-			const reportedCount = result.totalPages
-				? result.totalPages * HISTORY_SERVER_PAGE_SIZE
-				: 0;
-			const availableCount = Math.max(
-				result.cachedGames,
-				reportedCount,
-			);
-			if (availableCount > this.matchAvailableCount) {
-				this.matchAvailableCount = availableCount;
-			}
-			if (result.kind === "complete" && result.totalPages === null) {
+			// 只要服务器报告总数，顶部页数就严格按服务器总数计算；
+			// 没有总数时才回退到当前已缓存数量。
+			if (result.totalCount !== null) {
+				this.matchTotalCount = result.totalCount;
+				this.matchAvailableCount = result.totalCount;
 				this.matchPageCount = Math.max(
 					1,
 					Math.ceil(
-						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
+						result.totalCount / HISTORY_HOMEPAGE_PAGE_SIZE,
 					),
 				);
-			} else {
+				return;
+			}
+
+			if (this.matchTotalCount === null) {
+				const availableCount = Math.max(
+					result.cachedGames,
+					this.matchAvailableCount,
+				);
+				this.matchAvailableCount = availableCount;
 				this.matchPageCount = Math.max(
 					1,
 					Math.ceil(
 						this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
 					),
-					result.kind === "limited" && result.totalPages === null
+					result.kind === "limited"
 						? Math.ceil(
 							this.matchAvailableCount / HISTORY_HOMEPAGE_PAGE_SIZE,
 						) + 1

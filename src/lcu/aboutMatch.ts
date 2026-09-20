@@ -170,14 +170,15 @@ const fetchCurrentSummonerMatchHistory = async (
 			Number.isFinite(responseEnd) &&
 			responseEnd <= begIndex + count;
 		const advertisedCount = Number(history?.gameCount);
-		// 有些客户端忽略 begIndex/endIndex，返回完整历史；此时 games.length
-		// 就是可靠的总数。分页客户端只有在 gameCount 明确超过当前页末尾
-		// 时才采用它，避免把“本页返回数量”误认为历史总数。
-		const totalCount = !alreadyPaged
-			? games.length
-			: Number.isFinite(advertisedCount) &&
-				  advertisedCount > Math.max(responseEnd, begIndex + games.length)
+		// gameCount 是 LCU 返回的历史总数。不能再要求它必须大于当前页
+		// 的末尾：当最后一页正好结束在总数处，旧条件会把有效总数丢成
+		// null，页面只能退回到“已缓存多少场就显示多少页”的估算逻辑。
+		// 如果客户端没有提供 gameCount，只有未分页返回完整列表时才用
+		// games.length 作为兜底。
+		const totalCount = Number.isFinite(advertisedCount) && advertisedCount >= 0
 			? advertisedCount
+			: !alreadyPaged
+			? games.length
 			: null;
 		return {
 			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
@@ -220,11 +221,12 @@ const fetchSummonerMatchHistoryFromLcu = async (
 			Number.isFinite(responseEnd) &&
 			responseEnd <= begIndex + count;
 		const advertisedCount = Number(history?.gameCount);
-		const totalCount = !alreadyPaged
-			? games.length
-			: Number.isFinite(advertisedCount) &&
-				  advertisedCount > Math.max(responseEnd, begIndex + games.length)
+		// 与 current-summoner 接口保持一致：gameCount 是服务器报告的
+		// 历史总数，不能因为当前请求刚好落在末页就将它过滤掉。
+		const totalCount = Number.isFinite(advertisedCount) && advertisedCount >= 0
 			? advertisedCount
+			: !alreadyPaged
+			? games.length
 			: null;
 		return {
 			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),

@@ -205,6 +205,8 @@ export interface HistoryCacheSyncStatus {
   kind: HistoryCacheSyncKind;
   currentPage: number;
   totalPages: number | null;
+  /** 服务器报告的历史总场数；totalPages 是按服务器分页大小计算的同步页数。 */
+  totalCount: number | null;
   maxPages: number;
   cachedGames: number;
   downloadedGames: number;

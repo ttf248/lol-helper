@@ -338,6 +338,7 @@ export default class BaseMatch {
         const maxPages = HISTORY_COLD_START_PAGES;
         const pageSize = HISTORY_SERVER_PAGE_SIZE;
         let totalPages: number | null = null;
+        let totalCount: number | null = null;
         let currentPage = 0;
         let downloadedGames = 0;
 
@@ -361,6 +362,7 @@ export default class BaseMatch {
                 kind,
                 currentPage,
                 totalPages,
+                totalCount,
                 maxPages,
                 cachedGames: cachedGameIds.size,
                 downloadedGames,
@@ -421,9 +423,10 @@ export default class BaseMatch {
 
             const reportedTotalCount = Number(pageResult.totalCount);
             if (Number.isFinite(reportedTotalCount) && reportedTotalCount >= 0) {
+                totalCount = Math.max(totalCount ?? 0, reportedTotalCount);
                 totalPages = Math.max(
                     currentPage,
-                    Math.ceil(reportedTotalCount / pageSize),
+                    Math.ceil(totalCount / pageSize),
                 );
             }
 
