@@ -91,6 +91,10 @@ const useMatchStore = defineStore("useMatchStore", {
 			matchSourceEndpoints: [] as MatchHistoryEndpoint[],
 			matchLocalCacheUsed: false,
 			historyCacheSync: createIdleHistoryCacheSync(),
+			// 底部进度条区域用的同步状态队列；每个元素代表一行进度。
+			// cancelled 行会被组件过滤掉不显示，complete / limited /
+			// error 行由组件定时器或用户手动关闭后移除。
+			historySyncStripRows: [] as HistoryCacheSyncStatus[],
 			analysisData: null as RencentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
@@ -136,6 +140,7 @@ const useMatchStore = defineStore("useMatchStore", {
 					info: sumResult.summonerInfo,
 				};
 				this.summonerId = sumResult.summonerInfo.currentId;
+				const targetSummonerName = sumResult.summonerInfo.name;
 				if (summonerId === undefined && locSumId === undefined) {
 					persistLocalSummoner(sumResult.summonerInfo);
 				}
@@ -145,24 +150,19 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.matchAvailableCount = 0;
 				this.matchTotalCount = null;
 				this.matchPageCount = 1;
-				const localPuuid = (() => {
-					try {
-						return (JSON.parse(localStorage.getItem("sumInfo") || "null") as {
-							puuid?: string;
-						} | null)?.puuid;
-					} catch {
-						return undefined;
-					}
-				})();
-				const isCurrentUser =
-					(summonerId === undefined && locSumId === undefined) ||
-					(localPuuid !== undefined &&
-						localPuuid === sumResult.summonerInfo.puuid);
 				await this.fetchAndProcessMatches(
 					this.sumInfo.info.puuid,
 					queryRequestId,
-					isCurrentUser,
 				);
+				// 任何召唤师的 500 场同步都触发，让历史分析面板在切换
+				// 到他人时也能基于完整的本地缓存工作。
+				if (queryRequestId === this.queryRequestId) {
+					void this.syncCurrentUserHistory(
+						this.sumInfo.info.puuid,
+						queryRequestId,
+						targetSummonerName,
+					);
+				}
 			} catch (error) {
 				if (queryRequestId !== this.queryRequestId) {
 					return;
@@ -306,7 +306,6 @@ const useMatchStore = defineStore("useMatchStore", {
 		async fetchAndProcessMatches(
 			puuid: string,
 			requestId?: number,
-			isCurrentUser = false,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
 			// 主窗口首屏只拉最近 20 场，避免首屏等待更早历史；后台同步
@@ -358,24 +357,60 @@ const useMatchStore = defineStore("useMatchStore", {
 			// 已经成功返回的战绩列表。
 			void this.getMatchDetail(this.matchList[0].gameId);
 
-			if (isCurrentUser) {
-				void this.syncCurrentUserHistory(puuid, queryRequestId);
-			}
 			return true;
 		},
-		async syncCurrentUserHistory(puuid: string, requestId: number) {
+		async syncCurrentUserHistory(
+			puuid: string,
+			requestId: number,
+			summonerName = "",
+		) {
+			// 给底部进度条组件一个唯一 rowId，让它能把定时器和具体行绑定。
+			// 时间戳 + 随机后缀足以保证短时间内不会撞 id。
+			const rowId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+			const initialRow: HistoryCacheSyncStatus = {
+				kind: "syncing",
+				currentPage: 0,
+				totalPages: null,
+				totalCount: null,
+				maxPages: HISTORY_COLD_START_PAGES,
+				cachedGames: 0,
+				downloadedGames: 0,
+				message: "准备开始同步",
+				detail: "",
+				summonerName,
+				rowId,
+			};
+			this.historySyncStripRows = [
+				...this.historySyncStripRows,
+				initialRow,
+			];
+
+			const updateRow = (next: HistoryCacheSyncStatus) => {
+				if (requestId !== this.queryRequestId) return;
+				this.historyCacheSync = next;
+				this.historySyncStripRows = this.historySyncStripRows.map(
+					(row) => (row.rowId === rowId ? { ...next, summonerName, rowId } : row),
+				);
+			};
+
 			const result = await baseMatch.syncCurrentUserHistory(
 				puuid,
-				(progress) => {
-					if (requestId === this.queryRequestId) {
-						this.historyCacheSync = progress;
-					}
-				},
+				(progress) => updateRow(progress),
 				() => requestId === this.queryRequestId,
 			);
-			if (requestId !== this.queryRequestId) return;
 
-			this.historyCacheSync = result;
+			if (requestId !== this.queryRequestId) {
+				// 被新的 init 抢占：本行标记为 cancelled，组件会过滤掉不显示。
+				this.historySyncStripRows = this.historySyncStripRows.map(
+					(row) =>
+						row.rowId === rowId
+							? { ...row, kind: "cancelled" }
+							: row,
+				);
+				return;
+			}
+
+			updateRow(result);
 			// 主动缓存有明确窗口，但这不应把服务器总量误当成缓存页数。
 			// 只要服务器报告总数，顶部页数就严格按服务器总数计算；
 			// 没有总数时才回退到当前已缓存数量。
@@ -418,6 +453,11 @@ const useMatchStore = defineStore("useMatchStore", {
 					),
 				);
 			}
+		},
+		dismissHistorySyncStripRow(rowId: number) {
+			this.historySyncStripRows = this.historySyncStripRows.filter(
+				(row) => row.rowId !== rowId,
+			);
 		},
 		async getMatchFromPage(
 			page: number,

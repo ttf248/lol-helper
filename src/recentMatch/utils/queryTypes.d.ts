@@ -212,6 +212,10 @@ export interface HistoryCacheSyncStatus {
   downloadedGames: number;
   message: string;
   detail: string;
+  /** 触发本次同步的召唤师名；底部进度条用它做标签。 */
+  summonerName?: string;
+  /** store 在 push 时分配的行 id，给底部进度条组件关联定时器用。 */
+  rowId?: number;
 }
 
 export interface ChampionRecentStats {

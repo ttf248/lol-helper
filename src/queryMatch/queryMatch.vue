@@ -2,6 +2,7 @@
 import QueryHeader from "./components/queryHeader.vue";
 import SummonerInfoView from "./components/summonerInfoView.vue";
 import MatchMain from "./components/matchMain.vue";
+import HistorySyncStrip from "./components/historySyncStrip.vue";
 import useMatchStore from "@/queryMatch/store";
 import {
     NCard,
@@ -253,6 +254,8 @@ const clearBlackMatch = () => {
             />
         </n-drawer-content>
     </n-drawer>
+
+    <history-sync-strip />
 </template>
 
 <style scoped>
