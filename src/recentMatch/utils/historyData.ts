@@ -2,6 +2,7 @@ import type {
   HistoryCoverageInfo,
 } from "@/recentMatch/utils/queryTypes";
 import type { NormalizedHistoryGame } from "@/recentMatch/utils/recentAnalytics";
+import { logger } from "@/utils/logger";
 
 export type HistoryGameQuality = "complete" | "partial";
 
@@ -42,6 +43,7 @@ export const mergeHistoryGames = (
   cachedGames: NormalizedHistoryGame[],
   interfaceGames: NormalizedHistoryGame[],
   limit = 100,
+  loggerContext?: { puuid?: string; modeKey?: string },
 ): { games: NormalizedHistoryGame[]; coverage: HistoryCoverageInfo } => {
   const merged = new Map<number, NormalizedHistoryGame>();
   const cachedIds = new Set<number>();
@@ -66,6 +68,24 @@ export const mergeHistoryGames = (
     if (interfaceIsBetter) {
       merged.set(game.gameId, game);
     }
+  }
+
+  if (conflicts > 0) {
+    logger.debug({
+      tag: "recent.merge",
+      message: "mergeHistoryGames 出现 gameId 冲突",
+      context: {
+        conflicts,
+        cached_games: cachedGames.length,
+        interface_games: interfaceGames.length,
+        ...(loggerContext?.puuid !== undefined
+          ? { puuid: `…${loggerContext.puuid.slice(-8)}` }
+          : {}),
+        ...(loggerContext?.modeKey !== undefined
+          ? { mode_key: loggerContext.modeKey }
+          : {}),
+      },
+    });
   }
 
   const sorted = sortHistoryGames(Array.from(merged.values()));

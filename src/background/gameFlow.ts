@@ -85,6 +85,15 @@ export class GameFlow {
 				await wait(GAME_START_POLL_INTERVAL);
 			}
 		}
+		logger.warn({
+			tag: "gameFlow.wait_for_game_start",
+			message: "对局内接口等待超时",
+			context: {
+				poll_count: GAME_START_POLL_LIMIT,
+				poll_interval_ms: GAME_START_POLL_INTERVAL,
+				timeout_ms: GAME_START_POLL_LIMIT * GAME_START_POLL_INTERVAL,
+			},
+		});
 		return false;
 	};
 

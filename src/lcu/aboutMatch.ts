@@ -89,7 +89,7 @@ const tokenFetcher = async (): Promise<string | null> => {
 	if (entitlements === null) {
 		logger.error({
 			tag: "lcu.token",
-			message: "entitlements token fetch failed",
+			message: "entitlements token 获取失败",
 		});
 		return null;
 	}
@@ -286,12 +286,12 @@ const fetchMatchHistory = async (
 		if (currentResult !== null) {
 			logger.info({
 				tag: "lcu.history",
-				message: "fetchMatchHistory resolved",
+				message: "历史接口解析完成",
 				context: {
 					puuid,
-					begIndex,
+					beg_index: begIndex,
 					count: endIndex,
-					fullParticipants,
+					full_participants: fullParticipants,
 					resolved: "lcu-current-summoner",
 					count_games: currentResult.games.length,
 				},
@@ -319,12 +319,12 @@ const fetchMatchHistory = async (
 	) {
 		logger.info({
 			tag: "lcu.history",
-			message: "fetchMatchHistory resolved",
+			message: "历史接口解析完成",
 			context: {
 				puuid,
-				begIndex,
+				beg_index: begIndex,
 				count: endIndex,
-				fullParticipants,
+				full_participants: fullParticipants,
 				resolved: "lcu-puuid",
 				count_games: lcuResult.games.length,
 			},
@@ -349,12 +349,12 @@ const fetchMatchHistory = async (
 		if (sgpGames.length > 0) {
 			logger.info({
 				tag: "lcu.history",
-				message: "fetchMatchHistory resolved",
+				message: "历史接口解析完成",
 				context: {
 					puuid,
-					begIndex,
+					beg_index: begIndex,
 					count: endIndex,
-					fullParticipants,
+					full_participants: fullParticipants,
 					resolved: fullParticipants ? "sgp-summary-full" : "sgp-summary",
 					count_games: sgpGames.length,
 				},
@@ -369,12 +369,12 @@ const fetchMatchHistory = async (
 	} catch (sgpError) {
 		logger.warn({
 			tag: "lcu.history",
-			message: "SGP match history request failed, trying LCU fallback",
+			message: "SGP 历史接口失败，回退到 LCU",
 			context: {
 				puuid,
-				begIndex,
+				beg_index: begIndex,
 				count: endIndex,
-				fullParticipants,
+				full_participants: fullParticipants,
 				resolved: "sgp-error",
 				error: String(sgpError).slice(0, 200),
 			},
@@ -391,12 +391,12 @@ const fetchMatchHistory = async (
 		if (currentResult !== null && currentResult.games.length > 0) {
 			logger.info({
 				tag: "lcu.history",
-				message: "fetchMatchHistory resolved (fallback)",
+				message: "历史接口解析完成（LCU 降级）",
 				context: {
 					puuid,
-					begIndex,
+					beg_index: begIndex,
 					count: endIndex,
-					fullParticipants,
+					full_participants: fullParticipants,
 					resolved: "lcu-current-summoner",
 					count_games: currentResult.games.length,
 				},
@@ -412,12 +412,12 @@ const fetchMatchHistory = async (
 	if (lcuResult !== null) {
 		logger.info({
 			tag: "lcu.history",
-			message: "fetchMatchHistory resolved (fallback)",
+			message: "历史接口解析完成（LCU 降级）",
 			context: {
 				puuid,
-				begIndex,
+				beg_index: begIndex,
 				count: endIndex,
-				fullParticipants,
+				full_participants: fullParticipants,
 				resolved: "lcu-puuid",
 				count_games: lcuResult.games.length,
 			},
@@ -431,12 +431,12 @@ const fetchMatchHistory = async (
 	}
 	logger.warn({
 		tag: "lcu.history",
-		message: "fetchMatchHistory no data",
+		message: "历史接口全部失败，无可用数据",
 		context: {
 			puuid,
-			begIndex,
+			beg_index: begIndex,
 			count: endIndex,
-			fullParticipants,
+			full_participants: fullParticipants,
 			resolved: "none",
 		},
 	});
@@ -646,12 +646,12 @@ const queryMatchHistoryWithSourceInternalUncached = async (
 	} catch (error) {
 		logger.error({
 			tag: "lcu.history",
-			message: "queryMatchHistoryWithSourceInternal failed",
+			message: "历史查询内部异常",
 			context: {
 				puuid,
-				begIndex,
-				endIndex,
-				fullParticipants,
+				beg_index: begIndex,
+				count: endIndex,
+				full_participants: fullParticipants,
 				error: String(error).slice(0, 200),
 			},
 		});
@@ -668,6 +668,11 @@ const queryMatchHistoryWithSourceInternal = (
 	const key = `${puuid}:${begIndex}:${endIndex}:${fullParticipants ? "full" : "summary"}`;
 	const pending = inFlightHistoryRequests.get(key);
 	if (pending) {
+		logger.debug({
+			tag: "lcu.history",
+			message: "inFlight 合并，跳过重复请求",
+			context: { key },
+		});
 		return pending;
 	}
 

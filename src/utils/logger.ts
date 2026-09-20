@@ -145,7 +145,7 @@ export function installGlobalErrorHandlers(): void {
         : e.reason;
     log("error", {
       tag: "unhandled.promise",
-      message: "unhandled promise rejection",
+      message: "未捕获的 Promise 拒绝",
       context: { reason },
     });
   });

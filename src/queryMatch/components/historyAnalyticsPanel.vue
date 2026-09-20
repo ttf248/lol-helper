@@ -419,7 +419,7 @@ const exportAnalysis = (format: "json" | "csv") => {
   } catch (error) {
     logger.error({
       tag: "history_analytics.export",
-      message: "Failed to export history analysis",
+      message: "导出历史分析证据失败",
       context: { error: String(error).slice(0, 200) },
     });
     exportMessage.value = "导出失败，请重试";

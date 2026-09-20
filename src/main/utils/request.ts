@@ -1,5 +1,17 @@
 import {BlacklistListTypes, Hater, UserInfos} from "@/main/views/record/blackListTypes";
 import {fetch} from "@tauri-apps/plugin-http";
+import { logger } from "@/utils/logger";
+
+// 外部 HTTP 请求 body 日志预览上限（字符数）。超过则截断并打 truncated 标记。
+const EXTERNAL_BODY_PREVIEW_CHARS = 1024;
+
+/**
+ * 截断字符串到安全长度（按字符数），保持 UTF-16 surrogate 配对不被切断。
+ */
+function truncatePreview(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
+}
 
 
 export const requestFetch = async <T>(url: string, method: string, body?: string,timeout?:number): Promise<T | null> => {
@@ -7,7 +19,22 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
   const timer = timeout && timeout > 0
     ? setTimeout(() => controller.abort(), timeout)
     : undefined;
+  const startedAt = Date.now();
   try {
+    if (body && body.length > 0) {
+      const truncated = body.length > EXTERNAL_BODY_PREVIEW_CHARS;
+      logger.debug({
+        tag: "main.http",
+        message: truncated ? "外部请求 body 预览（已截断）" : "外部请求 body 预览",
+        context: {
+          url,
+          method,
+          body_chars: body.length,
+          ...(truncated ? { body_truncated: true } : {}),
+          body_preview: truncatePreview(body, EXTERNAL_BODY_PREVIEW_CHARS),
+        },
+      });
+    }
     const res = await fetch(url, {
       method,
       body,
@@ -16,9 +43,57 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
     });
 
     if (res.status === 200) {
-      const data: T = await res.json();
-      return data;
+      const text = await res.text();
+      logger.info({
+        tag: "main.http",
+        message: "外部 HTTP 响应成功",
+        context: {
+          url,
+          method,
+          status: res.status,
+          response_chars: text.length,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+      try {
+        return JSON.parse(text) as T;
+      } catch (error) {
+        logger.warn({
+          tag: "main.http",
+          message: "外部 HTTP 响应 JSON 解析失败",
+          context: {
+            url,
+            method,
+            status: res.status,
+            error: String(error).slice(0, 200),
+            response_chars: text.length,
+          },
+        });
+        return null;
+      }
     }
+    logger.warn({
+      tag: "main.http",
+      message: "外部 HTTP 状态码非 200",
+      context: {
+        url,
+        method,
+        status: res.status,
+        duration_ms: Date.now() - startedAt,
+      },
+    });
+    return null;
+  } catch (error) {
+    logger.warn({
+      tag: "main.http",
+      message: "外部 HTTP 请求失败",
+      context: {
+        url,
+        method,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 200),
+      },
+    });
     return null;
   } finally {
     if (timer !== undefined) clearTimeout(timer);

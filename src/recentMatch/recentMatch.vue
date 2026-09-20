@@ -260,7 +260,7 @@ const init = () => {
                 .catch((error) => {
                     logger.error({
                         tag: "recent.analysis_panel",
-                        message: "Failed to load recent team analysis",
+                        message: "加载最近团队分析失败",
                         context: { error: String(error).slice(0, 200) },
                     });
                     setLoadingState({
@@ -275,7 +275,7 @@ const init = () => {
         } catch (error) {
             logger.error({
                 tag: "recent.analysis_panel",
-                message: "Failed to initialize recent-match panel",
+                message: "初始化最近对局面板失败",
                 context: { error: String(error).slice(0, 200) },
             });
             isLcuErr.value = true;
@@ -349,7 +349,7 @@ const getChampInfoList = async (champId: number) => {
     } catch (error) {
         logger.error({
             tag: "recent.champ_info",
-            message: "Failed to load champion info list",
+            message: "加载英雄信息列表失败",
             context: { champId, error: String(error).slice(0, 200) },
         });
     }

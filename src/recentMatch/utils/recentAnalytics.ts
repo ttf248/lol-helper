@@ -371,6 +371,7 @@ const syncPlayerModeGames = async (
     existingGames,
     Array.from(summaryGames.values()),
     RECENT_ANALYSIS_GAME_COUNT,
+    { puuid: player.puuid, modeKey },
   );
 
   // 本地已有完整窗口时，摘要只负责刷新最近数据，不必再请求完整参与者。
@@ -405,6 +406,7 @@ const syncPlayerModeGames = async (
       existingGames,
       [...summaryGames.values(), ...fullGames.values()],
       RECENT_ANALYSIS_GAME_COUNT,
+      { puuid: player.puuid, modeKey },
     );
     finalGames = merged.games;
     finalCoverage = merged.coverage;
@@ -419,15 +421,15 @@ const syncPlayerModeGames = async (
 
   logger.info({
     tag: "recent.analysis",
-    message: "history sync resolved",
+    message: "历史同步完成",
     context: {
       puuid: `…${player.puuid.slice(-8)}`,
-      modeKey,
-      serverLimit: boundedServerLimit,
-      cachedGames: existingGames.length,
-      summaryGames: summaryGames.size,
-      mergedGames: finalGames.length,
-      fullRequested,
+      mode_key: modeKey,
+      server_limit: boundedServerLimit,
+      cached_games: existingGames.length,
+      summary_games: summaryGames.size,
+      merged_games: finalGames.length,
+      full_requested: fullRequested,
     },
     durationMs: Date.now() - startedAt,
   });
@@ -483,7 +485,7 @@ const hydratePlayerQueueHistory = (
   })().catch((error) => {
     logger.warn({
       tag: "recent.analysis",
-      message: "Failed to hydrate full queue history",
+      message: "服务器历史补全失败",
       context: { error: String(error).slice(0, 200) },
     });
     return {
@@ -788,8 +790,8 @@ const loadModerationMap = async (
     if (haterList === null) {
       logger.warn({
         tag: "recent.analysis.moderation",
-        message: "Moderation lookup unavailable or timed out",
-        context: { players: players.length, timeoutMs: MODERATION_TIMEOUT_MS },
+        message: "举报记录查询超时或不可用",
+        context: { players: players.length, timeout_ms: MODERATION_TIMEOUT_MS },
       });
       return result;
     }
@@ -811,7 +813,7 @@ const loadModerationMap = async (
   } catch (error) {
     logger.warn({
       tag: "recent.analysis.moderation",
-      message: "Failed to load moderation records",
+      message: "举报记录加载失败",
       context: { error: String(error).slice(0, 200) },
     });
   }
@@ -1762,8 +1764,8 @@ export const loadRecentTeamAnalysis = async (
 
   logger.info({
     tag: "recent.analysis",
-    message: "stage=cache",
-    context: { queueId, players: players.length },
+    message: "近期分析阶段：读取本地缓存",
+    context: { stage: "cache", queue_id: queueId, players: players.length },
   });
   onProgress?.({
     stage: "cache",
@@ -1802,8 +1804,8 @@ export const loadRecentTeamAnalysis = async (
   );
   logger.info({
     tag: "recent.analysis",
-    message: "stage=recent",
-    context: { queueId, players: players.length },
+    message: "近期分析阶段：最近 10 场完成",
+    context: { stage: "recent", queue_id: queueId, players: players.length },
   });
   onProgress?.({
     stage: "recent",
@@ -1890,8 +1892,8 @@ export const loadRecentTeamAnalysis = async (
     const network = buildNetworkAnalysis(friendList, enemyList, snapshotMap);
     logger.info({
       tag: "recent.analysis",
-      message: "stage=done",
-      context: { queueId, players: players.length, hydrated: 0 },
+      message: "近期分析阶段：完成（无补全）",
+      context: { stage: "done", queue_id: queueId, players: players.length, hydrated: 0 },
     });
     onProgress?.({
       stage: "done",
@@ -1952,9 +1954,10 @@ export const loadRecentTeamAnalysis = async (
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
   logger.info({
     tag: "recent.analysis",
-    message: "stage=done",
+    message: "近期分析阶段：100 场完成",
     context: {
-      queueId,
+      stage: "done",
+      queue_id: queueId,
       players: players.length,
       hydrated: hydrationEntries.length,
     },

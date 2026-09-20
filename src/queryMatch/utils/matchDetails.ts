@@ -65,10 +65,10 @@ export default class MatchDetails {
         if (cached) {
             logger.info({
                 tag: "match.detail",
-                message: "queryGameDetail resolved",
+                message: "对局详情解析完成",
                 context: {
-                    gameId,
-                    sumPuuid,
+                    game_id: gameId,
+                    sum_puuid: sumPuuid,
                     resolved: "instance-cache",
                 },
             });
@@ -92,10 +92,10 @@ export default class MatchDetails {
             if (sgpResult !== null) {
                 logger.info({
                     tag: "match.detail",
-                    message: "queryGameDetail resolved",
+                    message: "对局详情解析完成",
                     context: {
-                        gameId,
-                        sumPuuid,
+                        game_id: gameId,
+                        sum_puuid: sumPuuid,
                         resolved: "sgp-summary",
                     },
                 });
@@ -134,10 +134,10 @@ export default class MatchDetails {
             if (lcuResult !== null) {
                 logger.info({
                     tag: "match.detail",
-                    message: "queryGameDetail resolved",
+                    message: "对局详情解析完成",
                     context: {
-                        gameId,
-                        sumPuuid,
+                        game_id: gameId,
+                        sum_puuid: sumPuuid,
                         resolved:
                             getCachedLcuMatchSource(gameId) || "lcu-puuid",
                     },
@@ -157,8 +157,8 @@ export default class MatchDetails {
         if (response === null || response?.queueId === undefined) {
             logger.warn({
                 tag: "match.detail",
-                message: "queryGameDetail no response",
-                context: { gameId, sumPuuid },
+                message: "对局详情无响应",
+                context: { game_id: gameId, sum_puuid: sumPuuid },
             });
             return null;
         }
@@ -169,12 +169,12 @@ export default class MatchDetails {
 
         logger.info({
             tag: "match.detail",
-            message: "queryGameDetail resolved",
+            message: "对局详情解析完成",
             context: {
-                gameId,
-                sumPuuid,
+                game_id: gameId,
+                sum_puuid: sumPuuid,
                 resolved: "lcu-game-detail",
-                queueId: response.queueId,
+                queue_id: response.queueId,
             },
         });
 
@@ -346,6 +346,16 @@ export default class MatchDetails {
         sumPuuid?: string,
     ): null | ParticipantsInfo => {
         if (participants?.length !== 10) {
+            logger.warn({
+                tag: "match.detail",
+                message: "参与者数量异常，跳过详情组装",
+                context: {
+                    game_id: gameId,
+                    sum_puuid: sumPuuid,
+                    actual: participants?.length ?? 0,
+                    expected: 10,
+                },
+            });
             return null;
         }
 

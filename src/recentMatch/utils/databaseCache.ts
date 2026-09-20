@@ -35,10 +35,23 @@ const playerSummaryCacheKey = (puuid: string, modeKey?: MatchModeKey | null) =>
  * 清空客户端 TTL 缓存。手动刷新（数据库写入、切换账号、用户点击
  * refresh 按钮）时应调用，避免读到旧数据。
  */
-export const resetDatabaseCache = () => {
+export const resetDatabaseCache = (reason?: string) => {
+  const before = {
+    summary: summaryCache.current !== null ? 1 : 0,
+    player_summary: playerSummaryCache.size,
+    history: historyCache.size,
+  };
   summaryCache.current = null;
   playerSummaryCache.clear();
   historyCache.clear();
+  logger.info({
+    tag: "db.cache",
+    message: "TTL 缓存已重置",
+    context: {
+      reason: reason ?? "unspecified",
+      cleared_entries: before,
+    },
+  });
 };
 
 export interface CachedHistoryQuery {
@@ -77,6 +90,16 @@ export const getCachedHistory = async (
   const cacheKey = historyCacheKey(query);
   const cached = historyCache.get(cacheKey);
   if (isFresh(cached, HISTORY_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: {
+        op: "get_cached_match_history",
+        puuid: query.puuid?.slice(-8) ?? "",
+        mode_key: query.modeKey,
+        age_ms: Date.now() - (cached?.fetchedAt ?? 0),
+      },
+    });
     return cached!.value;
   }
   try {
@@ -105,8 +128,8 @@ export const getCachedHistory = async (
     return value;
   } catch (error) {
     logger.warn({
-      tag: "db.cache_read",
-      message: "Failed to read PostgreSQL match cache",
+      tag: "db.cache",
+      message: "读取 PostgreSQL 历史缓存失败",
       context: {
         op: "get_cached_match_history",
         error: String(error).slice(0, 200),
@@ -152,8 +175,8 @@ export const cacheHistory = async (request: {
     return true;
   } catch (error) {
     logger.warn({
-      tag: "db.cache_write",
-      message: "Failed to write PostgreSQL match cache",
+      tag: "db.cache",
+      message: "写入 PostgreSQL 历史缓存失败",
       context: {
         op: "cache_match_history",
         error: String(error).slice(0, 200),
@@ -210,6 +233,11 @@ export interface CachedPlayerSummary {
 
 export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
   if (isFresh(summaryCache.current ?? undefined, SUMMARY_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "database_summary" },
+    });
     return summaryCache.current!.value;
   }
   try {
@@ -218,8 +246,8 @@ export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
     return value;
   } catch (error) {
     logger.warn({
-      tag: "db.cache_summary",
-      message: "Failed to read PostgreSQL cache summary",
+      tag: "db.cache",
+      message: "读取 PostgreSQL 缓存汇总失败",
       context: {
         op: "database_summary",
         error: String(error).slice(0, 200),
@@ -241,6 +269,16 @@ export const getCachedPlayerSummary = async (
   const cacheKey = playerSummaryCacheKey(puuid, modeKey);
   const cached = playerSummaryCache.get(cacheKey);
   if (isFresh(cached, PLAYER_SUMMARY_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: {
+        op: "get_cached_player_summary",
+        puuid: puuid?.slice(-8) ?? "",
+        mode_key: modeKey,
+        age_ms: Date.now() - (cached?.fetchedAt ?? 0),
+      },
+    });
     return cached!.value;
   }
   const empty: CachedPlayerSummary = {
@@ -260,8 +298,8 @@ export const getCachedPlayerSummary = async (
     return value;
   } catch (error) {
     logger.warn({
-      tag: "db.cache_summary",
-      message: "Failed to read cached player summary",
+      tag: "db.cache",
+      message: "读取玩家汇总缓存失败",
       context: {
         op: "get_cached_player_summary",
         puuid: puuid?.slice(-8) ?? "",

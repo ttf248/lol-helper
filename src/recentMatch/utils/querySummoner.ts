@@ -268,10 +268,11 @@ class QuerySummoner {
           firstStageLogged = true;
           logger.info({
             tag: "query_summoner",
-            message: "stage=gameflow-session",
+            message: "本局玩家阶段：读取 gameflow session",
             context: {
+              stage: "gameflow-session",
               phase: session.phase,
-              queueId: session.gameData.queue?.id,
+              queue_id: session.gameData.queue?.id,
               detected: session.gameData.teamOne.length + session.gameData.teamTwo.length,
             },
           });
@@ -282,8 +283,8 @@ class QuerySummoner {
             championSelectionStageLogged = true;
             logger.info({
               tag: "query_summoner",
-              message: "stage=champion-selection",
-              context: { detected },
+              message: "本局玩家阶段：按英雄选择补齐",
+              context: { stage: "champion-selection", detected },
             });
           }
         });
@@ -314,8 +315,9 @@ class QuerySummoner {
               liveStageLogged = true;
               logger.info({
                 tag: "query_summoner",
-                message: "stage=live-data",
+                message: "本局玩家阶段：游戏内玩家列表接管",
                 context: {
+                  stage: "live-data",
                   detected: liveTeams.teamOne.length + liveTeams.teamTwo.length,
                 },
               });

@@ -267,11 +267,12 @@ class QueryMatch {
 
             logger.info({
                 tag: "recent.history",
-                message: "stage=cache",
+                message: "历史查询阶段：读取本地缓存",
                 context: {
+                    stage: "cache",
                     puuid,
-                    queueId,
-                    cachedGames: cachedMatchItems.length,
+                    queue_id: queueId,
+                    cached_games: cachedMatchItems.length,
                 },
             });
 
@@ -281,6 +282,8 @@ class QueryMatch {
                 puuid,
                 modeKey,
                 targetSummonerId,
+                queueId,
+                cachedMatchItems,
             );
             const matches = this.uniqueAndSortMatches([
                 ...cachedMatchItems,
@@ -292,16 +295,17 @@ class QueryMatch {
             });
             logger.info({
                 tag: "recent.history",
-                message: "stage=server",
+                message: "历史查询阶段：服务器补全",
                 context: {
+                    stage: "server",
                     puuid,
-                    queueId,
-                    serverGames: search.serverGames,
-                    modeGames: search.modeGames,
-                    matchedGames: search.matchedGames,
-                    requestFailed: search.requestFailed,
-                    sourceEndpoints: search.sourceEndpoints,
-                    finalStatus: status.kind,
+                    queue_id: queueId,
+                    server_games: search.serverGames,
+                    mode_games: search.modeGames,
+                    matched_games: search.matchedGames,
+                    request_failed: search.requestFailed,
+                    source_endpoints: search.sourceEndpoints,
+                    final_status: status.kind,
                 },
             });
             return [
@@ -312,10 +316,10 @@ class QueryMatch {
         } catch (error) {
             logger.error({
                 tag: "recent.history",
-                message: "queryMatchHistory failed",
+                message: "历史查询异常",
                 context: {
                     puuid,
-                    queueId,
+                    queue_id: queueId,
                     error: String(error).slice(0, 200),
                 },
             });
@@ -379,6 +383,8 @@ class QueryMatch {
         puuid: string,
         modeKey: MatchModeKey,
         targetSummonerId?: number,
+        queueId?: number,
+        cachedMatches?: MatchItemTypes[],
     ): Promise<MatchSearchResult> => {
         const matchList: MatchItemTypes[] = [];
         const seenGameIds = new Set<number>();
@@ -398,11 +404,41 @@ class QueryMatch {
         } else {
             // 缓存写入不阻塞首屏；三页服务器数据会在后台持久化，
             // 下一次查询直接参与本地合并。
+            // fingerprint 跳过：服务器最近三页没有新增，缓存层已经覆盖。
+            const previousFingerprint =
+                cachedMatches && cachedMatches.length > 0
+                    ? `${cachedMatches[0].gameCreation}:${cachedMatches[0].gameId}`
+                    : null;
+            const newestServerGame = result.games.length > 0
+                ? result.games.reduce((acc, game) =>
+                    Number(game.gameCreation || 0) > Number(acc.gameCreation || 0)
+                        ? game
+                        : acc,
+                  )
+                : null;
+            const serverFingerprint = newestServerGame
+                ? `${newestServerGame.gameCreation}:${newestServerGame.gameId}`
+                : null;
+            if (
+                previousFingerprint !== null &&
+                serverFingerprint !== null &&
+                previousFingerprint === serverFingerprint
+            ) {
+                logger.debug({
+                    tag: "recent.history",
+                    message: "fingerprint 跳过：服务器最近三页无新增",
+                    context: {
+                        puuid,
+                        queue_id: queueId,
+                        fingerprint: previousFingerprint,
+                    },
+                });
+            }
             void this.cacheRawGames(puuid, result.games, result.source).catch(
                 (error) => {
                     logger.warn({
                         tag: "recent.history",
-                        message: "Failed to persist recent match cache",
+                        message: "写入历史缓存失败",
                         context: {
                             puuid,
                             error: String(error).slice(0, 200),

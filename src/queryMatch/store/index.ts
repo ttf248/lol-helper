@@ -155,7 +155,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				}
 				logger.error({
 					tag: "queryMatch.fetch_history",
-					message: "Failed to initialize match history",
+					message: "初始化历史战绩失败",
 					context: {
 						queryRequestId,
 						error: String(error).slice(0, 200),
@@ -386,7 +386,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				}
 				logger.error({
 					tag: "queryMatch.fetch_details",
-					message: "Failed to load match details",
+					message: "加载对局详情失败",
 					context: {
 						detailRequestId,
 						error: String(error).slice(0, 200),

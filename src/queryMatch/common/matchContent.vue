@@ -55,7 +55,7 @@ const openMatchDra = async (summonerId: number) => {
     } catch (error) {
         logger.error({
             tag: "matchContent.drawer",
-            message: "Failed to load player match details",
+            message: "加载玩家对局详情失败",
             context: { summonerId, error: String(error).slice(0, 200) },
         });
         drawerError.value =

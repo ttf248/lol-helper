@@ -22,9 +22,14 @@ class Background {
 
 	private async initializeListeners() {
 		// 先注册监听，再启动 Rust 侧客户端探测，避免客户端已经运行时丢失首个事件。
-		await listen<string>("client_status", (event) =>
-			this.handleClientStatus(event.payload),
-		);
+		await listen<string>("client_status", (event) => {
+			logger.debug({
+				tag: "background.client_status",
+				message: "收到 client_status 事件",
+				context: { payload: event.payload },
+			});
+			void this.handleClientStatus(event.payload);
+		});
 		await listen("recoverGameWindow", () => {
 			void this.gameFlow.recoverGameInWindow();
 		});
@@ -121,6 +126,10 @@ const bootstrap = async () => {
   }
   installGlobalErrorHandlers();
   new Background();
+  logger.info({
+    tag: "background.bootstrap",
+    message: "后台窗口已就绪",
+  });
 };
 
 void bootstrap();
