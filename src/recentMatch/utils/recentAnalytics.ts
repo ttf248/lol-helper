@@ -938,19 +938,54 @@ const buildOpponentStats = (
     .sort((left, right) => right.games - left.games || right.winRate - left.winRate);
 };
 
-const buildPartyGroups = (
+/**
+ * 「疑似开黑」检测结构层中间结果。
+ *
+ * 与 `PartyGroupAnalysis` 相比，不依赖举报/黑名单信息（moderationMap），
+ * 可被多次复用：例如 `applyTeamAnalysis` 在「先空 moderation 快出结果、
+ * 后用真实 moderation 再算一次」的两段式调用中，复用结构层即可。
+ */
+type StructuralPartyGroup = {
+  members: RecentSumInfo[];
+  requiredGames: number;
+  games: number;
+  wins: number;
+  winRate: number;
+  latestGameAt: number;
+  recentGames: number;
+  /** 已经包含 games/recentGames/winRate 的预计算分。 */
+  stabilityScore: number;
+  /** 仅依赖结构层数据，可提前计算避免在 overlay 阶段再判一次。 */
+  highWinRateAlert: boolean;
+  evidence: PartyEvidence[];
+};
+
+/**
+ * 结构层 WeakMap 缓存：外层 key 是 snapshotMap 引用，内层 key 是
+ * players 数组引用。当 `loadRecentTeamAnalysis` 内的 friendList /
+ * enemyList 在 Pass 1 与 Pass 2 共享同一引用时，Pass 2 直接命中；
+ * Pass 3（hydratedSnapshotMap）引用不同，会触发一次 miss 后再次命中。
+ *
+ * WeakMap 的引用特性保证 snapshotMap 与 players 被 GC 后条目自动回收。
+ */
+const partyGroupsStructureCache = new WeakMap<
+  Map<string, PlayerHistorySnapshot>,
+  WeakMap<RecentSumInfo[], StructuralPartyGroup[]>
+>();
+
+const buildPartyGroupsStructure = (
   players: RecentSumInfo[],
   snapshots: Map<string, PlayerHistorySnapshot>,
-  moderationMap: Map<string, PlayerModerationInfo>,
-): PartyGroupAnalysis[] => {
-  const groups: PartyGroupAnalysis[] = [];
+): StructuralPartyGroup[] => {
+  const structures: StructuralPartyGroup[] = [];
   const now = Date.now();
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
       const groupSnapshots = group
         .map((player) => snapshots.get(player.puuid))
         .filter(
-          (snapshot): snapshot is PlayerHistorySnapshot => snapshot !== undefined,
+          (snapshot): snapshot is PlayerHistorySnapshot =>
+            snapshot !== undefined,
         );
       if (groupSnapshots.length !== group.length) continue;
 
@@ -980,7 +1015,11 @@ const buildPartyGroups = (
           continue;
         }
         const teamId = participants[0]!.teamId;
-        if (participants.some((participant) => participant!.teamId !== teamId)) {
+        if (
+          participants.some(
+            (participant) => participant!.teamId !== teamId,
+          )
+        ) {
           continue;
         }
         games += 1;
@@ -1001,50 +1040,22 @@ const buildPartyGroups = (
       const requiredGames = Math.max(2, Math.min(group.length, 5));
       if (games < requiredGames) continue;
       const winRate = roundRate(wins, games) ?? 0;
-      const lastActiveDays = latestGameAt
-        ? Math.max(0, Math.floor((now - latestGameAt) / DAY_MS))
-        : null;
       const stabilityScore = Math.round(
         Math.min(games / 10, 1) * 40 +
           Math.min(recentGames / 5, 1) * 30 +
           (winRate / 100) * 30,
       );
-      const members = group.map((player) => toPartyMember(player, moderationMap));
-      const blacklistedMembers = members.filter(
-        (member) => member.moderation?.marked === true,
-      );
-      const reportedMembers = members.filter(
-        (member) => (member.moderation?.reportCount || 0) > 0,
-      );
-      const confidenceScore = Math.round(
-        Math.min(games / 10, 1) * 70 +
-          Math.min(recentGames / 5, 1) * 20 +
-          (members.every((member) => member.moderation?.available) ? 10 : 0),
-      );
-      groups.push({
-        members,
+      structures.push({
+        members: group,
         requiredGames,
         games,
         wins,
         winRate,
         latestGameAt,
         recentGames,
-        lastActiveDays,
         stabilityScore,
-        stabilityLevel: confidenceLevel(stabilityScore),
         highWinRateAlert:
           games >= 5 && winRate >= 65 && stabilityScore >= 55,
-        confidence: confidenceInfo(confidenceScore, [
-          `共同对局 ${games} 场`,
-          `${group.length}人组合门槛 ${requiredGames} 场共同同队`,
-          `近${RECENT_ACTIVITY_DAYS}天共同对局 ${recentGames} 场`,
-          "组队关系由历史同队记录推断",
-        ]),
-        moderationAvailable: members.every(
-          (member) => member.moderation?.available === true,
-        ),
-        blacklistedMembers,
-        reportedMembers,
         evidence: evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
@@ -1052,13 +1063,83 @@ const buildPartyGroups = (
     }
   }
 
-  return groups.sort(
+  return structures.sort(
     (left, right) =>
       Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
       right.members.length - left.members.length ||
       right.stabilityScore - left.stabilityScore ||
       right.games - left.games,
   );
+};
+
+const getCachedPartyGroupsStructure = (
+  players: RecentSumInfo[],
+  snapshots: Map<string, PlayerHistorySnapshot>,
+): StructuralPartyGroup[] => {
+  let perSnapshot = partyGroupsStructureCache.get(snapshots);
+  if (!perSnapshot) {
+    perSnapshot = new WeakMap();
+    partyGroupsStructureCache.set(snapshots, perSnapshot);
+  }
+  const cached = perSnapshot.get(players);
+  if (cached) return cached;
+  const fresh = buildPartyGroupsStructure(players, snapshots);
+  perSnapshot.set(players, fresh);
+  return fresh;
+};
+
+/**
+ * 把结构层结果叠加 moderation/黑名单/置信度等 UI 字段。
+ * 纯函数：给定相同输入（structure + moderationMap + now）总返回相同结果。
+ */
+const applyPartyGroupOverlay = (
+  structure: StructuralPartyGroup,
+  moderationMap: Map<string, PlayerModerationInfo>,
+  now: number,
+): PartyGroupAnalysis => {
+  const members = structure.members.map((player) =>
+    toPartyMember(player, moderationMap),
+  );
+  const blacklistedMembers = members.filter(
+    (member) => member.moderation?.marked === true,
+  );
+  const reportedMembers = members.filter(
+    (member) => (member.moderation?.reportCount || 0) > 0,
+  );
+  const moderationAvailable = members.every(
+    (member) => member.moderation?.available === true,
+  );
+  const confidenceScore = Math.round(
+    Math.min(structure.games / 10, 1) * 70 +
+      Math.min(structure.recentGames / 5, 1) * 20 +
+      (moderationAvailable ? 10 : 0),
+  );
+  const lastActiveDays = structure.latestGameAt
+    ? Math.max(0, Math.floor((now - structure.latestGameAt) / DAY_MS))
+    : null;
+  return {
+    members,
+    requiredGames: structure.requiredGames,
+    games: structure.games,
+    wins: structure.wins,
+    winRate: structure.winRate,
+    latestGameAt: structure.latestGameAt,
+    recentGames: structure.recentGames,
+    lastActiveDays,
+    stabilityScore: structure.stabilityScore,
+    stabilityLevel: confidenceLevel(structure.stabilityScore),
+    highWinRateAlert: structure.highWinRateAlert,
+    confidence: confidenceInfo(confidenceScore, [
+      `共同对局 ${structure.games} 场`,
+      `${structure.members.length}人组合门槛 ${structure.requiredGames} 场共同同队`,
+      `近${RECENT_ACTIVITY_DAYS}天共同对局 ${structure.recentGames} 场`,
+      "组队关系由历史同队记录推断",
+    ]),
+    moderationAvailable,
+    blacklistedMembers,
+    reportedMembers,
+    evidence: structure.evidence,
+  };
 };
 
 /**
@@ -1649,11 +1730,19 @@ const applyTeamAnalysis = (
   snapshotMap: Map<string, PlayerHistorySnapshot>,
   moderationMap: Map<string, PlayerModerationInfo>,
 ) => {
+  const now = Date.now();
   for (const [team, opposingTeam] of [
     [friendList, enemyList],
     [enemyList, friendList],
   ] as const) {
-    const groups = buildPartyGroups(team, snapshotMap, moderationMap);
+    // 结构层使用 WeakMap 缓存：Pass 1 / Pass 2 共享同一 snapshotMap
+    // 引用时第二次命中，跳过组合枚举；Pass 3 (hydrated snapshotMap)
+    // 引用不同会重新计算一次。overlay 是 O(groups × members)，
+    // 远小于结构层 O(2^N × games)。
+    const structures = getCachedPartyGroupsStructure(team, snapshotMap);
+    const groups = structures.map((structure) =>
+      applyPartyGroupOverlay(structure, moderationMap, now),
+    );
     for (const player of team) {
       const snapshot = snapshotMap.get(player.puuid);
       if (!snapshot || snapshot.games.size === 0) continue;
@@ -1938,4 +2027,6 @@ export const loadRecentTeamAnalysis = async (
 export const clearRecentAnalysisCache = () => {
   historyCache.clear();
   queueHydration.clear();
+  // partyGroupsStructureCache 是 WeakMap，键（snapshotMap / players 数组）
+  // 被 GC 后条目自动回收，不需要也无接口手动 clear。
 };

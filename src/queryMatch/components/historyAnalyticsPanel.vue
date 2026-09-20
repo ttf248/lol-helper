@@ -33,6 +33,11 @@ import {
 } from "@/recentMatch/utils/queryTypes";
 import { MATCH_HISTORY_SOURCE_LABELS } from "@/lcu/aboutMatch";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
+import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
+import {
+  confidenceLabel,
+  formatRate,
+} from "@/recentMatch/utils/partyDisplay";
 
 type PartyRankingMode = "frequency" | "winRate";
 
@@ -105,13 +110,6 @@ const partyRankingSections = computed(() => {
   });
 });
 
-const formatRate = (rate: number | null | undefined) =>
-  rate === null || rate === undefined ? "--" : `${rate.toFixed(1)}%`;
-
-const confidenceLabel = (level: string) =>
-  ({ high: "高", medium: "中", low: "低" } as Record<string, string>)[level] ||
-  level;
-
 const positionName = (position: string) =>
   ({
     TOP: "上路",
@@ -130,19 +128,6 @@ const championImage = (championId: number) => {
   return alias
     ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
     : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`;
-};
-
-const partyGroupNames = (group: PartyGroupAnalysis) =>
-  group.members
-    .map((member) =>
-      member.puuid === props.player.puuid ? "我" : member.summonerName,
-    )
-    .join(" + ");
-
-const lastActiveLabel = (group: PartyGroupAnalysis) => {
-  if (group.lastActiveDays === null) return "未知";
-  if (group.lastActiveDays === 0) return "今天";
-  return `${group.lastActiveDays}天前`;
 };
 
 const synergyChampionSummary = (item: TeammateSynergyStats) => {
@@ -489,29 +474,12 @@ onMounted(() => {
                   :key="group.members.map((item) => item.puuid).join('-')"
                   class="party-ranking-row"
                 >
-                  <span class="party-rank">{{ index + 1 }}</span>
-                  <div class="party-ranking-main">
-                    <div class="party-ranking-name" :title="partyGroupNames(group)">
-                      {{ partyGroupNames(group) }}
-                      <n-tag v-if="group.highWinRateAlert" size="tiny" type="warning">
-                        高胜率
-                      </n-tag>
-                      <n-tag v-if="group.blacklistedMembers.length" size="tiny" type="error">
-                        黑名单
-                      </n-tag>
-                      <n-tag v-if="group.reportedMembers.length" size="tiny" type="info">
-                        有举报
-                      </n-tag>
-                    </div>
-                    <div class="party-ranking-metrics">
-                      共同 {{ group.games }} 场 · {{ group.wins }} 胜 ·
-                      胜率 {{ formatRate(group.winRate) }} · 稳定度 {{ group.stabilityScore }}
-                    </div>
-                    <div class="party-ranking-submetrics">
-                      近30天 {{ group.recentGames }} 场 · 最近 {{ lastActiveLabel(group) }} ·
-                      置信度 {{ confidenceLabel(group.confidence.level) }}
-                    </div>
-                  </div>
+                  <DuoGroupCard
+                    :group="group"
+                    :index="index + 1"
+                    :self-puuid="props.player.puuid"
+                    mode="full"
+                  />
                 </div>
               </div>
               <div v-else class="empty-note">暂无达到门槛的组合</div>
@@ -769,8 +737,7 @@ onMounted(() => {
 }
 
 .party-ranking-caption,
-.party-ranking-note,
-.party-ranking-submetrics {
+.party-ranking-note {
   color: #888;
   font-size: 0.68rem;
   line-height: 1.5;
@@ -817,7 +784,7 @@ onMounted(() => {
 
 .party-ranking-row {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0.35rem;
   min-width: 0;
   padding: 0.35rem 0;
@@ -828,41 +795,9 @@ onMounted(() => {
   border-bottom: 0;
 }
 
-.party-rank {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 1.25rem;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 999px;
-  color: #666;
-  background: rgba(128, 128, 128, 0.12);
-  font-size: 0.7rem;
-  font-weight: 600;
-}
-
-.party-ranking-main {
-  min-width: 0;
+.party-ranking-row > :deep(.duo-card) {
   flex: 1;
-}
-
-.party-ranking-name {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.2rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.party-ranking-metrics {
-  color: #333;
-  font-size: 0.68rem;
-  line-height: 1.5;
+  min-width: 0;
 }
 
 .party-ranking-note {

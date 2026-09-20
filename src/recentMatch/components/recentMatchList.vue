@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { NAvatar, NButton, NCard, NPopover, NResult, NTag } from "naive-ui";
+import { NAvatar, NButton, NCard, NResult, NTag } from "naive-ui";
 import { champDict } from "@/resources/champList";
 import {
   ChampionRecentStats,
-  ConfidenceInfo,
   OpponentMatchupStats,
   PartyGroupAnalysis,
   PositionRecentStats,
@@ -18,6 +17,14 @@ import {
   MATCH_HISTORY_SOURCE_LABELS,
 } from "@/lcu/aboutMatch";
 import { HISTORY_PANEL_PREVIEW_COUNT } from "@/recentMatch/utils/historyConfig";
+import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
+import {
+  confidenceLabel,
+  formatRate,
+  partyEvidenceSummary,
+  partyEvidenceTime,
+  partyGroupNames,
+} from "@/recentMatch/utils/partyDisplay";
 
 const {
   sumList,
@@ -63,34 +70,8 @@ const toggleAnalysis = (puuid: string) => {
 const getChampionName = (championId: number) =>
   champDict[String(championId)]?.label || `英雄 ${championId}`;
 
-const formatRate = (rate: number | null | undefined) =>
-  rate === null || rate === undefined ? "--" : `${rate.toFixed(1)}%`;
-
-const groupNames = (group: PartyGroupAnalysis) =>
-  group.members.map((member) => member.summonerName).join(" + ");
-
-const partyEvidenceTime = (timestamp: number) => {
-  const normalizedTimestamp = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
-  const date = new Date(normalizedTimestamp);
-  if (Number.isNaN(date.getTime())) return "时间未知";
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const partyEvidenceSummary = (group: PartyGroupAnalysis) =>
-  `共同同队 ${group.games} 场 / ${group.members.length} 人组合门槛 ${group.requiredGames} 场`;
-
 const heroSummary = (champion: ChampionRecentStats) =>
   `${champion.games}场 · ${formatRate(champion.winRate)}`;
-
-const confidenceLabel = (confidence: ConfidenceInfo) => {
-  const labels = { high: "高", medium: "中", low: "低" };
-  return `${labels[confidence.level]} · ${confidence.score}`;
-};
 
 const positionLabel = (position: string) => {
   const labels: Record<string, string> = {
@@ -235,17 +216,19 @@ const teamInsight = computed(() => {
           >
             <b>风险</b>{{ teamInsight.risk.summonerName }} {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
-          <span
+          <div
             v-if="teamInsight.groups.length"
             class="team-insight-detail team-insight-party"
-            :title="teamInsight.groups.map(groupNames).join('；')"
           >
-            <n-tag size="tiny" type="warning" :bordered="false">
-              {{ teamInsight.groups.some((group) => group.highWinRateAlert) ? "高胜率开黑" : "疑似开黑" }}
-            </n-tag>
-            {{ groupNames(teamInsight.groups[0]) }} · {{ teamInsight.groups[0].games }}场 ·
-            {{ formatRate(teamInsight.groups[0].winRate) }}
-          </span>
+            <div class="team-insight-party-stack">
+              <DuoGroupCard
+                v-for="group in teamInsight.groups"
+                :key="group.members.map((member) => member.puuid).sort().join('|')"
+                :group="group"
+                mode="inline"
+              />
+            </div>
+          </div>
         </div>
       </div>
       <div class="team-grid">
@@ -324,44 +307,48 @@ const teamInsight = computed(() => {
             v-if="summoner.recentAnalysis?.partyGroups.length"
             class="text-center"
           >
-            <n-popover trigger="hover" placement="top-start" style="max-width: 360px">
-              <template #trigger>
-                <n-tag
-                  size="small"
-                  :type="selectedPuuid === summoner.puuid ? 'success' : 'warning'"
-                  :bordered="false"
-                  @click.stop="toggleAnalysis(summoner.puuid)"
-                >
-                  疑似开黑 {{ summoner.recentAnalysis.partyGroups.length }}组
-                </n-tag>
-              </template>
-              <div class="text-xs leading-5">
-                <div class="font-medium mb-1">疑似开黑判定依据</div>
-                <div
-                  v-for="group in summoner.recentAnalysis.partyGroups"
-                  :key="group.members.map((member) => member.puuid).join('-')"
-                  class="mb-2 last:mb-0"
-                >
-                  <div class="font-medium truncate" :title="groupNames(group)">
-                    {{ groupNames(group) }}
-                  </div>
-                  <div>{{ partyEvidenceSummary(group) }}</div>
-                  <div>
-                    近30天 {{ group.recentGames }} 场 · 胜率 {{ formatRate(group.winRate) }}
-                  </div>
+            <DuoGroupCard
+              :group="summoner.recentAnalysis.partyGroups[0]"
+              mode="compact"
+              :expanded="selectedPuuid === summoner.puuid"
+              @click="toggleAnalysis(summoner.puuid)"
+            >
+              <template #evidence>
+                <div class="text-xs leading-5">
+                  <div class="font-medium mb-1">疑似开黑判定依据</div>
                   <div
-                    v-for="evidence in group.evidence.slice(0, 3)"
-                    :key="evidence.gameId"
-                    class="text-gray-500"
+                    v-for="group in summoner.recentAnalysis.partyGroups"
+                    :key="group.members.map((member) => member.puuid).join('-')"
+                    class="mb-2 last:mb-0"
                   >
-                    证据 {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
+                    <div class="font-medium truncate" :title="partyGroupNames(group)">
+                      {{ partyGroupNames(group) }}
+                    </div>
+                    <div>{{ partyEvidenceSummary(group) }}</div>
+                    <div>
+                      近30天 {{ group.recentGames }} 场 · 胜率 {{ formatRate(group.winRate) }}
+                    </div>
+                    <div
+                      v-for="evidence in group.evidence.slice(0, 3)"
+                      :key="evidence.gameId"
+                      class="text-gray-500"
+                    >
+                      证据 {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
+                    </div>
+                  </div>
+                  <div class="text-gray-500 mt-1">
+                    取所有成员历史 gameId 的交集，并确认这些对局中处于同一队；个人最近 10/100 场列表、英雄和胜率不需要完全相同。接口没有官方组队 ID，因此结论仅为“疑似”。
                   </div>
                 </div>
-                <div class="text-gray-500 mt-1">
-                  取所有成员历史 gameId 的交集，并确认这些对局中处于同一队；个人最近 10/100 场列表、英雄和胜率不需要完全相同。接口没有官方组队 ID，因此结论仅为“疑似”。
-                </div>
-              </div>
-            </n-popover>
+              </template>
+            </DuoGroupCard>
+            <div
+              v-if="summoner.recentAnalysis.partyGroups.length > 1"
+              class="text-gray-500"
+              style="font-size: 10px; margin-top: 2px"
+            >
+              共 {{ summoner.recentAnalysis.partyGroups.length }} 组，点击查看全部
+            </div>
           </div>
 
           <div v-if="summoner.recentAnalysis?.moderation.reportCount" class="text-center">
@@ -545,43 +532,36 @@ const teamInsight = computed(() => {
 
           <div>
             <div class="font-medium mb-1">历史同队组合</div>
-            <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="flex flex-wrap gap-1">
-              <n-popover
+            <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="duo-stack">
+              <DuoGroupCard
                 v-for="group in selectedPlayer.recentAnalysis.partyGroups"
                 :key="group.members.map((member) => member.puuid).join('-')"
-                trigger="hover"
-                placement="top-start"
-                style="max-width: 380px"
+                :group="group"
+                mode="full"
+                always-show-evidence
               >
-                <template #trigger>
-                  <n-tag
-                    size="small"
-                    :type="group.winRate >= 50 ? 'success' : 'warning'"
-                    :bordered="false"
-                  >
-                    {{ group.highWinRateAlert ? "高胜率开黑队 · " : "" }}{{ groupNames(group) }} · {{ group.games }}场 · {{ group.wins }}胜 · {{ formatRate(group.winRate) }} · 稳定度{{ group.stabilityScore }} · 置信度{{ confidenceLabel(group.confidence) }}{{ group.blacklistedMembers.length ? " · 含黑名单" : "" }}{{ group.reportedMembers.length ? " · 含举报记录" : "" }}
-                  </n-tag>
+                <template #evidence>
+                  <div class="text-xs leading-5">
+                    <div class="font-medium mb-1">为什么标记为“疑似开黑”</div>
+                    <div class="font-medium">{{ partyGroupNames(group) }}</div>
+                    <div>{{ partyEvidenceSummary(group) }}</div>
+                    <div>
+                      近30天共同 {{ group.recentGames }} 场 · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
+                    </div>
+                    <div class="font-medium mt-1">共同同队对局证据</div>
+                    <div
+                      v-for="evidence in group.evidence.slice(0, 6)"
+                      :key="evidence.gameId"
+                      class="text-gray-500"
+                    >
+                      {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
+                    </div>
+                    <div class="text-gray-500 mt-1">
+                      判定使用的是多人历史对局的 gameId 交集，并逐局确认成员 teamId 相同；不是按个人历史列表长相、英雄、KDA 或单人胜率判断。接口没有官方组队 ID，所以只能表示历史上疑似固定同队。
+                    </div>
+                  </div>
                 </template>
-                <div class="text-xs leading-5">
-                  <div class="font-medium mb-1">为什么标记为“疑似开黑”</div>
-                  <div class="font-medium">{{ groupNames(group) }}</div>
-                  <div>{{ partyEvidenceSummary(group) }}</div>
-                  <div>
-                    近30天共同 {{ group.recentGames }} 场 · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
-                  </div>
-                  <div class="font-medium mt-1">共同同队对局证据</div>
-                  <div
-                    v-for="evidence in group.evidence.slice(0, 6)"
-                    :key="evidence.gameId"
-                    class="text-gray-500"
-                  >
-                    {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
-                  </div>
-                  <div class="text-gray-500 mt-1">
-                    判定使用的是多人历史对局的 gameId 交集，并逐局确认成员 teamId 相同；不是按个人历史列表长相、英雄、KDA 或单人胜率判断。接口没有官方组队 ID，所以只能表示历史上疑似固定同队。
-                  </div>
-                </div>
-              </n-popover>
+              </DuoGroupCard>
             </div>
             <div v-else class="text-gray-500">
               最近 100 场未发现达到人数门槛的共同同队记录。
@@ -750,6 +730,22 @@ const teamInsight = computed(() => {
 }
 
 .team-insight-party {
+	min-width: 0;
+}
+
+.team-insight-party-stack {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+	max-width: 60%;
+}
+
+.duo-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
 	min-width: 0;
 }
 
