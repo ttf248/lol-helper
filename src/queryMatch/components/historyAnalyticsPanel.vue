@@ -75,9 +75,9 @@ const databasePlayerLoading = ref(false);
 let databaseRequestId = 0;
 
 const { navigate } = useSummonerNavigation();
-// 关系图节点的 puuid/summonerName 字段和 PartyMember 同构，泛化调用即可。
+// 关系图节点保留了与 PartyMember 相同的玩家身份字段，直接复用跳转入口。
 const navigateToNetworkNode = (node: RecentNetworkNode) =>
-  navigate(node as unknown as PartyMember);
+  navigate(node as PartyMember);
 
 const partyAnalysisGames = computed(
   () => analysis.value?.actualGames || 0,

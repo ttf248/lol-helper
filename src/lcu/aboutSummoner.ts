@@ -34,6 +34,34 @@ const buildSummonerInfo = (info: lcuSummonerInfo): summonerInfo => {
 	};
 };
 
+const normalizeLookupName = (value: string | null | undefined) =>
+	(value || "").trim().toLocaleLowerCase();
+
+const cachedSummonerMatchesName = (
+	row: {
+		gameName?: string | null;
+		tagLine?: string | null;
+		displayName?: string | null;
+		internalName?: string | null;
+		summonerName?: string | null;
+	},
+	requestedName: string,
+) => {
+	const requested = normalizeLookupName(requestedName);
+	if (!requested) return false;
+	const riotId =
+		row.gameName && row.tagLine
+			? `${row.gameName}#${row.tagLine}`
+			: "";
+	return [
+		riotId,
+		row.gameName,
+		row.displayName,
+		row.internalName,
+		row.summonerName,
+	].some((candidate) => normalizeLookupName(candidate) === requested);
+};
+
 // 查询本地召唤师信息
 export const querySummonerInfo = async (
 	summonerId?: number | string,
@@ -56,14 +84,16 @@ export const querySummonerInfo = async (
 			}
 		}
 	} else if (summonerName !== undefined && summonerName.trim() !== "") {
-		// 按名字查时，PG 没有 name 索引。先试 localStorage 里上次缓存的 sumInfo.puuid。
+		// 按名字查时，PG 没有 name 索引。只能复用缓存中“名称确实匹配”的
+		// 当前行；不能仅按 localStorage 的当前 PUUID 返回，否则查询任意
+		// 队友昵称都会错误地得到当前玩家。
 		try {
 			const cachedPuuid = JSON.parse(
 				localStorage.getItem("sumInfo") || "null",
 			)?.puuid;
 			if (typeof cachedPuuid === "string" && cachedPuuid.length > 0) {
 				const cached = await getCachedSummonerByPuuid(cachedPuuid);
-				if (cached) {
+				if (cached && cachedSummonerMatchesName(cached, summonerName)) {
 					return buildSummonerInfo(summonerRowToLcuInfo(cached));
 				}
 			}

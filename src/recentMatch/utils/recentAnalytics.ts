@@ -917,6 +917,7 @@ const toPartyMember = (
   moderationMap: Map<string, PlayerModerationInfo>,
 ): PartyMember => ({
   puuid: player.puuid,
+  summonerId: player.summonerId,
   summonerName: normalizedText(player.summonerName) || "未知玩家",
   moderation: moderationMap.get(player.puuid) || emptyModeration(),
 });
@@ -947,6 +948,7 @@ const toPartyMemberFromParticipant = (
   moderationMap: Map<string, PlayerModerationInfo>,
 ): PartyMember => ({
   puuid: participant.puuid,
+  summonerId: participant.summonerId,
   summonerName: participantDisplayName(participant),
   moderation: moderationMap.get(participant.puuid) || emptyModeration(),
 });
@@ -1818,6 +1820,7 @@ const buildNetworkAnalysis = (
   const nodes: RecentNetworkNode[] = teams.flatMap(({ list, team }) =>
     list.map((player, teamIndex) => ({
       puuid: player.puuid,
+      summonerId: player.summonerId,
       summonerName: player.summonerName,
       team,
       teamIndex,

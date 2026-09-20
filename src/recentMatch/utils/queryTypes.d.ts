@@ -263,6 +263,8 @@ export interface PlayerModerationInfo {
 
 export interface PartyMember {
   puuid: string;
+  /** LCU/PG 的稳定召唤师 ID；历史分析跳转优先使用它。 */
+  summonerId?: number;
   summonerName: string;
   moderation?: PlayerModerationInfo;
 }
@@ -343,6 +345,8 @@ export interface OpponentMatchupStats {
 
 export interface RecentNetworkNode {
   puuid: string;
+  /** 与对局详情页相同的稳定跳转主键。 */
+  summonerId?: number;
   summonerName: string;
   team: "friend" | "enemy";
   teamIndex: number;
