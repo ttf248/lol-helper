@@ -3,6 +3,7 @@ import { Games, SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import {
     MatchHistoryEndpoint,
     MatchHistorySource,
+    queryMatchHistoryFullWithSource,
     queryMatchHistoryWithSource,
 } from "@/lcu/aboutMatch";
 import { queryGameType } from "@/lcu/utils";
@@ -18,7 +19,10 @@ import {
     normalizeHistoryGame,
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
-import { mergeHistoryGames as mergeNormalizedHistoryGames } from "@/recentMatch/utils/historyData";
+import {
+    historyGameQuality,
+    mergeHistoryGames as mergeNormalizedHistoryGames,
+} from "@/recentMatch/utils/historyData";
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 import {
     HISTORY_CACHE_PAGE_SIZE,
@@ -226,7 +230,6 @@ export default class BaseMatch {
         endIndex: number,
         serverLimit: number = HISTORY_SERVER_PAGE_SIZE,
     ): Promise<ProcessedMatchHistory | null> => {
-        const startedAt = Date.now();
         // 写入玩家id
         let localSumInfo: Partial<sumInfoTypes> = {};
         try {
@@ -333,26 +336,6 @@ export default class BaseMatch {
         };
     };
 
-    private logHomeHistoryDone(
-        op: string,
-        puuid: string,
-        startedAt: number,
-        extra: Record<string, unknown>,
-    ) {
-        logger.info({
-            tag: "home.history",
-            message: `首页列表${op}完成`,
-            context: {
-                purpose: "首页战绩列表读取",
-                op,
-                puuid,
-                duration_ms: Date.now() - startedAt,
-                ...extra,
-            },
-            durationMs: Date.now() - startedAt,
-        });
-    }
-
     /**
      * 在主页后台补齐当前用户的主动同步窗口。
      *
@@ -397,6 +380,12 @@ export default class BaseMatch {
         });
         const cachedGameIds = new Set(
             cachedGames
+                .map((game) => Number(game.gameId))
+                .filter((gameId) => Number.isFinite(gameId)),
+        );
+        const cachedCompleteGameIds = new Set(
+            cachedGames
+                .filter((game) => historyGameQuality(game) === "complete")
                 .map((game) => Number(game.gameId))
                 .filter((gameId) => Number.isFinite(gameId)),
         );
@@ -474,26 +463,14 @@ export default class BaseMatch {
                 `已缓存 ${cachedGameIds.size} 场，本次最多扫描 ${maxPages} 页。`,
             );
 
-            // 首页刚刚取过的第一页可以直接复用，避免为了后台缓存再次
-            // 请求同一页；后续页始终按 20 场串行请求。
-            const recentPage =
-                pageIndex === 0
-                    ? this.recentServerHistory.get(`${puuid}|${pageSize}`)
-                    : undefined;
-            const pageResult =
-                recentPage &&
-                Date.now() - recentPage.fetchedAt < SERVER_HISTORY_CACHE_TTL_MS
-                    ? {
-                          games: recentPage.games,
-                          source: recentPage.source,
-                          endpoints: recentPage.sourceEndpoints,
-                          totalCount: recentPage.totalCount ?? null,
-                      }
-                    : await queryMatchHistoryWithSource(
-                          puuid,
-                          pageIndex * pageSize,
-                          (pageIndex + 1) * pageSize,
-                      );
+            // 主页列表可以使用摘要接口，但写入历史分析缓存的后台任务必须
+            // 使用完整 participant 接口；否则 PG 里只有当前玩家一条记录，
+            // 首页历史分析永远无法恢复队友关系。
+            const pageResult = await queryMatchHistoryFullWithSource(
+                puuid,
+                pageIndex * pageSize,
+                (pageIndex + 1) * pageSize,
+            );
 
             if (pageResult === null) {
                 return emit(
@@ -536,9 +513,13 @@ export default class BaseMatch {
                 );
             }
 
-            const pageAlreadyCached = pageGames.every((game) =>
-                cachedGameIds.has(game.gameId),
-            );
+            const normalizedPageGames = pageGames
+                .map((game) => normalizeHistoryGame(game, pageResult.source))
+                .filter(
+                    (game): game is NormalizedHistoryGame => game !== null,
+                );
+            const pageAlreadyCached =
+                pageGames.every((game) => cachedCompleteGameIds.has(game.gameId));
             if (pageAlreadyCached) {
                 // 缓存目标是配置的最大窗口，而不是“遇到第一页已缓存
                 // 就停止”。只有接口明确到末尾或已达到报告的总页数才结束。
@@ -575,6 +556,9 @@ export default class BaseMatch {
                     cachedGameIds.add(game.gameId);
                 }
             }
+            normalizedPageGames
+                .filter((game) => historyGameQuality(game) === "complete")
+                .forEach((game) => cachedCompleteGameIds.add(game.gameId));
 
             if (
                 pageResult.games.length < pageSize ||
@@ -642,14 +626,17 @@ export default class BaseMatch {
             HISTORY_PLAYER_MAX_GAMES,
         );
 
-        // 先看本地 PG：已经覆盖的页就不打服务器。
+        // 先看本地 PG：已经覆盖且包含完整队伍的页就不打服务器。
         const cached = await getCachedHistoryPage(puuid, begIndex, pageSize);
-        if (cached.length >= pageSize) {
+        if (
+            cached.length >= pageSize &&
+            cached.every((game) => historyGameQuality(game) === "complete")
+        ) {
             return { cachedGames: cached.length, reachedEnd: false };
         }
 
-        // 本地无覆盖 → 单页拉服务器
-        const pageResult = await queryMatchHistoryWithSource(
+        // 本地没有完整队伍 → 单页拉服务器完整 participant
+        const pageResult = await queryMatchHistoryFullWithSource(
             puuid,
             begIndex,
             endIndex,
