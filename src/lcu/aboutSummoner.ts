@@ -99,8 +99,8 @@ export const querySummonerInfo = async (
 		return null;
 	}
 
-	// 3) 写回 PG（fire-and-forget），后续同玩家命中本地缓存。
-	void cacheSummoner(lcuInfo);
+	// 3) 写回 PG 并等待一次性写入完成，后续同玩家才能稳定命中缓存。
+	await cacheSummoner(lcuInfo);
 
 	return buildSummonerInfo(lcuInfo);
 };

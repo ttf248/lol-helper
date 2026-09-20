@@ -495,8 +495,9 @@ export const getCachedPlayerSummary = async (
 };
 
 /**
- * 将刚通过 LCU 拿到的召唤师信息 fire-and-forget 写入 PostgreSQL。
- * 即使写入失败也不影响调用方 —— 查询路径走 TTL miss → LCU 已保证本次可用。
+ * 将刚通过 LCU 拿到的召唤师信息写入 PostgreSQL。
+ * 调用方等待结果，避免应用退出或页面切换时把一次性写入静默丢掉；
+ * 写入失败仍返回 false，不影响本次已经从 LCU 获取到的数据。
  */
 export const cacheSummoner = async (
   info: lcuSummonerInfo,
@@ -686,7 +687,7 @@ export const summonerRowToLcuInfo = (
  * 单局对局详情在 PG `game_details` 表中的完整行。
  * raw_payload 始终是 LCU /games/{gameId} 的完整响应，
  * raw_payload_sgp 可选，仅当调用方传入 SGP 数据时存在。
- * 计划确认只存原始载荷，字段化提取（participants/teams）暂未启用。
+ * 同时维护字段化参与者/队伍明细，供历史分析直接使用；原始载荷用于回放和兼容。
  */
 export interface CachedGameDetail {
   gameId: number;
@@ -709,8 +710,9 @@ const dropGameDetailCacheEntry = (gameId: number) => {
 };
 
 /**
- * 将单局 LCU /games/{gameId} 响应 fire-and-forget 写入 PostgreSQL。
- * raw_payload_sgp 仅在传入时写入，独立事务，失败不影响 LCU 部分。
+ * 将单局 LCU /games/{gameId} 响应写入 PostgreSQL。
+ * Rust 端在同一事务中维护父表、主详情、参与者和队伍；调用方等待结果，
+ * 因此不会再出现“请求成功但详情写入还没完成/失败无人知晓”的竞态。
  * 当 source === 'sgp-summary-full' / 'sgp-summary' 时，将同一份载荷
  * 写入 raw_payload + raw_payload_sgp —— 既满足 NOT NULL，又保证读取
  * 路径走 SGP 分支。
@@ -999,7 +1001,7 @@ export interface CachedChampionDetail {
 }
 
 /**
- * 将刚拉到的 gtimg.com 英雄详情 fire-and-forget 写入 PostgreSQL。
+ * 将刚拉到的 gtimg.com 英雄详情写入 PostgreSQL。
  * 同一英雄再次打开时直接从 PG 读，省掉跨域 HTTPS 请求。
  */
 export const cacheChampionDetail = async (

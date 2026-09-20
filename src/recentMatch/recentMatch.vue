@@ -359,7 +359,7 @@ const getChampInfoList = async (champId: number) => {
         const res = await requestFetch<any>(url, "GET");
         if (res !== null && res?.spells) {
             applyChampPayload(res);
-            void cacheChampionDetail(champId, res);
+            await cacheChampionDetail(champId, res);
         }
     } catch (error) {
         logger.error({

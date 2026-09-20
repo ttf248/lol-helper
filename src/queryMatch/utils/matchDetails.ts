@@ -208,11 +208,22 @@ export default class MatchDetails {
         // 拿到单局响应后把原始 payload 持久化到 PG。重启客户端后下次再开
         // 这局详情直接命中 PG，不再触发 /games/{gameId}。
         // Phase 5 前还会额外写一份无界 Map（已删除），现在只剩 PG。
-        void cacheGameDetail(
+        const detailPersisted = await cacheGameDetail(
             response as unknown as Games,
             undefined,
             "lcu-game-detail",
         );
+        if (!detailPersisted) {
+            logger.warn({
+                tag: "match.detail",
+                message: "LCU 对局详情已获取，但 PostgreSQL 持久化失败",
+                context: {
+                    purpose: "持久化单局对局详情",
+                    game_id: gameId,
+                    source: "lcu-game-detail",
+                },
+            });
+        }
 
         let assembled: ParticipantsInfo | null = null;
         if (response.queueId === 1700) {

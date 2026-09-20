@@ -8,6 +8,7 @@ import {
 
 import { GamesBySgp } from "./types/queryMatchSgpGameTypes";
 import { logger } from "@/utils/logger";
+import { cacheGameDetail } from "@/recentMatch/utils/databaseCache";
 
 export type MatchHistorySource =
 	| "lcu-current"
@@ -458,6 +459,30 @@ const hasParticipantRoster = (games: MatchHistoryGame[]): boolean =>
 		},
 	);
 
+/**
+ * LCU PUUID 历史接口在部分客户端也能返回完整十人 participant；这条路径
+ * 不会经过 sgpMatch.ts，因此必须在这里把原始详情和字段化明细写入 PG。
+ * 单条失败不阻断历史列表，但必须等待全部写入结束，避免 fire-and-forget
+ * 在页面切换/应用退出时丢失详情。
+ */
+const persistLcuFullDetails = async (games: Games[]): Promise<void> => {
+	const results = await Promise.all(
+		games.map((game) => cacheGameDetail(game, undefined, "lcu-history-full")),
+	);
+	const failed = results.filter((result) => !result).length;
+	if (failed > 0) {
+		logger.warn({
+			tag: "lcu.history",
+			message: "LCU 完整历史已获取，但部分详情写入 PostgreSQL 失败",
+			context: {
+				purpose: "持久化完整参与者历史",
+				games: games.length,
+				detail_write_failed: failed,
+			},
+		});
+	}
+};
+
 // 辅助函数：处理单次请求
 const fetchMatchHistory = async (
 	puuid: string,
@@ -527,6 +552,9 @@ const fetchMatchHistory = async (
 		lcuResult.games.length > 0 &&
 		(!fullParticipants || hasParticipantRoster(lcuResult.games))
 	) {
+		if (fullParticipants) {
+			await persistLcuFullDetails(lcuResult.games);
+		}
 		logger.info({
 			tag: "lcu.history",
 			message: "历史接口解析完成",

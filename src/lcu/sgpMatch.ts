@@ -288,6 +288,7 @@ export class SgpMatchHistoryService {
 			throw new Error("SGP match history response has no games array");
 		}
 
+		const detailWrites: Promise<boolean>[] = [];
 		const gamesList: GamesBySgp[] = data.games.reduce(
 			(result: GamesBySgp[], item: any) => {
 				const games = item?.json as GamesBySgp | undefined;
@@ -306,7 +307,9 @@ export class SgpMatchHistoryService {
 				// 仅在完整参与者请求时落库 —— SUMMARY 请求只包含被查询玩家的
 				// 单 participant，覆盖后会让 PG 的 sgp 列丢失全员数据。
 				if (fullParticipants) {
-					void cacheGameDetail(games, undefined, "sgp-summary-full");
+					detailWrites.push(
+						cacheGameDetail(games, undefined, "sgp-summary-full"),
+					);
 				}
 				const participant = games.participants.find(
 					(participant: Participant) => participant.puuid === playerPuuid,
@@ -323,6 +326,21 @@ export class SgpMatchHistoryService {
 			},
 			[],
 		);
+		const detailWriteResults = await Promise.all(detailWrites);
+		const detailWriteFailed = detailWriteResults.filter((result) => !result).length;
+		if (detailWriteFailed > 0) {
+			logger.warn({
+				tag: "lcu.sgp",
+				message: "SGP 完整对局解析完成，但部分详情写入失败",
+				context: {
+					purpose,
+					url,
+					full_participants: fullParticipants,
+					detail_write_count: detailWrites.length,
+					detail_write_failed: detailWriteFailed,
+				},
+			});
+		}
 
 		logger.info({
 			tag: "lcu.sgp",
@@ -335,6 +353,8 @@ export class SgpMatchHistoryService {
 				full_participants: fullParticipants,
 				status: response.status,
 				games: gamesList.length,
+				detail_write_count: detailWrites.length,
+				detail_write_failed: detailWriteFailed,
 				duration_ms: Date.now() - startedAt,
 			},
 			durationMs: Date.now() - startedAt,
