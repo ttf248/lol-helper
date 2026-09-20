@@ -506,6 +506,24 @@ pub struct SessionPlayerPickRow {
     pub team_id: Option<i32>,
 }
 
+/// 英雄详情请求：来自 `https://game.gtimg.cn/.../hero/{id}.js` 的整包 JSON。
+/// `payload` 是网页 JS 响应 `{ hero: {...}, spells: [...] }` 的 JSON 形式。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheChampionDetailRequest {
+    pub champion_id: i32,
+    pub payload: serde_json::Value,
+}
+
+/// 英雄详情读取返回。`payload` 始终存在（NOT NULL）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedChampionDetail {
+    pub champion_id: i32,
+    pub payload: serde_json::Value,
+    pub fetched_at: i64,
+}
+
 pub struct DatabaseState {
     client: Arc<Mutex<Option<Client>>>,
     status: Arc<RwLock<DatabaseStatus>>,
@@ -1795,6 +1813,120 @@ impl DatabaseState {
             picks,
         }))
     }
+
+    pub async fn cache_champion_detail(
+        &self,
+        request: CacheChampionDetailRequest,
+    ) -> Result<i32, String> {
+        let started = std::time::Instant::now();
+        let champion_id = request.champion_id;
+        if champion_id <= 0 {
+            return Err("缓存英雄详情缺少合法 championId".to_string());
+        }
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_champion_detail",
+            purpose = "将 gtimg.com 英雄详情写入 PostgreSQL 缓存",
+            champion_id,
+            "缓存英雄详情写入发起"
+        );
+
+        let mut client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_mut()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        client
+            .execute(
+                r#"
+                INSERT INTO champion_details(champion_id, payload, fetched_at)
+                VALUES($1, $2, NOW())
+                ON CONFLICT(champion_id) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    fetched_at = NOW()
+                "#,
+                &[&champion_id, &request.payload],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_champion_detail",
+            purpose = "将 gtimg.com 英雄详情写入 PostgreSQL 缓存",
+            champion_id,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "缓存英雄详情已写入"
+        );
+        Ok(champion_id)
+    }
+
+    pub async fn get_cached_champion_detail(
+        &self,
+        champion_id: i32,
+    ) -> Result<Option<CachedChampionDetail>, String> {
+        if champion_id <= 0 {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_champion_detail",
+            purpose = "读取 PostgreSQL 英雄详情缓存",
+            champion_id,
+            "读取英雄详情缓存发起"
+        );
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let row = client
+            .query_opt(
+                "SELECT payload,
+                        EXTRACT(EPOCH FROM fetched_at)::BIGINT AS fetched_at_epoch
+                   FROM champion_details WHERE champion_id = $1",
+                &[&champion_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = match row {
+            Some(row) => Some(CachedChampionDetail {
+                champion_id,
+                payload: row.get("payload"),
+                fetched_at: row.get("fetched_at_epoch"),
+            }),
+            None => None,
+        };
+        match &result {
+            Some(detail) => {
+                let payload_bytes = serde_json::to_string(&detail.payload)
+                    .map(|s| s.len())
+                    .unwrap_or_default();
+                tracing::info!(
+                    target: "db.cache",
+                    op = "cached_champion_detail",
+                    purpose = "读取 PostgreSQL 英雄详情缓存",
+                    champion_id,
+                    found = true,
+                    payload_bytes = payload_bytes as i64,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "读取英雄详情缓存完成"
+                );
+            }
+            None => {
+                tracing::info!(
+                    target: "db.cache",
+                    op = "cached_champion_detail",
+                    purpose = "读取 PostgreSQL 英雄详情缓存",
+                    champion_id,
+                    found = false,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "读取英雄详情缓存完成（未命中）"
+                );
+            }
+        }
+        Ok(result)
+    }
 }
 
 /// 把 PostgreSQL NOTICE 翻译成中文（保留以便未来 NOTICE 来源接入时直接复用）。
@@ -1920,4 +2052,20 @@ pub async fn get_cached_session_for_lcu_game_id(
     game_id: i64,
 ) -> Result<Option<CachedGameSession>, String> {
     state.get_cached_session_for_lcu_game_id(game_id).await
+}
+
+#[tauri::command]
+pub async fn cache_champion_detail(
+    state: tauri::State<'_, DatabaseState>,
+    request: CacheChampionDetailRequest,
+) -> Result<i32, String> {
+    state.cache_champion_detail(request).await
+}
+
+#[tauri::command]
+pub async fn get_cached_champion_detail(
+    state: tauri::State<'_, DatabaseState>,
+    champion_id: i32,
+) -> Result<Option<CachedChampionDetail>, String> {
+    state.get_cached_champion_detail(champion_id).await
 }

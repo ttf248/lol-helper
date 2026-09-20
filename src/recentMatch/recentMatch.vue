@@ -25,6 +25,10 @@ import { window } from "@tauri-apps/api";
 import ChampInfo from "@/recentMatch/components/champInfo.vue";
 import { requestFetch } from "@/main/utils/request.ts";
 import {
+    cacheChampionDetail,
+    getCachedChampionDetail,
+} from "@/recentMatch/utils/databaseCache";
+import {
     applyFastRecentAnalysis,
     clearRecentAnalysisCache,
     loadRecentTeamAnalysis,
@@ -327,23 +331,35 @@ const openDetailDrawer = async (
     isDetailModal.value = true;
 };
 
+const applyChampPayload = (payload: any) => {
+    if (!payload?.spells) return false;
+    const info: ChampTinyTypes = {
+        name: payload.hero.name + " " + payload.hero.title,
+        alias: `https://game.gtimg.cn/images/lol/act/img/champion/${payload.hero.alias}.png`,
+        roles: payload.hero.roles,
+    };
+    champInfo.value.info = info;
+    // 定义排序顺序
+    const order = ["q", "w", "e", "r", "passive"];
+    // 对数组进行排序
+    champInfo.value.list = payload.spells.sort((a: any, b: any) => {
+        return order.indexOf(a.spellKey) - order.indexOf(b.spellKey);
+    });
+    return true;
+};
+
 const getChampInfoList = async (champId: number) => {
     try {
+        // PG 优先：点过的英雄不再走 gtimg.com 跨域 HTTPS。
+        const cached = await getCachedChampionDetail(champId);
+        if (cached && applyChampPayload(cached.payload)) {
+            return;
+        }
         const url = `https://game.gtimg.cn/images/lol/act/img/js/hero/${champId}.js?ts=2893692`;
         const res = await requestFetch<any>(url, "GET");
         if (res !== null && res?.spells) {
-            const info: ChampTinyTypes = {
-                name: res.hero.name + " " + res.hero.title,
-                alias: `https://game.gtimg.cn/images/lol/act/img/champion/${res.hero.alias}.png`,
-                roles: res.hero.roles,
-            };
-            champInfo.value.info = info;
-            // 定义排序顺序
-            const order = ["q", "w", "e", "r", "passive"];
-            // 对数组进行排序
-            champInfo.value.list = res.spells.sort((a: any, b: any) => {
-                return order.indexOf(a.spellKey) - order.indexOf(b.spellKey);
-            });
+            applyChampPayload(res);
+            void cacheChampionDetail(champId, res);
         }
     } catch (error) {
         logger.error({

@@ -14,6 +14,7 @@ const HISTORY_TTL_MS = 10_000;
 const SUMMONER_TTL_MS = 30_000;
 const GAME_DETAIL_TTL_MS = 60_000;
 const GAME_SESSION_TTL_MS = 120_000;
+const CHAMPION_DETAIL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天 —— 英雄详情基本不变
 
 interface CachedEntry<T> {
   value: T;
@@ -29,6 +30,7 @@ const summonerByIdCache = new Map<number, CachedEntry<CachedSummonerRow>>();
 const summonerByPuuidCache = new Map<string, CachedEntry<CachedSummonerRow>>();
 const gameDetailCache = new Map<number, CachedEntry<CachedGameDetail>>();
 const gameSessionCache = new Map<number, CachedEntry<CachedGameSession>>();
+const championDetailCache = new Map<number, CachedEntry<CachedChampionDetail>>();
 
 const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
   summonerByIdCache.delete(row.summonerId);
@@ -57,6 +59,7 @@ export const resetDatabaseCache = (reason?: string) => {
     summoner_by_puuid: summonerByPuuidCache.size,
     game_detail: gameDetailCache.size,
     game_session: gameSessionCache.size,
+    champion_detail: championDetailCache.size,
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
@@ -65,6 +68,7 @@ export const resetDatabaseCache = (reason?: string) => {
   summonerByPuuidCache.clear();
   gameDetailCache.clear();
   gameSessionCache.clear();
+  championDetailCache.clear();
   logger.info({
     tag: "db.cache",
     message: "TTL 缓存已重置",
@@ -975,6 +979,117 @@ export const getCachedSessionByLcuGameId = async (
       context: {
         op: "get_cached_session_for_lcu_game_id",
         game_id: gameId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return null;
+  }
+};
+
+/**
+ * 英雄详情在 PG `champion_details` 表中的完整行。
+ * payload 是 gtimg.com `{ hero, spells }` 整包 JSON，原样保留以备后续
+ * UI 字段扩展时直接读取。
+ */
+export interface CachedChampionDetail {
+  championId: number;
+  payload: unknown;
+  fetchedAt: number;
+}
+
+/**
+ * 将刚拉到的 gtimg.com 英雄详情 fire-and-forget 写入 PostgreSQL。
+ * 同一英雄再次打开时直接从 PG 读，省掉跨域 HTTPS 请求。
+ */
+export const cacheChampionDetail = async (
+  championId: number,
+  payload: unknown,
+): Promise<boolean> => {
+  if (!Number.isFinite(championId) || championId <= 0) {
+    return false;
+  }
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  const startedAt = Date.now();
+  try {
+    await invoke<number>("cache_champion_detail", {
+      request: { championId, payload },
+    });
+    championDetailCache.delete(championId);
+    logger.info({
+      tag: "db.cache",
+      message: "写入英雄详情缓存完成",
+      context: {
+        purpose: "将 gtimg.com 英雄详情写入 PostgreSQL 缓存",
+        op: "cache_champion_detail",
+        champion_id: championId,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
+    return true;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "写入英雄详情缓存失败",
+      context: {
+        op: "cache_champion_detail",
+        champion_id: championId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return false;
+  }
+};
+
+/**
+ * 按 championId 读取 PG 中的英雄详情；命中后回填 TTL 缓存并返回。
+ * 失败或未命中返回 null，调用方应继续走 gtimg.com 路径。
+ */
+export const getCachedChampionDetail = async (
+  championId: number,
+): Promise<CachedChampionDetail | null> => {
+  if (!Number.isFinite(championId) || championId <= 0) {
+    return null;
+  }
+  const cached = championDetailCache.get(championId);
+  if (isFresh(cached, CHAMPION_DETAIL_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "get_cached_champion_detail", champion_id: championId },
+    });
+    return cached!.value;
+  }
+  const startedAt = Date.now();
+  try {
+    const value = await invoke<CachedChampionDetail | null>(
+      "get_cached_champion_detail",
+      { championId },
+    );
+    if (value) {
+      championDetailCache.set(championId, { value, fetchedAt: Date.now() });
+      logger.debug({
+        tag: "db.cache",
+        message: "PG 英雄详情缓存命中",
+        context: {
+          op: "get_cached_champion_detail",
+          champion_id: championId,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取英雄详情缓存失败",
+      context: {
+        op: "get_cached_champion_detail",
+        champion_id: championId,
         duration_ms: Date.now() - startedAt,
         error: String(error).slice(0, 500),
       },
