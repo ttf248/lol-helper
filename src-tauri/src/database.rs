@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -268,8 +269,15 @@ CREATE INDEX IF NOT EXISTS idx_game_details_game_creation
 CREATE INDEX IF NOT EXISTS idx_detail_participants_game_id
     ON game_detail_participants(game_id);
 
+-- SGP 只返回 gameCreation（Unix 毫秒），历史详情已经有主时间戳时，
+-- 也要补齐冗余的 TIMESTAMPTZ 字段，避免旧数据永久为空。
+UPDATE game_details
+SET game_creation_date = to_timestamp(game_creation / 1000.0)
+WHERE game_creation_date IS NULL
+  AND game_creation > 0;
+
 INSERT INTO schema_migrations(version)
-VALUES (2)
+VALUES (2), (3)
 ON CONFLICT(version) DO NOTHING;
 "#;
 
@@ -570,6 +578,21 @@ fn string_value(object: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn game_creation_date_value(
+    detail: &Value,
+    sgp_detail: Option<&Value>,
+    game_creation: Option<i64>,
+) -> Option<String> {
+    string_value(detail, "gameCreationDate")
+        .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameCreationDate")))
+        .or_else(|| {
+            game_creation.and_then(|milliseconds| {
+                DateTime::<Utc>::from_timestamp_millis(milliseconds)
+                    .map(|date| date.to_rfc3339())
+            })
+        })
 }
 
 fn bool_value(object: &Value, key: &str) -> Option<bool> {
@@ -1871,8 +1894,7 @@ impl DatabaseState {
         let sgp_detail = request.sgp_detail.as_ref();
         let game_creation = number_value(detail, "gameCreation")
             .or_else(|| sgp_detail.and_then(|value| number_value(value, "gameCreation")));
-        let game_creation_date = string_value(detail, "gameCreationDate")
-            .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameCreationDate")));
+        let game_creation_date = game_creation_date_value(detail, sgp_detail, game_creation);
         let game_duration = number_value(detail, "gameDuration")
             .or_else(|| sgp_detail.and_then(|value| number_value(value, "gameDuration")))
             .and_then(|value| i32::try_from(value).ok());
