@@ -54,12 +54,12 @@ const renderMatch = (index:number,gameId:number) => {
               </div>
             </n-tag>
           </div>
-         <div class="flex justify-between absolute w-full" style="bottom: -3px">
+         <div class="match-history-meta flex justify-between absolute w-full" style="bottom: -3px">
            <div class="flex justify-between" style="width: 73px;">
              <text class="text-xs text-gray-400">{{ match.matchTime }}</text>
              <text class="text-xs text-gray-400">{{ match.startTime }}</text>
            </div>
-           <text class="text-xs text-gray-400">{{ match.gameModel }}</text>
+           <text class="match-history-meta-game text-xs text-gray-400">{{ match.gameModel }}</text>
          </div>
         </n-space>
       </n-space>
@@ -70,11 +70,16 @@ const renderMatch = (index:number,gameId:number) => {
 
 <style scoped>
 .match-history-list {
-  flex: 0 0 186px;
-  width: 186px;
+  flex: 0 0 224px;
+  width: 224px;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.match-history-meta,
+.match-history-meta-game {
+  white-space: nowrap;
 }
 
 .match-history-list :deep(.n-list-item) {
