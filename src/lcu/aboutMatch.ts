@@ -61,9 +61,16 @@ export interface MatchHistoryQueryResult {
 	games: MatchHistoryGame[];
 	source: MatchHistorySource;
 	endpoints: MatchHistoryEndpoint[];
+	/** LCU 在返回完整列表或明确提供总数时给出的历史总场数。 */
+	totalCount: number | null;
 }
 
 interface MatchHistoryBatchResult extends MatchHistoryQueryResult {}
+
+interface MatchHistoryPageResult {
+	games: Games[];
+	totalCount: number | null;
+}
 
 const combineSources = (sources: MatchHistorySource[]): MatchHistorySource => {
 	const uniqueSources = Array.from(new Set(sources));
@@ -138,7 +145,7 @@ const isCurrentSummoner = (puuid: string): boolean => {
 const fetchCurrentSummonerMatchHistory = async (
 	begIndex: number,
 	count: number,
-): Promise<Games[] | null> => {
+): Promise<MatchHistoryPageResult | null> => {
 	try {
 		const query = new URLSearchParams({
 			begIndex: String(begIndex),
@@ -162,7 +169,20 @@ const fetchCurrentSummonerMatchHistory = async (
 			responseStart === begIndex &&
 			Number.isFinite(responseEnd) &&
 			responseEnd <= begIndex + count;
-		return alreadyPaged ? games : games.slice(begIndex, begIndex + count);
+		const advertisedCount = Number(history?.gameCount);
+		// 有些客户端忽略 begIndex/endIndex，返回完整历史；此时 games.length
+		// 就是可靠的总数。分页客户端只有在 gameCount 明确超过当前页末尾
+		// 时才采用它，避免把“本页返回数量”误认为历史总数。
+		const totalCount = !alreadyPaged
+			? games.length
+			: Number.isFinite(advertisedCount) &&
+				  advertisedCount > Math.max(responseEnd, begIndex + games.length)
+			? advertisedCount
+			: null;
+		return {
+			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
+			totalCount,
+		};
 	} catch {
 		return null;
 	}
@@ -177,7 +197,7 @@ const fetchSummonerMatchHistoryFromLcu = async (
 	puuid: string,
 	begIndex: number,
 	count: number,
-): Promise<Games[] | null> => {
+): Promise<MatchHistoryPageResult | null> => {
 	try {
 		const query = new URLSearchParams({
 			begIndex: String(begIndex),
@@ -192,7 +212,24 @@ const fetchSummonerMatchHistoryFromLcu = async (
 			return null;
 		}
 		cacheLcuGames(games, "lcu-puuid");
-		return games;
+		const history = matchList?.games;
+		const responseStart = Number(history?.gameIndexBegin);
+		const responseEnd = Number(history?.gameIndexEnd);
+		const alreadyPaged =
+			responseStart === begIndex &&
+			Number.isFinite(responseEnd) &&
+			responseEnd <= begIndex + count;
+		const advertisedCount = Number(history?.gameCount);
+		const totalCount = !alreadyPaged
+			? games.length
+			: Number.isFinite(advertisedCount) &&
+				  advertisedCount > Math.max(responseEnd, begIndex + games.length)
+			? advertisedCount
+			: null;
+		return {
+			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
+			totalCount,
+		};
 	} catch {
 		return null;
 	}
@@ -242,11 +279,11 @@ const fetchMatchHistory = async (
 	// 普通战绩列表可以使用当前召唤师历史 endpoint；它仍然是历史数据，
 	// 不是当前正在进行的对局。完整分析则必须继续检查参与者是否齐全。
 	if (!fullParticipants && isCurrentSummoner(puuid)) {
-		const currentGames = await fetchCurrentSummonerMatchHistory(
+		const currentResult = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
 		);
-		if (currentGames !== null) {
+		if (currentResult !== null) {
 			logger.info({
 				tag: "lcu.history",
 				message: "fetchMatchHistory resolved",
@@ -256,28 +293,29 @@ const fetchMatchHistory = async (
 					count: endIndex,
 					fullParticipants,
 					resolved: "lcu-current-summoner",
-					count_games: currentGames.length,
+					count_games: currentResult.games.length,
 				},
 			});
 			return {
-				games: currentGames,
+				games: currentResult.games,
 				source: "lcu-current",
 				endpoints: ["lcu-current-summoner"],
+				totalCount: currentResult.totalCount,
 			};
 		}
 	}
 
 	// 先走 LCU 的 PUUID endpoint。对于腾讯服，它通常能直接返回他人的
 	// 简要战绩；只有客户端拒绝或返回空结果时才需要 SGP。
-	const lcuGames = await fetchSummonerMatchHistoryFromLcu(
+	const lcuResult = await fetchSummonerMatchHistoryFromLcu(
 		puuid,
 		begIndex,
 		endIndex,
 	);
 	if (
-		lcuGames !== null &&
-		lcuGames.length > 0 &&
-		(!fullParticipants || hasParticipantRoster(lcuGames))
+		lcuResult !== null &&
+		lcuResult.games.length > 0 &&
+		(!fullParticipants || hasParticipantRoster(lcuResult.games))
 	) {
 		logger.info({
 			tag: "lcu.history",
@@ -288,10 +326,15 @@ const fetchMatchHistory = async (
 				count: endIndex,
 				fullParticipants,
 				resolved: "lcu-puuid",
-				count_games: lcuGames.length,
+				count_games: lcuResult.games.length,
 			},
 		});
-		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
+		return {
+			games: lcuResult.games,
+			source: "lcu-puuid",
+			endpoints: ["lcu-puuid"],
+			totalCount: lcuResult.totalCount,
+		};
 	}
 
 	try {
@@ -320,6 +363,7 @@ const fetchMatchHistory = async (
 				games: sgpGames,
 				source: "sgp",
 				endpoints: [fullParticipants ? "sgp-summary-full" : "sgp-summary"],
+				totalCount: null,
 			};
 		}
 	} catch (sgpError) {
@@ -340,11 +384,11 @@ const fetchMatchHistory = async (
 	// SGP 不可用时，仍允许页面显示目标玩家的历史胜率；但这里明确是
 	// 降级数据，调用方会通过 participants 数量判断关系分析是否可信。
 	if (isCurrentSummoner(puuid)) {
-		const currentGames = await fetchCurrentSummonerMatchHistory(
+		const currentResult = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
 		);
-		if (currentGames !== null && currentGames.length > 0) {
+		if (currentResult !== null && currentResult.games.length > 0) {
 			logger.info({
 				tag: "lcu.history",
 				message: "fetchMatchHistory resolved (fallback)",
@@ -354,17 +398,18 @@ const fetchMatchHistory = async (
 					count: endIndex,
 					fullParticipants,
 					resolved: "lcu-current-summoner",
-					count_games: currentGames.length,
+					count_games: currentResult.games.length,
 				},
 			});
 			return {
-				games: currentGames,
+				games: currentResult.games,
 				source: "lcu-current",
 				endpoints: ["lcu-current-summoner"],
+				totalCount: currentResult.totalCount,
 			};
 		}
 	}
-	if (lcuGames !== null) {
+	if (lcuResult !== null) {
 		logger.info({
 			tag: "lcu.history",
 			message: "fetchMatchHistory resolved (fallback)",
@@ -374,10 +419,15 @@ const fetchMatchHistory = async (
 				count: endIndex,
 				fullParticipants,
 				resolved: "lcu-puuid",
-				count_games: lcuGames.length,
+				count_games: lcuResult.games.length,
 			},
 		});
-		return { games: lcuGames, source: "lcu-puuid", endpoints: ["lcu-puuid"] };
+		return {
+			games: lcuResult.games,
+			source: "lcu-puuid",
+			endpoints: ["lcu-puuid"],
+			totalCount: lcuResult.totalCount,
+		};
 	}
 	logger.warn({
 		tag: "lcu.history",
@@ -418,6 +468,7 @@ const splitRequestsSequential = async (
 	let allGames: MatchHistoryGame[] = [];
 	const sources: MatchHistorySource[] = [];
 	const endpoints: MatchHistoryEndpoint[] = [];
+	let totalCount: number | null = null;
 
 	// 1. 计算总共需要获取的数量
 	const totalToFetch = endIndex - begIndex;
@@ -439,6 +490,9 @@ const splitRequestsSequential = async (
 		);
 		sources.push(result.source);
 		endpoints.push(...result.endpoints);
+		if (result.totalCount !== null) {
+			totalCount = Math.max(totalCount ?? 0, result.totalCount);
+		}
 
 		if (result.games.length > 0) {
 			allGames = allGames.concat(result.games);
@@ -462,6 +516,7 @@ const splitRequestsSequential = async (
 		games: allGames,
 		source: combineSources(sources),
 		endpoints: combineEndpoints(endpoints),
+		totalCount,
 	};
 };
 
@@ -480,6 +535,7 @@ const splitRequests = async (
 	let allGames: MatchHistoryGame[] = [];
 	const sources: MatchHistorySource[] = [];
 	const endpoints: MatchHistoryEndpoint[] = [];
+	let totalCount: number | null = null;
 	const totalToFetch = endIndex - begIndex;
 
 	// 完整参与者请求最多并行两页，批次之间保留间隔，兼顾速度和限流。
@@ -510,6 +566,9 @@ const splitRequests = async (
 		for (const result of results) {
 			sources.push(result.source);
 			endpoints.push(...result.endpoints);
+			if (result.totalCount !== null) {
+				totalCount = Math.max(totalCount ?? 0, result.totalCount);
+			}
 			if (result.games.length > 0) {
 				allGames = allGames.concat(result.games);
 			} else {
@@ -526,6 +585,7 @@ const splitRequests = async (
 		games: allGames,
 		source: combineSources(sources),
 		endpoints: combineEndpoints(endpoints),
+		totalCount,
 	};
 };
 
@@ -581,6 +641,7 @@ const queryMatchHistoryWithSourceInternalUncached = async (
 			games: uniqueGames.sort((a, b) => b.gameCreation - a.gameCreation),
 			source: result.source,
 			endpoints: result.endpoints,
+			totalCount: result.totalCount,
 		};
 	} catch (error) {
 		logger.error({

@@ -462,7 +462,9 @@ impl DatabaseState {
         let client = client_guard
             .as_ref()
             .ok_or_else(|| "数据库连接不可用".to_string())?;
-        let limit = request.limit.clamp(1, 300);
+        // 主页后台同步最多扫描 20 页，每页 20 场；允许一次读取完整
+        // 的同步边界，才能判断“当前页是否已经全部在数据库中”。
+        let limit = request.limit.clamp(1, 500);
         let offset = request.offset.max(0);
         let rows = client
             .query(

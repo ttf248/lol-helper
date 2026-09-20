@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {NButton, NInput, NSelect, NPagination, NTag,
   useMessage, NIcon, NSpace, MessageReactive, NDrawer} from "naive-ui"
-import {ref, watch} from "vue";
+import {computed, ref, watch} from "vue";
 import {CircleMinus, CircleX, Settings} from "@vicons/tabler";
 import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
@@ -15,6 +15,32 @@ const selectVal = ref(0)
 const pageVal = ref(1)
 const isShowSetting = ref(false)
 const message = useMessage()
+
+const historyCacheStatusLabel = computed(() => {
+  const status = matchStore.historyCacheSync
+  if (status.kind === "complete") return status.message
+  if (status.kind === "syncing") {
+    return status.totalPages
+      ? `历史缓存 ${status.currentPage}/${status.totalPages} 页`
+      : `历史缓存第 ${status.currentPage} 页`
+  }
+  if (status.kind === "limited") return status.message
+  if (status.kind === "error") return status.message
+  return ""
+})
+
+const historyCacheStatusType = computed(() => {
+  switch (matchStore.historyCacheSync.kind) {
+    case "complete":
+      return "success" as const
+    case "error":
+      return "error" as const
+    case "limited":
+      return "warning" as const
+    default:
+      return "info" as const
+  }
+})
 
 watch(() => matchStore.summonerId, () => {
   clearVal()
@@ -129,6 +155,16 @@ const pageChange = (page: number) => {
         secondary type="info">
         返回本人
       </n-button>
+      <n-tag
+        v-if="historyCacheStatusLabel"
+        :bordered="false"
+        :type="historyCacheStatusType"
+        size="small"
+        class="history-cache-status"
+        :title="matchStore.historyCacheSync.detail"
+      >
+        {{ historyCacheStatusLabel }}
+      </n-tag>
     </div>
     <div class="header-controls">
       <n-input v-model:value="inputVal" type="text" spellcheck="false"
@@ -199,6 +235,13 @@ const pageChange = (page: number) => {
 .header-identity {
   flex: 0 0 auto;
   gap: 10px;
+}
+
+.history-cache-status {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-controls {

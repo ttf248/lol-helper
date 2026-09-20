@@ -10,9 +10,24 @@ import { MatchHistoryEndpoint, MatchHistorySource } from "@/lcu/aboutMatch";
 import { invoke } from "@tauri-apps/api/core";
 import { TencentRsoPlatformId } from "@/resources/areaList";
 import { logger } from "@/utils/logger";
+import {
+	HISTORY_CACHE_SYNC_MAX_PAGES,
+} from "@/recentMatch/utils/historyConfig";
+import type { HistoryCacheSyncStatus } from "@/recentMatch/utils/queryTypes";
 
 const baseMatch = new BaseMatch();
 const matchDetials = new MatchDetails();
+
+const createIdleHistoryCacheSync = (): HistoryCacheSyncStatus => ({
+	kind: "idle",
+	currentPage: 0,
+	totalPages: null,
+	maxPages: HISTORY_CACHE_SYNC_MAX_PAGES,
+	cachedGames: 0,
+	downloadedGames: 0,
+	message: "",
+	detail: "",
+});
 
 const persistLocalSummoner = (info: summonerInfo) => {
 	let previous: Record<string, string | number> = {};
@@ -68,6 +83,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			matchSource: null as MatchHistorySource | null,
 			matchSourceEndpoints: [] as MatchHistoryEndpoint[],
 			matchLocalCacheUsed: false,
+			historyCacheSync: createIdleHistoryCacheSync(),
 			analysisData: null as RencentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
@@ -85,6 +101,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchSource = null;
 			this.matchSourceEndpoints = [];
 			this.matchLocalCacheUsed = false;
+			this.historyCacheSync = createIdleHistoryCacheSync();
 			this.participantsInfo = null;
 			try {
 				const sumResult = await baseMatch.gerSummonerInfo(summonerId);
@@ -114,9 +131,23 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.analysisData = null;
 				this.matchAvailableCount = 0;
 				this.matchPageCount = 1;
+				const localPuuid = (() => {
+					try {
+						return (JSON.parse(localStorage.getItem("sumInfo") || "null") as {
+							puuid?: string;
+						} | null)?.puuid;
+					} catch {
+						return undefined;
+					}
+				})();
+				const isCurrentUser =
+					(summonerId === undefined && locSumId === undefined) ||
+					(localPuuid !== undefined &&
+						localPuuid === sumResult.summonerInfo.puuid);
 				await this.fetchAndProcessMatches(
 					this.sumInfo.info.puuid,
 					queryRequestId,
+					isCurrentUser,
 				);
 			} catch (error) {
 				if (queryRequestId !== this.queryRequestId) {
@@ -168,6 +199,7 @@ const useMatchStore = defineStore("useMatchStore", {
 		async fetchAndProcessMatches(
 			puuid: string,
 			requestId?: number,
+			isCurrentUser = false,
 		) {
 			const queryRequestId = requestId ?? this.queryRequestId;
 			// 主窗口首屏只拉最近 20 场，避免触发服务器三页 (60 场) 的
@@ -214,7 +246,34 @@ const useMatchStore = defineStore("useMatchStore", {
 			// 先交付列表，首场详情单独加载。详情接口慢或失败时不能遮住
 			// 已经成功返回的战绩列表。
 			void this.getMatchDetail(this.matchList[0].gameId);
+
+			if (isCurrentUser) {
+				void this.syncCurrentUserHistory(puuid, queryRequestId);
+			}
 			return true;
+		},
+		async syncCurrentUserHistory(puuid: string, requestId: number) {
+			const result = await baseMatch.syncCurrentUserHistory(
+				puuid,
+				(progress) => {
+					if (requestId === this.queryRequestId) {
+						this.historyCacheSync = progress;
+					}
+				},
+				() => requestId === this.queryRequestId,
+			);
+			if (requestId !== this.queryRequestId) return;
+
+			this.historyCacheSync = result;
+			// 当接口没有提供总场数时，后台同步完成后用数据库中的真实
+			// 数量修正分页器；有总场数时保留接口识别出的页数。
+			if (result.cachedGames > this.matchAvailableCount) {
+				this.matchAvailableCount = result.cachedGames;
+				this.matchPageCount = Math.max(
+					1,
+					Math.ceil(this.matchAvailableCount / 9),
+				);
+			}
 		},
 		async getMatchFromPage(
 			page: number,
@@ -356,7 +415,7 @@ const useMatchStore = defineStore("useMatchStore", {
 				this.getMatchDetail(this.matchList[0].gameId);
 			}
 		},
-	},
+		},
 });
 
 export default useMatchStore;

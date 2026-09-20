@@ -193,6 +193,25 @@ export interface HistoryCoverageInfo {
   latestGameCreation: number | null;
 }
 
+export type HistoryCacheSyncKind =
+  | "idle"
+  | "syncing"
+  | "complete"
+  | "limited"
+  | "error"
+  | "cancelled";
+
+export interface HistoryCacheSyncStatus {
+  kind: HistoryCacheSyncKind;
+  currentPage: number;
+  totalPages: number | null;
+  maxPages: number;
+  cachedGames: number;
+  downloadedGames: number;
+  message: string;
+  detail: string;
+}
+
 export interface ChampionRecentStats {
   championId: number;
   games: number;

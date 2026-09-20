@@ -21,8 +21,15 @@ import { mergeHistoryGames as mergeNormalizedHistoryGames } from "@/recentMatch/
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 import {
     HISTORY_ANALYSIS_LIMIT,
+    HISTORY_CACHE_SYNC_LIMIT,
+    HISTORY_CACHE_SYNC_MAX_PAGES,
+    HISTORY_SERVER_PAGE_SIZE,
     HISTORY_SERVER_FETCH_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
+import type {
+    HistoryCacheSyncStatus,
+    HistoryCacheSyncKind,
+} from "@/recentMatch/utils/queryTypes";
 
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
@@ -31,6 +38,8 @@ export interface ProcessedMatchHistory {
     localCacheUsed: boolean;
     /** 本地缓存与最近服务器窗口合并后的可用记录数。 */
     availableCount: number;
+    /** 服务器在当前查询中明确提供的历史总场数。 */
+    totalCount: number | null;
 }
 
 // 分页和模式筛选共享最近服务器窗口。短 TTL 内翻页/切换模式不应重复
@@ -41,6 +50,11 @@ const SERVER_HISTORY_CACHE_TTL_MS = 30_000;
 // 列表未变化时跳过 cacheHistory 调用，省掉 IPC + UPSERT 往返。写入完成后
 // 只在源数据出现新 gameId 时才更新。
 const lastWriteFingerprint = new Map<string, string>();
+const cacheWriteInFlight = new Map<string, Promise<boolean>>();
+
+export type HistoryCacheSyncProgress = HistoryCacheSyncStatus;
+
+export interface HistoryCacheSyncResult extends HistoryCacheSyncStatus {}
 
 export default class BaseMatch {
     public summonerId = 0;
@@ -52,6 +66,7 @@ export default class BaseMatch {
             sourceEndpoints: MatchHistoryEndpoint[];
             fetchedAt: number;
             serverLimit: number;
+            totalCount: number | null;
         }
     >();
 
@@ -63,6 +78,7 @@ export default class BaseMatch {
         source: MatchHistorySource | null;
         sourceEndpoints: MatchHistoryEndpoint[];
         failed: boolean;
+        totalCount: number | null;
     }> => {
         const result = await queryMatchHistoryWithSource(
             puuid,
@@ -77,6 +93,7 @@ export default class BaseMatch {
                 sourceEndpoints: result.endpoints,
                 fetchedAt: Date.now(),
                 serverLimit,
+                totalCount: result.totalCount,
             });
         }
         return {
@@ -84,6 +101,7 @@ export default class BaseMatch {
             source: result?.source ?? null,
             sourceEndpoints: result?.endpoints ?? [],
             failed: result === null,
+            totalCount: result?.totalCount ?? null,
         };
     };
 
@@ -105,12 +123,12 @@ export default class BaseMatch {
         ).games;
     };
 
-    private cacheNormalizedGames = (
+    private cacheNormalizedGames = async (
         puuid: string,
         games: (Games | GamesBySgp)[],
         source: MatchHistorySource,
         summonerName: string,
-    ) => {
+    ): Promise<boolean> => {
         const gamesByMode = new Map<MatchModeKey, NormalizedHistoryGame[]>();
         for (const rawGame of games) {
             const normalized = normalizeHistoryGame(rawGame, source);
@@ -120,29 +138,73 @@ export default class BaseMatch {
             modeGames.push(normalized);
             gamesByMode.set(modeKey, modeGames);
         }
-        for (const [modeKey, modeGames] of gamesByMode) {
-            // 同 (puuid, modeKey) 上次同步的 gameId 列表未变化就跳过：
-            // 服务器三页窗口在 30s TTL 内反复复用，内容没变，写 PG 也
-            // 是同一条 ON CONFLICT UPDATE，完全是浪费。出现新 gameId
-            // 或 server games 比上次少（被动裁剪）才重新写入。
-            const sortedIds = modeGames
-                .map((game) => game.gameId)
-                .sort((a, b) => a - b);
-            const fingerprint = sortedIds.join(",");
-            const cacheKey = `${puuid}|${modeKey}`;
-            if (lastWriteFingerprint.get(cacheKey) === fingerprint) {
-                continue;
-            }
-            lastWriteFingerprint.set(cacheKey, fingerprint);
-            void cacheHistory({
-                puuid,
-                summonerId: this.summonerId,
-                summonerName,
-                modeKey,
-                source,
-                games: modeGames,
-            });
-        }
+        const writes = Array.from(gamesByMode.entries()).map(
+            ([modeKey, modeGames]) => {
+                // 同 (puuid, modeKey) 上次同步的 gameId 列表未变化就跳过：
+                // 服务器窗口在短 TTL 内反复复用，内容没变，写 PG 也
+                // 是同一条 ON CONFLICT UPDATE，完全是浪费。出现新 gameId
+                // 或 server games 比上次少（被动裁剪）才重新写入。
+                const sortedIds = modeGames
+                    .map((game) => game.gameId)
+                    .sort((a, b) => a - b);
+                const fingerprint = sortedIds.join(",");
+                const cacheKey = `${puuid}|${modeKey}`;
+                if (lastWriteFingerprint.get(cacheKey) === fingerprint) {
+                    return Promise.resolve(true);
+                }
+
+                const previousWrite = cacheWriteInFlight.get(cacheKey);
+                if (previousWrite) {
+                    return previousWrite.then(async (succeeded) => {
+                        // 同一 fingerprint 的并发写入可以复用；如果是
+                        // 另一页刚好在写，则当前页仍必须继续落库。
+                        if (
+                            succeeded &&
+                            lastWriteFingerprint.get(cacheKey) === fingerprint
+                        ) {
+                            return true;
+                        }
+                        const retrySucceeded = await cacheHistory({
+                            puuid,
+                            summonerId: this.summonerId,
+                            summonerName,
+                            modeKey,
+                            source,
+                            games: modeGames,
+                        });
+                        if (retrySucceeded) {
+                            lastWriteFingerprint.set(cacheKey, fingerprint);
+                        }
+                        return retrySucceeded;
+                    });
+                }
+
+                let write: Promise<boolean>;
+                write = cacheHistory({
+                    puuid,
+                    summonerId: this.summonerId,
+                    summonerName,
+                    modeKey,
+                    source,
+                    games: modeGames,
+                }).then((succeeded) => {
+                    if (succeeded) {
+                        lastWriteFingerprint.set(cacheKey, fingerprint);
+                    }
+                    return succeeded;
+                }).finally(() => {
+                    if (cacheWriteInFlight.get(cacheKey) === write) {
+                        cacheWriteInFlight.delete(cacheKey);
+                    }
+                });
+                cacheWriteInFlight.set(cacheKey, write);
+                return write;
+            },
+        );
+
+        if (writes.length === 0) return true;
+        const results = await Promise.all(writes);
+        return results.every(Boolean);
     };
 
     public gerSummonerInfo = async (summonerId?: number) => {
@@ -183,6 +245,7 @@ export default class BaseMatch {
                 sourceEndpoints: [],
                 localCacheUsed: false,
                 availableCount: 0,
+                totalCount: null,
             };
         }
 
@@ -210,6 +273,7 @@ export default class BaseMatch {
                       source: serverHistory.source,
                       sourceEndpoints: serverHistory.sourceEndpoints,
                       failed: false,
+                      totalCount: serverHistory.totalCount,
                   };
         const mergedGames = this.mergeHistoryGames(
             cachedGames,
@@ -246,8 +310,194 @@ export default class BaseMatch {
                     : synced.source || (cachedGames.length > 0 ? "postgres" : null),
             sourceEndpoints: synced.sourceEndpoints,
             localCacheUsed: cachedGames.length > 0,
-            availableCount: cachedMatches.length,
+            availableCount: Math.max(
+                cachedMatches.length,
+                synced.totalCount ?? 0,
+            ),
+            totalCount: synced.totalCount,
         };
+    };
+
+    /**
+     * 在主页后台补齐当前用户的历史战绩。
+     *
+     * 每次只请求一页并在成功后等待 PostgreSQL 写入。整页已经存在时不再
+     * 继续向更早历史请求；没有可靠总数时则用短页/空页判断历史末尾，最多
+     * 扫描 HISTORY_CACHE_SYNC_MAX_PAGES 页。
+     */
+    public syncCurrentUserHistory = async (
+        puuid: string,
+        onProgress?: (progress: HistoryCacheSyncProgress) => void,
+        shouldContinue: () => boolean = () => true,
+    ): Promise<HistoryCacheSyncResult> => {
+        const maxPages = HISTORY_CACHE_SYNC_MAX_PAGES;
+        const pageSize = HISTORY_SERVER_PAGE_SIZE;
+        let totalPages: number | null = null;
+        let currentPage = 0;
+        let downloadedGames = 0;
+
+        const cachedGames = await getCachedHistory({
+            puuid,
+            limit: HISTORY_CACHE_SYNC_LIMIT,
+            offset: 0,
+        });
+        const cachedGameIds = new Set(
+            cachedGames
+                .map((game) => Number(game.gameId))
+                .filter((gameId) => Number.isFinite(gameId)),
+        );
+
+        const emit = (
+            kind: HistoryCacheSyncKind,
+            message: string,
+            detail: string,
+        ): HistoryCacheSyncResult => {
+            const progress: HistoryCacheSyncResult = {
+                kind,
+                currentPage,
+                totalPages,
+                maxPages,
+                cachedGames: cachedGameIds.size,
+                downloadedGames,
+                message,
+                detail,
+            };
+            onProgress?.(progress);
+            return progress;
+        };
+
+        const cancelled = () =>
+            emit(
+                "cancelled",
+                "历史战绩缓存任务已切换",
+                "当前召唤师已变化，停止上一轮后台同步。",
+            );
+
+        for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+            if (!shouldContinue()) return cancelled();
+
+            currentPage = pageIndex + 1;
+            emit(
+                "syncing",
+                totalPages
+                    ? `正在缓存历史战绩（第 ${currentPage}/${totalPages} 页）`
+                    : `正在缓存历史战绩（第 ${currentPage} 页）`,
+                `已缓存 ${cachedGameIds.size} 场，本次最多扫描 ${maxPages} 页。`,
+            );
+
+            // 首页刚刚取过的第一页可以直接复用，避免为了后台缓存再次
+            // 请求同一页；后续页始终按 20 场串行请求。
+            const recentPage =
+                pageIndex === 0
+                    ? this.recentServerHistory.get(`${puuid}|${pageSize}`)
+                    : undefined;
+            const pageResult =
+                recentPage &&
+                Date.now() - recentPage.fetchedAt < SERVER_HISTORY_CACHE_TTL_MS
+                    ? {
+                          games: recentPage.games,
+                          source: recentPage.source,
+                          endpoints: recentPage.sourceEndpoints,
+                          totalCount: recentPage.totalCount ?? null,
+                      }
+                    : await queryMatchHistoryWithSource(
+                          puuid,
+                          pageIndex * pageSize,
+                          (pageIndex + 1) * pageSize,
+                      );
+
+            if (pageResult === null) {
+                return emit(
+                    "error",
+                    "历史战绩缓存未完成",
+                    `第 ${currentPage} 页请求失败，已缓存 ${cachedGameIds.size} 场；稍后可重试。`,
+                );
+            }
+
+            const reportedTotalCount = Number(pageResult.totalCount);
+            if (Number.isFinite(reportedTotalCount) && reportedTotalCount >= 0) {
+                totalPages = Math.max(
+                    currentPage,
+                    Math.ceil(reportedTotalCount / pageSize),
+                );
+            }
+
+            const pageGames = Array.from(
+                new Map(
+                    pageResult.games
+                        .filter((game) => Number.isFinite(game.gameId))
+                        .map((game) => [game.gameId, game]),
+                ).values(),
+            );
+
+            if (pageGames.length === 0) {
+                return emit(
+                    "complete",
+                    "当前历史战绩已全部缓存到数据库",
+                    `服务器历史已到末尾，共缓存 ${cachedGameIds.size} 场。`,
+                );
+            }
+
+            const pageAlreadyCached = pageGames.every((game) =>
+                cachedGameIds.has(game.gameId),
+            );
+            if (pageAlreadyCached) {
+                return emit(
+                    "complete",
+                    "当前历史战绩已全部缓存到数据库",
+                    `第 ${currentPage} 页数据已在数据库中，停止继续下载；共缓存 ${cachedGameIds.size} 场。`,
+                );
+            }
+
+            const writeSucceeded = await this.cacheNormalizedGames(
+                puuid,
+                pageGames,
+                pageResult.source,
+                this.getLocalSummonerName(),
+            );
+            if (!writeSucceeded) {
+                return emit(
+                    "error",
+                    "历史战绩缓存未完成",
+                    `第 ${currentPage} 页写入 PostgreSQL 失败，已缓存 ${cachedGameIds.size} 场；请检查数据库连接。`,
+                );
+            }
+
+            for (const game of pageGames) {
+                if (!cachedGameIds.has(game.gameId)) {
+                    downloadedGames += 1;
+                    cachedGameIds.add(game.gameId);
+                }
+            }
+
+            if (
+                pageResult.games.length < pageSize ||
+                (totalPages !== null && currentPage >= totalPages)
+            ) {
+                return emit(
+                    "complete",
+                    "当前历史战绩已全部缓存到数据库",
+                    `历史接口已到末尾，共缓存 ${cachedGameIds.size} 场。`,
+                );
+            }
+        }
+
+        return emit(
+            "limited",
+            `已缓存最近 ${maxPages} 页历史战绩`,
+            `已达到后台同步上限，当前已缓存 ${cachedGameIds.size} 场；更早历史将在后续刷新时继续检查。`,
+        );
+    };
+
+    private getLocalSummonerName = (): string => {
+        try {
+            const localSumInfo = JSON.parse(
+                localStorage.getItem("sumInfo") || "{}",
+            ) as Partial<sumInfoTypes>;
+            return localSumInfo.name || "";
+        } catch {
+            return "";
+        }
     };
 
     private getSimpleCachedMatch = (
@@ -304,6 +554,7 @@ export default class BaseMatch {
                 sourceEndpoints: [],
                 localCacheUsed: false,
                 availableCount: 0,
+                totalCount: null,
             };
         }
         const specialList = result.matches.filter(
@@ -316,6 +567,7 @@ export default class BaseMatch {
             sourceEndpoints: result.sourceEndpoints,
             localCacheUsed: result.localCacheUsed,
             availableCount: specialList.length,
+            totalCount: result.totalCount,
         };
     };
 
