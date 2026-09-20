@@ -1,9 +1,11 @@
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_postgres::NoTls;
 
 pub const DATABASE_URL: &str =
@@ -76,7 +78,7 @@ CREATE TABLE IF NOT EXISTS game_details (
     game_id BIGINT PRIMARY KEY REFERENCES matches(game_id) ON DELETE CASCADE,
     game_creation BIGINT,
     game_creation_date TIMESTAMPTZ,
-    game_duration INTEGER NOT NULL,
+    game_duration INTEGER,
     game_mode TEXT,
     game_type TEXT,
     game_version TEXT,
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS game_details (
 
 CREATE INDEX IF NOT EXISTS idx_game_details_fetched_at
     ON game_details(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_game_details_game_creation
+    ON game_details(game_creation DESC);
 
 -- ── 对局详情（每位玩家） ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS game_detail_participants (
@@ -157,6 +161,8 @@ CREATE INDEX IF NOT EXISTS idx_detail_participants_puuid
 
 CREATE INDEX IF NOT EXISTS idx_detail_participants_summoner_id
     ON game_detail_participants(summoner_id);
+CREATE INDEX IF NOT EXISTS idx_detail_participants_game_id
+    ON game_detail_participants(game_id);
 
 -- ── 对局详情（双方队伍） ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS game_detail_teams (
@@ -241,6 +247,30 @@ CREATE TABLE IF NOT EXISTS champion_details (
     payload JSONB NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+"#;
+
+/// 可重复执行的增量迁移。SCHEMA 负责新库建表，这里负责旧版本表结构补齐。
+/// 不能只依赖 CREATE TABLE IF NOT EXISTS：该语句不会给已经存在的表增加新列。
+const MIGRATIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE game_details
+    ADD COLUMN IF NOT EXISTS raw_payload_sgp JSONB;
+
+ALTER TABLE game_details
+    ALTER COLUMN game_duration DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_game_details_game_creation
+    ON game_details(game_creation DESC);
+CREATE INDEX IF NOT EXISTS idx_detail_participants_game_id
+    ON game_detail_participants(game_id);
+
+INSERT INTO schema_migrations(version)
+VALUES (2)
+ON CONFLICT(version) DO NOTHING;
 "#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -525,10 +555,345 @@ pub struct CachedChampionDetail {
     pub fetched_at: i64,
 }
 
+fn number_value(object: &Value, key: &str) -> Option<i64> {
+    object.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+    })
+}
+
+fn string_value(object: &Value, key: &str) -> Option<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn bool_value(object: &Value, key: &str) -> Option<bool> {
+    object.get(key).and_then(|value| {
+        value.as_bool().or_else(|| {
+            value.as_str().and_then(|text| match text.trim().to_ascii_lowercase().as_str() {
+                "true" | "win" | "success" => Some(true),
+                "false" | "fail" | "failure" => Some(false),
+                _ => None,
+            })
+        })
+    })
+}
+
+fn nested_number(object: &Value, parent: &str, key: &str) -> Option<i64> {
+    object.get(parent).and_then(|value| number_value(value, key))
+}
+
+fn nested_bool(object: &Value, parent: &str, key: &str) -> Option<bool> {
+    object.get(parent).and_then(|value| bool_value(value, key))
+}
+
+fn nested_nested_number(
+    object: &Value,
+    parent: &str,
+    child: &str,
+    key: &str,
+) -> Option<i64> {
+    object
+        .get(parent)
+        .and_then(|value| value.get(child))
+        .and_then(|value| number_value(value, key))
+}
+
+fn nested_nested_bool(
+    object: &Value,
+    parent: &str,
+    child: &str,
+    key: &str,
+) -> Option<bool> {
+    object
+        .get(parent)
+        .and_then(|value| value.get(child))
+        .and_then(|value| bool_value(value, key))
+}
+
+fn number_json(value: Option<i64>) -> Value {
+    value.map(Value::from).unwrap_or(Value::Null)
+}
+
+fn string_json(value: Option<String>) -> Value {
+    value.map(Value::String).unwrap_or(Value::Null)
+}
+
+fn bool_json(value: Option<bool>) -> Value {
+    value.map(Value::Bool).unwrap_or(Value::Null)
+}
+
+fn participant_number(participant: &Value, stats: &Value, key: &str) -> Value {
+    number_json(number_value(participant, key).or_else(|| number_value(stats, key)))
+}
+
+fn participant_bool(participant: &Value, stats: &Value, key: &str) -> Option<bool> {
+    bool_value(stats, key).or_else(|| bool_value(participant, key))
+}
+
+fn participant_rows(detail: &Value, sgp_detail: Option<&Value>) -> Vec<Value> {
+    let payload = sgp_detail.unwrap_or(detail);
+    let participants = payload
+        .get("participants")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let identity_map: HashMap<i64, &Value> = payload
+        .get("participantIdentities")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|identity| {
+            number_value(identity, "participantId").map(|id| (id, identity))
+        })
+        .collect();
+
+    participants
+        .iter()
+        .enumerate()
+        .filter_map(|(index, participant)| {
+            let stats = participant.get("stats").unwrap_or(participant);
+            let participant_id = number_value(participant, "participantId")
+                .or_else(|| number_value(stats, "participantId"))
+                .unwrap_or((index + 1) as i64);
+            let identity = identity_map.get(&participant_id).copied();
+            let identity_player = identity
+                .and_then(|value| value.get("player"))
+                .unwrap_or(&Value::Null);
+            let puuid = string_value(participant, "puuid")
+                .or_else(|| string_value(identity_player, "puuid"))?;
+            let team_id = number_value(participant, "teamId")
+                .or_else(|| number_value(stats, "teamId"))?;
+            let champion_id = number_value(participant, "championId")
+                .or_else(|| number_value(stats, "championId"))?;
+            let summoner_id = number_value(participant, "summonerId")
+                .or_else(|| number_value(identity_player, "summonerId"));
+            let account_id = number_value(participant, "accountId")
+                .or_else(|| number_value(identity_player, "accountId"));
+            let profile_icon_id = number_value(participant, "profileIcon")
+                .or_else(|| number_value(participant, "profileIconId"))
+                .or_else(|| number_value(identity_player, "profileIcon"));
+            let game_name = string_value(participant, "riotIdGameName")
+                .or_else(|| string_value(participant, "gameName"))
+                .or_else(|| string_value(identity_player, "gameName"));
+            let tag_line = string_value(participant, "riotIdTagline")
+                .or_else(|| string_value(participant, "tagLine"))
+                .or_else(|| string_value(identity_player, "tagLine"));
+            let legacy_name = string_value(participant, "summonerName")
+                .or_else(|| string_value(identity_player, "summonerName"));
+            let summoner_name = game_name
+                .as_ref()
+                .map(|name| match tag_line.as_ref() {
+                    Some(tag) if !name.to_ascii_lowercase().ends_with(
+                        &format!("#{}", tag.to_ascii_lowercase()),
+                    ) => format!("{name}#{tag}"),
+                    _ => name.clone(),
+                })
+                .or(legacy_name);
+            let position = string_value(participant, "teamPosition")
+                .or_else(|| string_value(participant, "individualPosition"))
+                .or_else(|| string_value(participant, "role"))
+                .or_else(|| {
+                    participant
+                        .get("timeline")
+                        .and_then(|timeline| string_value(timeline, "role"))
+                })
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            let win_bool = participant_bool(participant, stats, "win").unwrap_or(false);
+            let puuid_for_identity = puuid.clone();
+            let summoner_name_for_identity = summoner_name.clone();
+
+            let mut row = Map::new();
+            row.insert("participantId".to_string(), Value::from(participant_id));
+            row.insert("puuid".to_string(), Value::String(puuid));
+            row.insert("teamId".to_string(), Value::from(team_id));
+            row.insert("championId".to_string(), Value::from(champion_id));
+            row.insert(
+                "spell1Id".to_string(),
+                participant_number(participant, stats, "spell1Id"),
+            );
+            row.insert(
+                "spell2Id".to_string(),
+                participant_number(participant, stats, "spell2Id"),
+            );
+            row.insert("accountId".to_string(), number_json(account_id));
+            row.insert("summonerId".to_string(), number_json(summoner_id));
+            row.insert("profileIconId".to_string(), number_json(profile_icon_id));
+            row.insert("summonerName".to_string(), string_json(summoner_name));
+            row.insert("gameName".to_string(), string_json(game_name));
+            row.insert("tagLine".to_string(), string_json(tag_line));
+            row.insert("position".to_string(), Value::String(position));
+            row.insert("win".to_string(), Value::String(if win_bool {
+                "Win".to_string()
+            } else {
+                "Fail".to_string()
+            }));
+            row.insert("winBool".to_string(), Value::Bool(win_bool));
+
+            for key in [
+                "champLevel",
+                "kills",
+                "deaths",
+                "assists",
+                "item0",
+                "item1",
+                "item2",
+                "item3",
+                "item4",
+                "item5",
+                "item6",
+                "goldEarned",
+                "goldSpent",
+                "physicalDamageDealtToChampions",
+                "magicDamageDealtToChampions",
+                "trueDamageDealtToChampions",
+                "totalDamageDealtToChampions",
+                "totalDamageTaken",
+                "totalMinionsKilled",
+                "neutralMinionsKilled",
+                "visionScore",
+                "wardsPlaced",
+                "perk0",
+                "perk1",
+                "perk2",
+                "perk3",
+                "perk4",
+                "perk5",
+                "perkPrimaryStyle",
+                "perkSubStyle",
+                "doubleKills",
+                "tripleKills",
+                "quadraKills",
+                "pentaKills",
+                "largestKillingSpree",
+                "turretKills",
+            ] {
+                row.insert(key.to_string(), participant_number(participant, stats, key));
+            }
+            for key in ["firstBloodKill", "firstBloodAssist"] {
+                row.insert(
+                    key.to_string(),
+                    bool_json(participant_bool(participant, stats, key)),
+                );
+            }
+
+            row.insert(
+                "rawStats".to_string(),
+                if stats.is_object() {
+                    stats.clone()
+                } else {
+                    Value::Object(Map::new())
+                },
+            );
+            row.insert(
+                "rawTimeline".to_string(),
+                participant.get("timeline").cloned().unwrap_or(Value::Null),
+            );
+            row.insert(
+                "rawIdentity".to_string(),
+                if identity_player.is_object() {
+                    identity_player.clone()
+                } else {
+                    let mut identity_row = Map::new();
+                    identity_row.insert(
+                        "puuid".to_string(),
+                        Value::String(puuid_for_identity),
+                    );
+                    if let Some(id) = summoner_id {
+                        identity_row.insert("summonerId".to_string(), Value::from(id));
+                    }
+                    if let Some(name) = summoner_name_for_identity {
+                        identity_row.insert("summonerName".to_string(), Value::String(name));
+                    }
+                    Value::Object(identity_row)
+                },
+            );
+            Some(Value::Object(row))
+        })
+        .collect()
+}
+
+fn team_rows(detail: &Value, sgp_detail: Option<&Value>) -> Vec<Value> {
+    let payload = sgp_detail.unwrap_or(detail);
+    payload
+        .get("teams")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|team| {
+            let team_id = number_value(team, "teamId")?;
+            let mut row = Map::new();
+            row.insert("teamId".to_string(), Value::from(team_id));
+            row.insert(
+                "win".to_string(),
+                bool_json(bool_value(team, "win")),
+            );
+            for (key, objective, objective_key) in [
+                ("baronKills", "baron", "kills"),
+                ("dragonKills", "dragon", "kills"),
+                ("towerKills", "tower", "kills"),
+                ("inhibitorKills", "inhibitor", "kills"),
+                ("riftHeraldKills", "riftHerald", "kills"),
+                ("hordeKills", "horde", "kills"),
+                ("vilemawKills", "vilemaw", "kills"),
+            ] {
+                row.insert(
+                    key.to_string(),
+                    number_json(number_value(team, key).or_else(|| {
+                        nested_nested_number(team, "objectives", objective, objective_key)
+                            .or_else(|| nested_number(team, objective, objective_key))
+                    })),
+                );
+            }
+            for (key, objective) in [
+                ("firstBaron", "baron"),
+                ("firstBlood", "champion"),
+                ("firstInhibitor", "inhibitor"),
+                ("firstTower", "tower"),
+            ] {
+                row.insert(
+                    key.to_string(),
+                    bool_json(bool_value(team, key).or_else(|| {
+                        nested_nested_bool(team, "objectives", objective, "first")
+                            .or_else(|| nested_bool(team, objective, "first"))
+                    })),
+                );
+            }
+            row.insert(
+                "bans".to_string(),
+                team.get("bans")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            );
+            row.insert(
+                "objectives".to_string(),
+                team.get("objectives")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Map::new())),
+            );
+            row.insert(
+                "feats".to_string(),
+                team.get("feats")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Map::new())),
+            );
+            Some(Value::Object(row))
+        })
+        .collect()
+}
+
 pub struct DatabaseState {
     /// 死号状态标：初始化失败时为 None，请求层短路返回错误。
     pool: Option<Arc<Pool>>,
     status: Arc<RwLock<DatabaseStatus>>,
+    /// 建表失败时允许后续 IPC 请求自动重试，而不是永久处于不可用状态。
+    schema_ready: Arc<AtomicBool>,
+    schema_lock: Arc<Mutex<()>>,
 }
 
 impl DatabaseState {
@@ -538,6 +903,8 @@ impl DatabaseState {
             message: "正在连接 PostgreSQL".to_string(),
             checked_at: now_unix(),
         }));
+        let schema_ready = Arc::new(AtomicBool::new(false));
+        let schema_lock = Arc::new(Mutex::new(()));
         let started = std::time::Instant::now();
 
         // 解析 DATABASE_URL；死号配置立刻短路，不创建池。
@@ -556,6 +923,8 @@ impl DatabaseState {
                 return Self {
                     pool: None,
                     status: status.clone(),
+                    schema_ready: schema_ready.clone(),
+                    schema_lock: schema_lock.clone(),
                 };
             }
         };
@@ -581,39 +950,38 @@ impl DatabaseState {
                 return Self {
                     pool: None,
                     status: status.clone(),
+                    schema_ready: schema_ready.clone(),
+                    schema_lock: schema_lock.clone(),
                 };
             }
         };
 
-        // 启动期跑一次 SCHEMA，确保新表存在。失败也保留 pool —— 后续重试
-        // 可能恢复，避免一次性"启动失败 → 整应用 PG 全废"。
+        // 启动期跑一次 SCHEMA + 增量迁移，确保新库、删空后的库和旧版本库
+        // 都能得到同一套表结构。失败仍保留 pool，后续第一次业务请求会重试。
         match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            async {
-                let client = pool.get().await.map_err(|e| e.to_string())?;
-                client.batch_execute(SCHEMA).await.map_err(|e| e.to_string())?;
-                Ok::<_, String>(client)
-            },
+            std::time::Duration::from_secs(15),
+            Self::apply_schema(&pool),
         )
         .await
         {
             Err(_) => {
                 tracing::warn!(
                     target: "db.cache",
-                    timeout_secs = 3,
+                    timeout_secs = 15,
                     duration_ms = started.elapsed().as_millis() as u64,
                     "数据库连接超时"
                 );
                 let mut current = status.write().await;
-                current.message = "连接 PostgreSQL 超时（3 秒）".to_string();
+                current.message = "连接 PostgreSQL 超时（15 秒），后续请求将自动重试".to_string();
                 current.checked_at = now_unix();
             }
-            Ok(Ok(_)) => {
+            Ok(Ok(())) => {
                 tracing::info!(
                     target: "db.cache",
                     duration_ms = started.elapsed().as_millis() as u64,
                     "数据库连接池就绪，表结构已就绪"
                 );
+                schema_ready.store(true, Ordering::Release);
                 let mut current = status.write().await;
                 current.available = true;
                 current.message = "PostgreSQL 已连接，缓存表已就绪".to_string();
@@ -635,10 +1003,75 @@ impl DatabaseState {
         Self {
             pool: Some(pool),
             status,
+            schema_ready,
+            schema_lock,
+        }
+    }
+
+    async fn apply_schema(pool: &Arc<Pool>) -> Result<(), String> {
+        let mut client = pool.get().await.map_err(|error| error.to_string())?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction
+            .batch_execute(SCHEMA)
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction
+            .batch_execute(MIGRATIONS)
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction.commit().await.map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    async fn ensure_schema(&self) -> Result<(), String> {
+        if self.schema_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let _guard = self.schema_lock.lock().await;
+        if self.schema_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let pool = self
+            .pool
+            .as_ref()
+            .ok_or_else(|| "数据库连接池未初始化".to_string())?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            Self::apply_schema(pool),
+        )
+        .await
+        .map_err(|_| "数据库表结构初始化超时（15 秒）".to_string())?
+        .map_err(|error| format!("数据库表结构初始化失败: {error}"));
+
+        match result {
+            Ok(()) => {
+                self.schema_ready.store(true, Ordering::Release);
+                let mut current = self.status.write().await;
+                current.available = true;
+                current.message = "PostgreSQL 已连接，缓存表已就绪".to_string();
+                current.checked_at = now_unix();
+                Ok(())
+            }
+            Err(error) => {
+                let mut current = self.status.write().await;
+                current.available = false;
+                current.message = error.clone();
+                current.checked_at = now_unix();
+                tracing::error!(target: "db.cache", error = %error, "数据库表结构自动重试失败");
+                Err(error)
+            }
         }
     }
 
     pub async fn status(&self) -> DatabaseStatus {
+        if !self.schema_ready.load(Ordering::Acquire) {
+            let _ = self.ensure_schema().await;
+        }
         let mut current = self.status.read().await.clone();
         if current.available {
             if let Some(pool) = self.pool.as_ref() {
@@ -681,6 +1114,7 @@ impl DatabaseState {
     /// 从 deadpool_postgres::Pool 借出一条连接。失败时把最近一次
     /// status 文本带回调用方，便于在 IPC 层还原错误。
     async fn require_client(&self) -> Result<deadpool_postgres::Object, String> {
+        self.ensure_schema().await?;
         let pool = self.pool.as_ref().ok_or_else(|| {
             // 这里不在 async 上下文里，需要先读出 status 文本再返回。
             // try_read 在写入锁持有时立即失败（不阻塞）—— 这里我们只读
@@ -1408,10 +1842,13 @@ impl DatabaseState {
         request: CacheGameDetailRequest,
     ) -> Result<i64, String> {
         let started = std::time::Instant::now();
-        let game_id = request
-            .detail
-            .get("gameId")
-            .and_then(|v| v.as_i64())
+        let game_id = number_value(&request.detail, "gameId")
+            .or_else(|| {
+                request
+                    .sgp_detail
+                    .as_ref()
+                    .and_then(|detail| number_value(detail, "gameId"))
+            })
             .ok_or_else(|| "缓存对局详情缺少 gameId".to_string())?;
         let has_sgp = request.sgp_detail.is_some();
         let source_label = request
@@ -1428,56 +1865,128 @@ impl DatabaseState {
             "缓存对局详情写入发起"
         );
 
-        // 提取 LCU Games 顶层字段（缺失则填空值；raw_payload 始终保留整包以便回放）。
+        // SGP-only 请求把 detail 作为 raw_payload 的兼容载荷，同时把它写入
+        // raw_payload_sgp；LCU + SGP 请求则保留两份原始响应。
         let detail = &request.detail;
-        let game_creation = detail.get("gameCreation").and_then(|v| v.as_i64());
-        let game_creation_date = detail
-            .get("gameCreationDate")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let game_duration = detail
-            .get("gameDuration")
-            .and_then(|v| v.as_i64())
-            .map(|n| n as i32);
-        let game_mode = detail
-            .get("gameMode")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let game_type = detail
-            .get("gameType")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let game_version = detail
-            .get("gameVersion")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let map_id = detail.get("mapId").and_then(|v| v.as_i64()).map(|n| n as i32);
-        let platform_id = detail
-            .get("platformId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let season_id = detail
-            .get("seasonId")
-            .and_then(|v| v.as_i64())
-            .map(|n| n as i32);
+        let sgp_detail = request.sgp_detail.as_ref();
+        let game_creation = number_value(detail, "gameCreation")
+            .or_else(|| sgp_detail.and_then(|value| number_value(value, "gameCreation")));
+        let game_creation_date = string_value(detail, "gameCreationDate")
+            .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameCreationDate")));
+        let game_duration = number_value(detail, "gameDuration")
+            .or_else(|| sgp_detail.and_then(|value| number_value(value, "gameDuration")))
+            .and_then(|value| i32::try_from(value).ok());
+        let game_mode = string_value(detail, "gameMode")
+            .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameMode")));
+        let game_type = string_value(detail, "gameType")
+            .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameType")));
+        let game_version = string_value(detail, "gameVersion")
+            .or_else(|| sgp_detail.and_then(|value| string_value(value, "gameVersion")));
+        let map_id = number_value(detail, "mapId")
+            .or_else(|| sgp_detail.and_then(|value| number_value(value, "mapId")))
+            .and_then(|value| i32::try_from(value).ok());
+        let platform_id = string_value(detail, "platformId")
+            .or_else(|| sgp_detail.and_then(|value| string_value(value, "platformId")));
+        let season_id = number_value(detail, "seasonId")
+            .or_else(|| sgp_detail.and_then(|value| number_value(value, "seasonId")))
+            .and_then(|value| i32::try_from(value).ok());
+        let queue_id = number_value(detail, "queueId")
+            .or_else(|| sgp_detail.and_then(|value| number_value(value, "queueId")))
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default();
+        let game_creation_value = game_creation.unwrap_or_default();
+        // gameCreationDate 是接口返回的普通字符串，不能直接按
+        // TIMESTAMPTZ 参数绑定；先按 TEXT 绑定，再在 SQL 内转换，才能避免
+        // 日志里反复出现的 “error serializing parameter 2”（驱动的 0-based
+        // 参数索引对应这里的第三个 SQL 参数）。JSONB 则统一使用 Json 包装器。
+        let raw_payload = tokio_postgres::types::Json(detail);
+        let raw_payload_sgp = sgp_detail.map(tokio_postgres::types::Json);
+        let participant_rows = participant_rows(detail, sgp_detail);
+        let team_rows = team_rows(detail, sgp_detail);
+        let participant_payload = tokio_postgres::types::Json(&participant_rows);
+        let team_payload = tokio_postgres::types::Json(&team_rows);
 
-        // TX1: game_details 写 raw_payload（整包 JSONB）。
-        // 字段化提取（participants/teams）暂未启用 —— 计划已确认只存原始载荷，
-        // game_detail_participants / game_detail_teams 留待有 SQL 级查询需求时回填。
+        // 详情可能先于历史列表落库。先补一个最小 matches 父行，后续
+        // cache_history 会用真实 mode_key/source/up-to-date participants 覆盖它。
+        // 这样 game_details 不会因为外键竞态而整批失败。
         let mut client = self.require_client().await?;
         let transaction = client
             .transaction()
             .await
             .map_err(|error| error.to_string())?;
+
+        // 与 cache_history 保持同样的锁顺序：先锁定/更新玩家，再写 matches。
+        // 否则历史批量写入（玩家 -> 对局）与详情写入（对局 -> 玩家）
+        // 并发时可能互相等待形成 PostgreSQL deadlock。
+        if !participant_rows.is_empty() {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO match_players(puuid, summoner_id, summoner_name, updated_at)
+                    SELECT DISTINCT ON (p.puuid)
+                        p.puuid, p."summonerId", p."summonerName", NOW()
+                    FROM jsonb_to_recordset($1::jsonb) AS p(
+                        puuid TEXT, "summonerId" BIGINT, "summonerName" TEXT
+                    )
+                    WHERE p.puuid IS NOT NULL AND p.puuid <> ''
+                    ORDER BY p.puuid, p."summonerId" NULLS LAST
+                    ON CONFLICT(puuid) DO UPDATE SET
+                        summoner_id = COALESCE(EXCLUDED.summoner_id, match_players.summoner_id),
+                        summoner_name = COALESCE(EXCLUDED.summoner_name, match_players.summoner_name),
+                        updated_at = NOW()
+                    "#,
+                    &[&participant_payload],
+                )
+                .await
+                .map_err(|error| format!("详情玩家缓存写入失败: {error}"))?;
+        }
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO matches(
+                    game_id, queue_id, mode_key, game_creation, source, fetched_at
+                )
+                VALUES($1, $2, 'unknown', $3, $4, NOW())
+                ON CONFLICT(game_id) DO UPDATE SET
+                    queue_id = CASE
+                        WHEN matches.queue_id = 0 THEN EXCLUDED.queue_id
+                        ELSE matches.queue_id
+                    END,
+                    game_creation = CASE
+                        WHEN matches.game_creation = 0 THEN EXCLUDED.game_creation
+                        ELSE matches.game_creation
+                    END,
+                    source = CASE
+                        WHEN matches.source = 'unknown' THEN EXCLUDED.source
+                        ELSE matches.source
+                    END,
+                    fetched_at = NOW()
+                "#,
+                &[
+                    &game_id,
+                    &queue_id,
+                    &game_creation_value,
+                    &source_label,
+                ],
+            )
+            .await
+            .map_err(|error| format!("详情父表 matches 写入失败: {error}"))?;
+
+        // 原始载荷和字段化元数据必须在同一个事务中写入。此前详情写入
+        // 与 SGP 载荷更新拆成两个事务，任意一步失败都会留下不完整缓存。
         transaction
             .execute(
                 r#"
                 INSERT INTO game_details(
                     game_id, game_creation, game_creation_date, game_duration,
                     game_mode, game_type, game_version, map_id, platform_id,
-                    season_id, raw_payload, source, fetched_at
+                    season_id, raw_payload, raw_payload_sgp, source, fetched_at
                 )
-                VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+                VALUES(
+                    $1, $2, NULLIF($3::TEXT, '')::timestamptz, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, NOW()
+                )
                 ON CONFLICT(game_id) DO UPDATE SET
                     game_creation = EXCLUDED.game_creation,
                     game_creation_date = EXCLUDED.game_creation_date,
@@ -1489,12 +1998,20 @@ impl DatabaseState {
                     platform_id = EXCLUDED.platform_id,
                     season_id = EXCLUDED.season_id,
                     raw_payload = EXCLUDED.raw_payload,
-                    source = EXCLUDED.source,
+                    raw_payload_sgp = COALESCE(
+                        EXCLUDED.raw_payload_sgp,
+                        game_details.raw_payload_sgp
+                    ),
+                    source = CASE
+                        WHEN game_details.source LIKE 'sgp%'
+                             AND EXCLUDED.source LIKE 'lcu%' THEN 'mixed'
+                        ELSE EXCLUDED.source
+                    END,
                     fetched_at = NOW()
                 "#,
                 &[
                     &game_id,
-                    &game_creation,
+                    &game_creation_value,
                     &game_creation_date,
                     &game_duration,
                     &game_mode,
@@ -1503,34 +2020,166 @@ impl DatabaseState {
                     &map_id,
                     &platform_id,
                     &season_id,
-                    detail,
+                    &raw_payload,
+                    &raw_payload_sgp,
                     &source_label,
                 ],
             )
             .await
-            .map_err(|error| error.to_string())?;
-        transaction.commit().await.map_err(|error| error.to_string())?;
+            .map_err(|error| format!("详情主表 game_details 写入失败: {error}"))?;
 
-        // TX2: 独立的 raw_payload_sgp UPDATE。失败不影响 TX1 的写入。
-        if let Some(sgp_detail) = request.sgp_detail.as_ref() {
-            let client = self.require_client().await?;
-            client
+        transaction
+            .execute(
+                "DELETE FROM game_detail_participants WHERE game_id = $1",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if !participant_rows.is_empty() {
+            transaction
                 .execute(
                     r#"
-                    UPDATE game_details
-                       SET raw_payload_sgp = $2,
-                           source = CASE
-                               WHEN source LIKE 'lcu%' THEN source
-                               ELSE $3
-                           END,
-                           fetched_at = NOW()
-                     WHERE game_id = $1
+                    INSERT INTO game_detail_participants(
+                        game_id, participant_id, puuid, team_id, champion_id,
+                        spell1_id, spell2_id, champ_level, kills, deaths, assists,
+                        win, item0, item1, item2, item3, item4, item5, item6,
+                        gold_earned, gold_spent,
+                        physical_damage_dealt_to_champions,
+                        magic_damage_dealt_to_champions,
+                        true_damage_dealt_to_champions,
+                        total_damage_dealt_to_champions, total_damage_taken,
+                        total_minions_killed, neutral_minions_killed, vision_score,
+                        wards_placed, perk0, perk1, perk2, perk3, perk4, perk5,
+                        perk_primary_style, perk_sub_style, first_blood_kill,
+                        first_blood_assist, double_kills, triple_kills, quadra_kills,
+                        penta_kills, largest_killing_spree, turret_kills, account_id,
+                        summoner_id, summoner_name, profile_icon_id, game_name,
+                        tag_line, raw_stats, raw_timeline, raw_identity
+                    )
+                    SELECT
+                        $1, p."participantId", p.puuid, p."teamId", p."championId",
+                        p."spell1Id", p."spell2Id", p."champLevel", p.kills,
+                        p.deaths, p.assists, p.win, p.item0, p.item1, p.item2,
+                        p.item3, p.item4, p.item5, p.item6, p."goldEarned",
+                        p."goldSpent", p."physicalDamageDealtToChampions",
+                        p."magicDamageDealtToChampions", p."trueDamageDealtToChampions",
+                        p."totalDamageDealtToChampions", p."totalDamageTaken",
+                        p."totalMinionsKilled", p."neutralMinionsKilled",
+                        p."visionScore", p."wardsPlaced", p.perk0, p.perk1,
+                        p.perk2, p.perk3, p.perk4, p.perk5, p."perkPrimaryStyle",
+                        p."perkSubStyle", p."firstBloodKill", p."firstBloodAssist",
+                        p."doubleKills", p."tripleKills", p."quadraKills",
+                        p."pentaKills", p."largestKillingSpree", p."turretKills",
+                        p."accountId", p."summonerId", p."summonerName",
+                        p."profileIconId", p."gameName", p."tagLine", p."rawStats",
+                        p."rawTimeline", p."rawIdentity"
+                    FROM jsonb_to_recordset($2::jsonb) AS p(
+                        "participantId" INTEGER, puuid TEXT, "teamId" INTEGER,
+                        "championId" INTEGER, "spell1Id" INTEGER, "spell2Id" INTEGER,
+                        "champLevel" INTEGER, kills INTEGER, deaths INTEGER,
+                        assists INTEGER, win TEXT, item0 INTEGER, item1 INTEGER,
+                        item2 INTEGER, item3 INTEGER, item4 INTEGER, item5 INTEGER,
+                        item6 INTEGER, "goldEarned" INTEGER, "goldSpent" INTEGER,
+                        "physicalDamageDealtToChampions" INTEGER,
+                        "magicDamageDealtToChampions" INTEGER,
+                        "trueDamageDealtToChampions" INTEGER,
+                        "totalDamageDealtToChampions" INTEGER,
+                        "totalDamageTaken" INTEGER, "totalMinionsKilled" INTEGER,
+                        "neutralMinionsKilled" INTEGER, "visionScore" INTEGER,
+                        "wardsPlaced" INTEGER, perk0 INTEGER, perk1 INTEGER,
+                        perk2 INTEGER, perk3 INTEGER, perk4 INTEGER, perk5 INTEGER,
+                        "perkPrimaryStyle" INTEGER, "perkSubStyle" INTEGER,
+                        "firstBloodKill" BOOLEAN, "firstBloodAssist" BOOLEAN,
+                        "doubleKills" INTEGER, "tripleKills" INTEGER,
+                        "quadraKills" INTEGER, "pentaKills" INTEGER,
+                        "largestKillingSpree" INTEGER, "turretKills" INTEGER,
+                        "accountId" BIGINT, "summonerId" BIGINT,
+                        "summonerName" TEXT, "profileIconId" INTEGER,
+                        "gameName" TEXT, "tagLine" TEXT, "rawStats" JSONB,
+                        "rawTimeline" JSONB, "rawIdentity" JSONB
+                    )
                     "#,
-                    &[&game_id, sgp_detail, &source_label],
+                    &[&game_id, &participant_payload],
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("详情参与者明细写入失败: {error}"))?;
+
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO match_participants(
+                        game_id, puuid, summoner_id, summoner_name, team_id,
+                        champion_id, position, kills, deaths, assists, win
+                    )
+                    SELECT
+                        $1, p.puuid, p."summonerId", p."summonerName", p."teamId",
+                        p."championId", p.position, COALESCE(p.kills, 0),
+                        COALESCE(p.deaths, 0), COALESCE(p.assists, 0),
+                        COALESCE(p."winBool", false)
+                    FROM jsonb_to_recordset($2::jsonb) AS p(
+                        puuid TEXT, "summonerId" BIGINT, "summonerName" TEXT,
+                        "teamId" INTEGER, "championId" INTEGER, position TEXT,
+                        kills INTEGER, deaths INTEGER, assists INTEGER,
+                        "winBool" BOOLEAN
+                    )
+                    WHERE p.puuid IS NOT NULL AND p.puuid <> ''
+                    ON CONFLICT(game_id, puuid) DO UPDATE SET
+                        summoner_id = EXCLUDED.summoner_id,
+                        summoner_name = EXCLUDED.summoner_name,
+                        team_id = EXCLUDED.team_id,
+                        champion_id = EXCLUDED.champion_id,
+                        position = EXCLUDED.position,
+                        kills = EXCLUDED.kills,
+                        deaths = EXCLUDED.deaths,
+                        assists = EXCLUDED.assists,
+                        win = EXCLUDED.win
+                    "#,
+                    &[&game_id, &participant_payload],
+                )
+                .await
+                .map_err(|error| format!("详情历史参与者写入失败: {error}"))?;
         }
+
+        transaction
+            .execute(
+                "DELETE FROM game_detail_teams WHERE game_id = $1",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| format!("详情队伍旧明细清理失败: {error}"))?;
+        if !team_rows.is_empty() {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO game_detail_teams(
+                        game_id, team_id, win, baron_kills, dragon_kills,
+                        tower_kills, inhibitor_kills, rift_herald_kills,
+                        first_baron, first_blood, first_inhibitor, first_tower,
+                        horde_kills, vilemaw_kills, bans, objectives, feats
+                    )
+                    SELECT
+                        $1, t."teamId", t.win, t."baronKills", t."dragonKills",
+                        t."towerKills", t."inhibitorKills", t."riftHeraldKills",
+                        t."firstBaron", t."firstBlood", t."firstInhibitor",
+                        t."firstTower", t."hordeKills", t."vilemawKills",
+                        t.bans, t.objectives, t.feats
+                    FROM jsonb_to_recordset($2::jsonb) AS t(
+                        "teamId" INTEGER, win BOOLEAN, "baronKills" INTEGER,
+                        "dragonKills" INTEGER, "towerKills" INTEGER,
+                        "inhibitorKills" INTEGER, "riftHeraldKills" INTEGER,
+                        "firstBaron" BOOLEAN, "firstBlood" BOOLEAN,
+                        "firstInhibitor" BOOLEAN, "firstTower" BOOLEAN,
+                        "hordeKills" INTEGER, "vilemawKills" INTEGER,
+                        bans JSONB, objectives JSONB, feats JSONB
+                    )
+                    "#,
+                    &[&game_id, &team_payload],
+                )
+                .await
+                .map_err(|error| format!("详情队伍明细写入失败: {error}"))?;
+        }
+
+        transaction.commit().await.map_err(|error| error.to_string())?;
 
         tracing::info!(
             target: "db.cache",
@@ -1538,6 +2187,8 @@ impl DatabaseState {
             purpose = "将对局详情（LCU + 可选 SGP）写入 PostgreSQL 缓存",
             game_id,
             has_sgp,
+            participants = participant_rows.len(),
+            teams = team_rows.len(),
             source = %source_label,
             duration_ms = started.elapsed().as_millis() as u64,
             "缓存对局详情已写入"
