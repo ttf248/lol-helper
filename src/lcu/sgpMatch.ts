@@ -17,7 +17,6 @@ export class SgpMatchHistoryService {
 	private _cachedToken: string | null = null;
 	private _tokenRequest: Promise<string | null> | null = null;
 	private sgpBaseUrl: string | null = null;
-	private readonly matchCache = new Map<number, GamesBySgp>();
 	private readonly USER_AGENT = "LeagueClient/14.3.558.1234 (SGP)";
 	private readonly TIMEOUT = 5000;
 
@@ -69,12 +68,10 @@ export class SgpMatchHistoryService {
 	};
 
 	/**
-	 * SUMMARY 返回的是完整对局数据。保留最近请求过的对局，供详情页在
-	 * LCU 无法反查外部召唤师对局时直接使用。
+	 * 此前把 SUMMARY 完整对局放进实例级 Map（matchCache），重启后失效。
+	 * Phase 5 后由 PostgreSQL `game_details.raw_payload_sgp` 接管
+	 * （cacheGameDetail(..., "sgp-summary-full")），这里不再缓存整包。
 	 */
-	getCachedMatch(gameId: number): GamesBySgp | null {
-		return this.matchCache.get(gameId) ?? null;
-	}
 
 	private getBaseUrl() {
 		let localSumInfo: sumInfoTypes | null;
@@ -330,7 +327,7 @@ export class SgpMatchHistoryService {
 				}
 
 				// 不修改 SUMMARY 原对象，否则详情页只能拿到一个 participant。
-				this.matchCache.set(games.gameId, games);
+				// Phase 5 前这里会写入 matchCache；现在改走 PG。
 				// 把整包 GamesBySgp 持久化到 PG，作为 raw_payload_sgp。
 				// 重启客户端或跨进程重建时详情页能直接命中 PG，不再走 SGP。
 				// 仅在完整参与者请求时落库 —— SUMMARY 请求只包含被查询玩家的
@@ -365,7 +362,6 @@ export class SgpMatchHistoryService {
 				full_participants: fullParticipants,
 				status: response.status,
 				games: gamesList.length,
-				cached_games: this.matchCache.size,
 				duration_ms: Date.now() - startedAt,
 			},
 			durationMs: Date.now() - startedAt,

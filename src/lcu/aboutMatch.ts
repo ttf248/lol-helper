@@ -123,35 +123,6 @@ const tokenFetcher = async (): Promise<string | null> => {
 };
 
 const sgpService = new SgpMatchHistoryService(tokenFetcher);
-const lcuMatchCache = new Map<number, Games>();
-const lcuMatchSource = new Map<number, MatchHistoryEndpoint>();
-
-const cacheLcuGames = (games: Games[], endpoint: MatchHistoryEndpoint) => {
-	for (const game of games) {
-		if (typeof game?.gameId === "number") {
-			lcuMatchCache.set(game.gameId, game);
-			lcuMatchSource.set(game.gameId, endpoint);
-		}
-	}
-};
-
-/**
- * 把一次 `/games/{gameId}` 响应写进 LCU 历史缓存。MatchDetails 在
- * 详情兜底路径上独立拉到单局响应时复用，避免再次请求同一 gameId。
- */
-export const cacheLcuGameDetail = (game: Games) => {
-	if (game && typeof game.gameId === "number") {
-		lcuMatchCache.set(game.gameId, game);
-		lcuMatchSource.set(game.gameId, "lcu-game-detail");
-	}
-};
-
-export const getCachedLcuMatch = (gameId: number): Games | null =>
-	lcuMatchCache.get(gameId) ?? null;
-
-export const getCachedLcuMatchSource = (
-	gameId: number,
-): MatchHistoryEndpoint | null => lcuMatchSource.get(gameId) ?? null;
 
 const isCurrentSummoner = (puuid: string): boolean => {
 	try {
@@ -225,26 +196,51 @@ const fetchCurrentSummonerMatchHistory = async (
 			}, JSON.stringify(matchList));
 			return null;
 		}
-		cacheLcuGames(games, "lcu-current-summoner");
+		// 此前会把单局响应塞进一个无界的 Map，重启后还得重打服务器。
+		// Phase 5 后由 PostgreSQL `game_details` 接管（cacheGameDetail），
+		// 这里不再缓存整包响应。
 		const responseStart = Number(history?.gameIndexBegin);
 		const responseEnd = Number(history?.gameIndexEnd);
-		// 新版 LCU 会按 query 参数返回分页结果，旧版可能忽略参数并
-		// 返回完整列表。利用响应中的索引避免对新版结果二次 slice。
-		const alreadyPaged =
-			responseStart === begIndex &&
-			Number.isFinite(responseEnd) &&
-			responseEnd <= begIndex + count;
+		// 新版 LCU 会按 query 参数返回分页结果，部分客户端/大区则会
+		// 忽略 begIndex/endIndex，永远返回最近 21 场。非首页不能把这种
+		// 响应 slice 一下就当成了目标页，否则会把“最近第 21 场”误当成
+		// 历史末尾。返回 null 让调用方继续尝试 PUUID/SGP 接口。
+		const paginationHonored =
+			begIndex === 0 && !Number.isFinite(responseStart)
+				? true
+				: responseStart === begIndex;
+		if (begIndex > 0 && !paginationHonored) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU current-summoner 未按偏移分页，交给下一级接口",
+				context: {
+					purpose: "查询当前召唤师更早历史战绩",
+					url: fullUrl,
+					beg_index: begIndex,
+					count,
+					response_start: Number.isFinite(responseStart) ? responseStart : null,
+					response_end: Number.isFinite(responseEnd) ? responseEnd : null,
+					games_count: games.length,
+					duration_ms: Date.now() - startedAt,
+				},
+			});
+			return null;
+		}
 		const advertisedCount = Number(history?.gameCount);
-		// gameCount 是 LCU 返回的历史总数。不能再要求它必须大于当前页
-		// 的末尾：当最后一页正好结束在总数处，旧条件会把有效总数丢成
-		// null，页面只能退回到“已缓存多少场就显示多少页”的估算逻辑。
-		// 如果客户端没有提供 gameCount，只有未分页返回完整列表时才用
-		// games.length 作为兜底。
-		const totalCount = Number.isFinite(advertisedCount) && advertisedCount >= 0
-			? advertisedCount
-			: !alreadyPaged
-			? games.length
-			: null;
+		// gameCount 在不同 LCU 版本里既可能是历史总数，也可能只是本次
+		// 返回窗口的数量。只有它明确大于当前响应覆盖的末尾时才采信，
+		// 避免日志中的 gameCount=21 把可翻页数据错误锁死为 21 场。
+		const responseEndExclusive = Math.max(
+			Number.isFinite(responseStart)
+				? responseStart + games.length
+				: begIndex + games.length,
+			Number.isFinite(responseEnd) ? responseEnd + 1 : 0,
+		);
+		const totalCount =
+			Number.isFinite(advertisedCount) &&
+			advertisedCount > responseEndExclusive
+				? advertisedCount
+				: null;
 		logger.info({
 			tag: "lcu.history",
 			message: "LCU current-summoner 历史接口响应成功",
@@ -257,13 +253,13 @@ const fetchCurrentSummonerMatchHistory = async (
 				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
 				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
 				game_count: totalCount,
-				already_paged: alreadyPaged,
+				pagination_honored: paginationHonored,
 				duration_ms: Date.now() - startedAt,
 			},
 			durationMs: Date.now() - startedAt,
 		}, JSON.stringify(matchList));
 		return {
-			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
+			games: paginationHonored ? games : games.slice(begIndex, begIndex + count),
 			totalCount,
 		};
 	} catch (error) {
@@ -348,22 +344,46 @@ const fetchSummonerMatchHistoryFromLcu = async (
 			}, JSON.stringify(matchList));
 			return null;
 		}
-		cacheLcuGames(games, "lcu-puuid");
+		// 此前会把单局响应塞进一个无界的 Map，重启后还得重打服务器。
+		// Phase 5 后由 PostgreSQL `game_details` 接管（cacheGameDetail），
+		// 这里不再缓存整包响应。
 		const history = matchList?.games;
 		const responseStart = Number(history?.gameIndexBegin);
 		const responseEnd = Number(history?.gameIndexEnd);
-		const alreadyPaged =
-			responseStart === begIndex &&
-			Number.isFinite(responseEnd) &&
-			responseEnd <= begIndex + count;
+		const paginationHonored =
+			begIndex === 0 && !Number.isFinite(responseStart)
+				? true
+				: responseStart === begIndex;
+		if (begIndex > 0 && !paginationHonored) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU PUUID 历史接口未按偏移分页，交给 SGP 接口",
+				context: {
+					purpose: "按 PUUID 查询更早历史战绩",
+					url: fullUrl,
+					puuid,
+					beg_index: begIndex,
+					count,
+					response_start: Number.isFinite(responseStart) ? responseStart : null,
+					response_end: Number.isFinite(responseEnd) ? responseEnd : null,
+					games_count: games.length,
+					duration_ms: Date.now() - startedAt,
+				},
+			});
+			return null;
+		}
 		const advertisedCount = Number(history?.gameCount);
-		// 与 current-summoner 接口保持一致：gameCount 是服务器报告的
-		// 历史总数，不能因为当前请求刚好落在末页就将它过滤掉。
-		const totalCount = Number.isFinite(advertisedCount) && advertisedCount >= 0
-			? advertisedCount
-			: !alreadyPaged
-			? games.length
-			: null;
+		const responseEndExclusive = Math.max(
+			Number.isFinite(responseStart)
+				? responseStart + games.length
+				: begIndex + games.length,
+			Number.isFinite(responseEnd) ? responseEnd + 1 : 0,
+		);
+		const totalCount =
+			Number.isFinite(advertisedCount) &&
+			advertisedCount > responseEndExclusive
+				? advertisedCount
+				: null;
 		logger.info({
 			tag: "lcu.history",
 			message: "LCU PUUID 历史接口响应成功",
@@ -377,13 +397,13 @@ const fetchSummonerMatchHistoryFromLcu = async (
 				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
 				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
 				game_count: totalCount,
-				already_paged: alreadyPaged,
+				pagination_honored: paginationHonored,
 				duration_ms: Date.now() - startedAt,
 			},
 			durationMs: Date.now() - startedAt,
 		}, JSON.stringify(matchList));
 		return {
-			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
+			games: paginationHonored ? games : games.slice(begIndex, begIndex + count),
 			totalCount,
 		};
 	} catch (error) {
@@ -461,7 +481,9 @@ const fetchMatchHistory = async (
 	});
 	// 普通战绩列表可以使用当前召唤师历史 endpoint；它仍然是历史数据，
 	// 不是当前正在进行的对局。完整分析则必须继续检查参与者是否齐全。
-	if (!fullParticipants && isCurrentSummoner(puuid)) {
+	// current-summoner 在部分腾讯服客户端只提供最近 21 场，而且会忽略
+	// begIndex。它只适合作为当前用户的首屏来源；更早页交给 PUUID/SGP。
+	if (!fullParticipants && isCurrentSummoner(puuid) && begIndex === 0) {
 		const currentResult = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
@@ -584,7 +606,7 @@ const fetchMatchHistory = async (
 
 	// SGP 不可用时，仍允许页面显示目标玩家的历史胜率；但这里明确是
 	// 降级数据，调用方会通过 participants 数量判断关系分析是否可信。
-	if (isCurrentSummoner(puuid)) {
+	if (isCurrentSummoner(puuid) && begIndex === 0) {
 		const currentResult = await fetchCurrentSummonerMatchHistory(
 			begIndex,
 			endIndex,
@@ -657,10 +679,6 @@ const fetchMatchHistory = async (
 	});
 	throw new Error("Match history interfaces returned no data");
 };
-
-/** 返回最近一次 SGP SUMMARY 中缓存的完整对局，供详情展示复用。 */
-export const getCachedSgpMatch = (gameId: number): GamesBySgp | null =>
-	sgpService.getCachedMatch(gameId);
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

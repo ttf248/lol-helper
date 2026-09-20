@@ -14,12 +14,6 @@ import type { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
-import {
-    cacheLcuGameDetail,
-    getCachedLcuMatch,
-    getCachedLcuMatchSource,
-    getCachedSgpMatch,
-} from "@/lcu/aboutMatch";
 import type { MatchHistoryEndpoint } from "@/lcu/aboutMatch";
 import { getCachedGameDetail, cacheGameDetail } from "@/recentMatch/utils/databaseCache";
 import {
@@ -32,7 +26,12 @@ export default class MatchDetails {
     // 同 gameId 详情请求的实例级缓存。MatchDetails 是 mainWindow
     // 长期持有的单例，UI 翻页 / 切换分析面板会让同一局被反复请求，
     // 命中后直接返回即可避免重复打 `/games/{gameId}`。
-    private detailCache = new Map<number, ParticipantsInfo>();
+    // Phase 5 后 value 同时携带来源，方便 instance-cache 命中也能报告
+    // 准确的数据来源（postgres / sgp-summary / lcu-game-detail）。
+    private detailCache = new Map<
+        number,
+        { info: ParticipantsInfo; source: MatchHistoryEndpoint }
+    >();
     private team100Kills = 0;
     private team200Kills = 0;
     private team100GoldEarned = 0;
@@ -85,7 +84,7 @@ export default class MatchDetails {
                     ? this.getSgpParticipantsDetails(sgpPayload, sumId, sumPuuid)
                     : null;
             if (sgpResult) {
-                this.detailCache.set(gameId, sgpResult);
+                this.detailCache.set(gameId, { info: sgpResult, source: "postgres" });
                 logger.info({
                     tag: "match.detail",
                     message: "对局详情解析完成",
@@ -123,7 +122,7 @@ export default class MatchDetails {
                               sumPuuid,
                           );
                 if (lcuResult) {
-                    this.detailCache.set(gameId, lcuResult);
+                    this.detailCache.set(gameId, { info: lcuResult, source: "postgres" });
                     logger.info({
                         tag: "match.detail",
                         message: "对局详情解析完成",
@@ -140,7 +139,7 @@ export default class MatchDetails {
                     return this.withDataSource(lcuResult, "postgres");
                 }
             }
-            // PG 有 payload 但解析失败 —— 落到内存/SGP/LCU 链路上重试。
+            // PG 有 payload 但解析失败 —— 落到 LCU 单局接口重试。
             logger.warn({
                 tag: "match.detail",
                 message: "PG 缓存 payload 无法解析，回落到服务器",
@@ -152,8 +151,9 @@ export default class MatchDetails {
             });
         }
         // 实例级缓存：同一 gameId 在 mainWindow 会话内已经拼装过一次
-        // ParticipantsInfo，直接复用，省掉 SGP/LCU/单局详情三条路径
-        // 的所有调用。
+        // ParticipantsInfo，直接复用，省掉 PG 重读 + 单局详情两条路径
+        // 的所有调用。Phase 5 后 source 由写入点一并记录，避免再次
+        // 依赖已删除的 getCachedLcuMatchSource。
         const cached = this.detailCache.get(gameId);
         if (cached) {
             logger.info({
@@ -164,93 +164,15 @@ export default class MatchDetails {
                     game_id: gameId,
                     sum_puuid: sumPuuid,
                     resolved: "instance-cache",
+                    source: cached.source,
                     duration_ms: Date.now() - startedAt,
                 },
                 durationMs: Date.now() - startedAt,
-            }, JSON.stringify(cached));
-            return this.withDataSource(
-                cached,
-                getCachedLcuMatchSource(gameId) || "lcu-game-detail",
-            );
+            }, JSON.stringify(cached.info));
+            return this.withDataSource(cached.info, cached.source);
         }
 
         this.init();
-
-        // SGP SUMMARY 已经包含完整的十人数据。优先使用它，避免查询外部
-        // 召唤师时 LCU 只允许反查本地客户端历史而导致右侧详情为空。
-        const cachedSgpMatch = getCachedSgpMatch(gameId);
-        if (cachedSgpMatch !== null) {
-            const sgpResult = this.getSgpParticipantsDetails(
-                cachedSgpMatch,
-                sumId,
-                sumPuuid,
-            );
-            if (sgpResult !== null) {
-                logger.info({
-                    tag: "match.detail",
-                    message: "对局详情解析完成",
-                    context: {
-                        purpose: "查询单局对局详情（包含双方十人数据）",
-                        game_id: gameId,
-                        sum_puuid: sumPuuid,
-                        resolved: "sgp-summary",
-                        duration_ms: Date.now() - startedAt,
-                    },
-                    durationMs: Date.now() - startedAt,
-                }, JSON.stringify(sgpResult));
-                this.detailCache.set(gameId, sgpResult);
-                return this.withDataSource(sgpResult, "sgp-summary");
-            }
-        }
-
-        // 外部召唤师的 LCU PUUID 接口也可能直接返回完整十人对局。
-        // 优先复用缓存，避免客户端拒绝再次调用 /games/{gameId}。
-        const cachedLcuMatch = getCachedLcuMatch(gameId);
-        if (
-            cachedLcuMatch !== null &&
-            Array.isArray(cachedLcuMatch.participants) &&
-            Array.isArray(cachedLcuMatch.participantIdentities)
-        ) {
-            const lcuResult =
-                cachedLcuMatch.queueId === 1700
-                    ? this.getFighterParticipantsDetails(
-                          cachedLcuMatch as unknown as GameDetailedInfo,
-                          cachedLcuMatch.participants,
-                          cachedLcuMatch.participantIdentities as unknown as ParticipantIdentity[],
-                          gameId,
-                          sumId,
-                          cachedLcuMatch.queueId,
-                      )
-                    : this.getParticipantsDetails(
-                          cachedLcuMatch as unknown as GameDetailedInfo,
-                          cachedLcuMatch.participants,
-                          cachedLcuMatch.participantIdentities as unknown as ParticipantIdentity[],
-                          sumId,
-                          cachedLcuMatch.queueId,
-                          gameId,
-                          sumPuuid,
-                      );
-            if (lcuResult !== null) {
-                logger.info({
-                    tag: "match.detail",
-                    message: "对局详情解析完成",
-                    context: {
-                        purpose: "查询单局对局详情（包含双方十人数据）",
-                        game_id: gameId,
-                        sum_puuid: sumPuuid,
-                        resolved:
-                            getCachedLcuMatchSource(gameId) || "lcu-puuid",
-                        duration_ms: Date.now() - startedAt,
-                    },
-                    durationMs: Date.now() - startedAt,
-                }, JSON.stringify(lcuResult));
-                this.detailCache.set(gameId, lcuResult);
-                return this.withDataSource(
-                    lcuResult,
-                    getCachedLcuMatchSource(gameId) || "lcu-puuid",
-                );
-            }
-        }
 
         const lcuUrl = `/lol-match-history/v1/games/${gameId}`;
         logger.info({
@@ -283,11 +205,9 @@ export default class MatchDetails {
             return null;
         }
 
-        // 拿到单局响应后写进 LCU 历史缓存，下一次 detail / history
-        // 翻页能直接命中缓存分支，省一次 LCU 调用。
-        cacheLcuGameDetail(response as unknown as Games);
-        // 同时把原始 payload 持久化到 PG。重启客户端后下次再开这局
-        // 详情直接命中 PG，不再触发 /games/{gameId}。
+        // 拿到单局响应后把原始 payload 持久化到 PG。重启客户端后下次再开
+        // 这局详情直接命中 PG，不再触发 /games/{gameId}。
+        // Phase 5 前还会额外写一份无界 Map（已删除），现在只剩 PG。
         void cacheGameDetail(
             response as unknown as Games,
             undefined,
@@ -331,7 +251,10 @@ export default class MatchDetails {
         }, JSON.stringify(assembled));
 
         if (assembled) {
-            this.detailCache.set(gameId, assembled);
+            this.detailCache.set(gameId, {
+                info: assembled,
+                source: "lcu-game-detail",
+            });
         }
         return this.withDataSource(assembled, "lcu-game-detail");
     };
