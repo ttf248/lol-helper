@@ -29,8 +29,7 @@ import {
 } from "@/recentMatch/utils/recentAnalytics";
 import {
   HISTORY_ANALYSIS_LIMIT,
-  HISTORY_SERVER_FETCH_LIMIT,
-  HISTORY_SERVER_PAGE_COUNT,
+  HISTORY_FRIEND_FALLBACK_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import {
   PlayerRecentAnalysis,
@@ -435,7 +434,7 @@ const cacheModeSummary = (modeKey: string) => {
     : "暂无缓存";
 };
 
-const historyQueryPlan = `服务器最近 ${HISTORY_SERVER_PAGE_COUNT} 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场）+ PostgreSQL 本地缓存最新 ${HISTORY_ANALYSIS_LIMIT} 场`;
+const historyQueryPlan = `本地无缓存时服务器兜底最近 1 页（最多 ${HISTORY_FRIEND_FALLBACK_LIMIT} 场）+ PostgreSQL 本地缓存最新 ${HISTORY_ANALYSIS_LIMIT} 场`;
 
 watch([selectedMode, selectedWindow], () => {
   void loadAnalysis();
@@ -552,7 +551,7 @@ onMounted(() => {
       <div class="analysis-progress-text">
         <span v-if="analysisProgress.stage === 'cache'">先检查 PostgreSQL，命中缓存就不重复请求服务器。</span>
         <span v-else-if="analysisProgress.stage === 'personal'">个人胜率、英雄表现先使用本地缓存或页面摘要展示。</span>
-        <span v-else-if="analysisProgress.stage === 'full'">服务器只查询最近 3 页，再与本地缓存合并；完整参与者用于同队、对手和关系图分析。</span>
+        <span v-else-if="analysisProgress.stage === 'full'">服务器仅在本地无缓存时拉取最近 1 页，再与本地缓存合并；完整参与者用于同队、对手和关系图分析。</span>
         <span v-else-if="analysisProgress.stage === 'relations'">正在计算共同对局、交手胜率和黑名单关联。</span>
         <span v-else>个人指标与关系分析均已完成。</span>
       </div>

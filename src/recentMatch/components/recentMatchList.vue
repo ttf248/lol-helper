@@ -17,6 +17,7 @@ import {
   MATCH_HISTORY_ENDPOINT_PATHS,
   MATCH_HISTORY_SOURCE_LABELS,
 } from "@/lcu/aboutMatch";
+import { HISTORY_PANEL_PREVIEW_COUNT } from "@/recentMatch/utils/historyConfig";
 
 const {
   sumList,
@@ -39,6 +40,13 @@ const selectedPuuid = ref<string | null>(null);
 const selectedPlayer = computed(() =>
   sumList.find((player) => player.puuid === selectedPuuid.value) || null,
 );
+
+// 缓存里可能有更多对局（首页后台同步过来的 60 场），
+// 但对局面板首屏只显示前 N 场；展示容器内部可滚动查看更多。
+const previewedMatches = (matchList: RecentSumInfo["matchList"]) =>
+  matchList.slice(0, HISTORY_PANEL_PREVIEW_COUNT);
+const hasMoreMatches = (matchList: RecentSumInfo["matchList"]) =>
+  matchList.length > HISTORY_PANEL_PREVIEW_COUNT;
 
 const showDetail = (
   gameId: number,
@@ -378,7 +386,7 @@ const teamInsight = computed(() => {
 
           <div v-if="summoner.matchList.length" class="match-history">
             <div
-              v-for="match in summoner.matchList"
+              v-for="match in previewedMatches(summoner.matchList)"
               :key="match.gameId"
               @click.stop="showDetail(match.gameId, summoner.summonerId, 0)"
               class="match-history-row cursor-pointer"
@@ -395,6 +403,13 @@ const teamInsight = computed(() => {
               >
                 {{ match.kills }}-{{ match.deaths }}-{{ match.assists }}
               </n-tag>
+            </div>
+            <div
+              v-if="hasMoreMatches(summoner.matchList)"
+              class="history-more-hint"
+              :title="`本地缓存共 ${summoner.matchList.length} 场`"
+            >
+              …还有 {{ summoner.matchList.length - HISTORY_PANEL_PREVIEW_COUNT }} 场在本地缓存
             </div>
           </div>
           <div v-else-if="summoner.historyStatus?.kind !== 'loading'" class="history-empty">
@@ -452,7 +467,7 @@ const teamInsight = computed(() => {
 						v-if="!selectedPlayer.recentAnalysis.historyComplete && analysisLoading"
 						class="text-blue-500 mb-2"
 					>
-						已先展示面板中已有的最近 10 场；后台只查询服务器最近 3 页，并与本地缓存合并后刷新最近 100 场分析。
+						已先展示面板中已有的最近 10 场快速摘要；后台基于本地缓存进行团队分析。
 					</div>
 					<div
 						v-else-if="!selectedPlayer.recentAnalysis.historyComplete"
@@ -613,7 +628,7 @@ const teamInsight = computed(() => {
           </div>
         </template>
         <div v-else class="text-gray-500 py-4 text-center">
-						  {{ analysisLoading ? "正在查询服务器最近 3 页并合并本地缓存…" : "当前无法取得完整历史数据。" }}
+						  {{ analysisLoading ? "正在基于本地缓存计算团队分析…" : "当前无法取得完整历史数据。" }}
         </div>
       </div>
     </div>
@@ -797,6 +812,18 @@ const teamInsight = computed(() => {
   flex-direction: column;
   min-width: 0;
   gap: 6px;
+  /* 对局内面板首屏固定展示前 10 场，超出部分在容器内滚动；
+     团队列高度不再被无界缓存撑高。 */
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.history-more-hint {
+  font-size: 11px;
+  color: rgba(140, 140, 140, 0.9);
+  text-align: center;
+  padding: 4px 0 2px 0;
+  font-style: italic;
 }
 
 .history-status,

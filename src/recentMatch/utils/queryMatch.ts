@@ -22,7 +22,10 @@ import {
     normalizeHistoryGame,
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
-import { HISTORY_ANALYSIS_LIMIT, HISTORY_SERVER_FETCH_LIMIT } from "@/recentMatch/utils/historyConfig";
+import {
+    HISTORY_ANALYSIS_LIMIT,
+    HISTORY_FRIEND_FALLBACK_LIMIT,
+} from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
 
 interface MatchSearchResult {
@@ -79,7 +82,7 @@ class QueryMatch {
                     ...common,
                     kind: "cache-fallback",
                     title: "接口查询未完成，已使用可用数据",
-                    detail: `服务器最近三页请求失败或超时，当前显示本地缓存及已返回的 ${search.matches.length} 场。`,
+                    detail: `服务器最近一页请求失败或超时，当前显示本地缓存及已返回的 ${search.matches.length} 场。`,
                 };
             }
             if (search.serverGames === 0) {
@@ -95,7 +98,7 @@ class QueryMatch {
                     ...common,
                     kind: "cache-fallback",
                     title: "当前模式未命中接口记录",
-                    detail: `服务器最近三页返回了 ${search.serverGames} 场历史对局，但没有当前模式记录，已显示本地缓存 ${cachedGames} 场。`,
+                    detail: `服务器最近一页返回了 ${search.serverGames} 场历史对局，但没有当前模式记录，已显示本地缓存 ${cachedGames} 场。`,
                 };
             }
             if (search.matchedGames === 0) {
@@ -110,7 +113,7 @@ class QueryMatch {
                 ...common,
                 kind: "ready",
                 title: "历史战绩已加载",
-                detail: `已合并本地缓存 ${cachedGames} 场与服务器最近三页中匹配的 ${search.matchedGames} 场。`,
+                detail: `已合并本地缓存 ${cachedGames} 场与服务器最近一页中匹配的 ${search.matchedGames} 场。`,
             };
         }
 
@@ -119,7 +122,7 @@ class QueryMatch {
                 ...common,
                 kind: "error",
                 title: "历史接口请求失败",
-                detail: "服务器最近三页请求失败或超时，且本地没有可用的该模式缓存。",
+                detail: "服务器最近一页请求失败或超时，且本地没有可用的该模式缓存。",
             };
         }
         if (search.serverGames === 0) {
@@ -135,7 +138,7 @@ class QueryMatch {
                 ...common,
                 kind: "mode-empty",
                 title: "当前模式没有历史记录",
-                detail: `接口返回了 ${search.serverGames} 场历史对局，但服务器最近三页内没有当前模式记录。`,
+                detail: `接口返回了 ${search.serverGames} 场历史对局，但服务器最近一页内没有当前模式记录。`,
             };
         }
         if (search.matchedGames === 0) {
@@ -257,7 +260,7 @@ class QueryMatch {
                 modeKey,
                 limit: HISTORY_ANALYSIS_LIMIT,
             });
-            const cachedMatchItems = cachedMatches
+            let cachedMatchItems = cachedMatches
                 .map((game) =>
                     this.cachedGameToMatch(game, puuid, targetSummonerId),
                 )
@@ -276,35 +279,39 @@ class QueryMatch {
                 },
             });
 
-            // 每次打开对局面板只读取服务器最近三页，再与本地缓存按
-            // gameId 合并；更早记录不会触发服务器继续翻页。
-            const search = await this.findMatchesWithStatus(
-                puuid,
-                modeKey,
-                targetSummonerId,
-                queueId,
-                cachedMatchItems,
-            );
-            const matches = this.uniqueAndSortMatches([
-                ...cachedMatchItems,
-                ...search.matches,
-            ]).slice(0, 10);
+            // 本地完全无缓存：触发 1 页（20 场）服务器兜底拉取并写入缓存。
+            // 这是"shift tab 不查那么多历史"的边界：永远不为对局内面板
+            // 拉超过 1 页服务器战绩。
+            let serverRequestFailed = false;
+            if (cachedMatchItems.length === 0) {
+                const fallback = await this.fallbackSinglePage(
+                    puuid,
+                    modeKey,
+                    targetSummonerId,
+                    queueId,
+                );
+                cachedMatchItems = fallback.matches;
+                serverRequestFailed = fallback.requestFailed;
+            }
+
+            const matches = this.uniqueAndSortMatches(cachedMatchItems);
             const status = this.buildHistoryStatus(cachedMatchItems.length, {
-                ...search,
                 matches,
+                serverGames: serverRequestFailed ? 1 : 0,
+                modeGames: cachedMatchItems.length,
+                matchedGames: cachedMatchItems.length,
+                requestFailed: serverRequestFailed,
+                sourceEndpoints: [],
             });
             logger.info({
                 tag: "recent.history",
-                message: "历史查询阶段：服务器补全",
+                message: "历史查询阶段：缓存优先 + 1 页兜底",
                 context: {
                     stage: "server",
                     puuid,
                     queue_id: queueId,
-                    server_games: search.serverGames,
-                    mode_games: search.modeGames,
-                    matched_games: search.matchedGames,
-                    request_failed: search.requestFailed,
-                    source_endpoints: search.sourceEndpoints,
+                    cached_games: cachedMatchItems.length,
+                    request_failed: serverRequestFailed,
                     final_status: status.kind,
                 },
             });
@@ -339,6 +346,60 @@ class QueryMatch {
                 },
             ];
         }
+    };
+
+    /**
+     * 对局内面板的服务器兜底拉取：固定 1 页（20 场）。
+     *
+     * 仅在本地缓存完全为空时触发；写入 PG 后下次读取直接命中缓存，
+     * 不会再次拉服务器。
+     */
+    private fallbackSinglePage = async (
+        puuid: string,
+        modeKey: MatchModeKey,
+        targetSummonerId?: number,
+        queueId?: number,
+    ): Promise<{
+        matches: MatchItemTypes[];
+        requestFailed: boolean;
+    }> => {
+        const result = await queryMatchHistoryWithSource(
+            puuid,
+            0,
+            HISTORY_FRIEND_FALLBACK_LIMIT,
+        );
+        if (result === null) {
+            logger.warn({
+                tag: "recent.history",
+                message: "对局内面板服务器兜底拉取失败",
+                context: { puuid, queue_id: queueId },
+            });
+            return { matches: [], requestFailed: true };
+        }
+
+        // 异步写缓存，不阻塞首屏返回
+        void this.cacheRawGames(puuid, result.games, result.source).catch(
+            (error) => {
+                logger.warn({
+                    tag: "recent.history",
+                    message: "兜底写入历史缓存失败",
+                    context: {
+                        puuid,
+                        error: String(error).slice(0, 200),
+                    },
+                });
+            },
+        );
+
+        const out: MatchItemTypes[] = [];
+        for (const game of result.games) {
+            if (!isModeQueue(game.queueId, modeKey)) continue;
+            const match = this.parseMatch(game, puuid, targetSummonerId);
+            if (match !== null) {
+                out.push(match);
+            }
+        }
+        return { matches: out, requestFailed: false };
     };
 
     public parseMatch = (
@@ -397,14 +458,14 @@ class QueryMatch {
         const result = await queryMatchHistoryWithSource(
             puuid,
             0,
-            HISTORY_SERVER_FETCH_LIMIT,
+            HISTORY_FRIEND_FALLBACK_LIMIT,
         );
         if (!result) {
             requestFailed = true;
         } else {
             // 缓存写入不阻塞首屏；三页服务器数据会在后台持久化，
             // 下一次查询直接参与本地合并。
-            // fingerprint 跳过：服务器最近三页没有新增，缓存层已经覆盖。
+            // fingerprint 跳过：服务器最近一页没有新增，缓存层已经覆盖。
             const previousFingerprint =
                 cachedMatches && cachedMatches.length > 0
                     ? `${cachedMatches[0].gameCreation}:${cachedMatches[0].gameId}`
@@ -426,7 +487,7 @@ class QueryMatch {
             ) {
                 logger.debug({
                     tag: "recent.history",
-                    message: "fingerprint 跳过：服务器最近三页无新增",
+                    message: "fingerprint 跳过：服务器最近一页无新增",
                     context: {
                         puuid,
                         queue_id: queueId,

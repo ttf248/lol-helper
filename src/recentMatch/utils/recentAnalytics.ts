@@ -37,14 +37,14 @@ import {
 } from "@/recentMatch/utils/historyData";
 import {
   HISTORY_ANALYSIS_LIMIT,
-  HISTORY_FAST_WINDOW,
+  HISTORY_FRIEND_FALLBACK_LIMIT,
+  HISTORY_PANEL_PREVIEW_COUNT,
   HISTORY_SERVER_PAGE_SIZE,
-  HISTORY_SERVER_FETCH_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
 
 export const RECENT_ANALYSIS_GAME_COUNT = HISTORY_ANALYSIS_LIMIT;
-export const RECENT_DEFAULT_GAME_COUNT = HISTORY_FAST_WINDOW;
+export const RECENT_DEFAULT_GAME_COUNT = HISTORY_PANEL_PREVIEW_COUNT;
 export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 
 const HISTORY_CONCURRENCY = 5;
@@ -341,7 +341,7 @@ const syncPlayerModeGames = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingGames: NormalizedHistoryGame[],
-  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
+  serverLimit = HISTORY_FRIEND_FALLBACK_LIMIT,
 ): Promise<{
   games: NormalizedHistoryGame[];
   source: string;
@@ -350,7 +350,7 @@ const syncPlayerModeGames = async (
 }> => {
   const startedAt = Date.now();
   const boundedServerLimit = Math.min(
-    HISTORY_SERVER_FETCH_LIMIT,
+    HISTORY_FRIEND_FALLBACK_LIMIT,
     Math.max(1, serverLimit),
   );
 
@@ -446,11 +446,11 @@ const hydratePlayerQueueHistory = (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingGames: NormalizedHistoryGame[],
-  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
+  serverLimit = HISTORY_FRIEND_FALLBACK_LIMIT,
 ): Promise<QueueHydrationResult> => {
   const key = historyKey(player.puuid, modeKey);
   const boundedServerLimit = Math.min(
-    HISTORY_SERVER_FETCH_LIMIT,
+    HISTORY_FRIEND_FALLBACK_LIMIT,
     Math.max(1, serverLimit),
   );
   const existing = queueHydration.get(key);
@@ -553,7 +553,7 @@ const loadPlayerHistory = async (
     }
 
     // PostgreSQL 不可用或首次缓存尚未写入时，直接复用首屏已取得的
-    // 最近 10 场。服务器最近三页在后台补齐，不能阻塞对局面板首屏。
+    // 最近 10 场。本地无缓存时服务器兜底拉取最近 1 页（20 场），不能阻塞对局面板首屏。
     const quickGames = sortGames(
       (Array.isArray(player.matchList) ? player.matchList : [])
         .filter((match) => isModeQueue(match.queueId, modeKey))
@@ -574,7 +574,7 @@ const loadPlayerHistory = async (
     }
 
     // 没有首屏摘要时也不要让一个玩家阻塞其它玩家的最近 10 场分析。
-    // 由统一的后台任务异步拉取服务器最近三页，完成后再刷新整队分析。
+    // 由统一的后台任务异步基于本地缓存刷新整队分析。
     void hydratePlayerQueueHistory(player, modeKey, []);
     return {
       puuid: player.puuid,
@@ -653,7 +653,7 @@ const loadPlayerModeHistory = async (
       : `本地暂无缓存，已使用面板中的 ${seededGames.length} 场个人战绩作为种子`,
   });
   // 这里只读取本地缓存和已经加载的个人摘要，不再额外扫描服务器。
-  // 后续 hydrate 阶段统一只请求服务器最近三页，并与这批数据合并。
+  // 后续 hydrate 阶段统一只消费本地缓存；本地无缓存时拉取服务器最近 1 页（20 场）作为兜底。
   onProgress?.({
     stage: "personal",
     completed: Math.min(initialGames.length, progressTotal),
@@ -661,8 +661,8 @@ const loadPlayerModeHistory = async (
     percentage: 28,
     message:
       initialGames.length > 0
-        ? `已从本地与页面数据取得 ${Math.min(initialGames.length, progressTotal)} 场，准备同步服务器最近三页`
-        : "本地暂无可用样本，准备同步服务器最近三页",
+        ? `已从本地与页面数据取得 ${Math.min(initialGames.length, progressTotal)} 场，准备进行本地缓存团队分析`
+        : "本地暂无可用样本，准备进行本地缓存团队分析",
   });
   return toHistorySnapshot(
     player,
@@ -681,7 +681,7 @@ const hydratePlayerModeHistory = async (
   player: RecentSumInfo,
   modeKey: MatchModeKey,
   existingSnapshot: PlayerHistorySnapshot,
-  serverLimit = HISTORY_SERVER_FETCH_LIMIT,
+  serverLimit = HISTORY_FRIEND_FALLBACK_LIMIT,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerHistorySnapshot> => {
   const existingGames = Array.from(existingSnapshot.games.values());
@@ -1459,8 +1459,8 @@ export const loadPlayerModeAnalysis = async (
     onProgress,
   );
   const serverLimit = Math.min(
-    HISTORY_SERVER_FETCH_LIMIT,
-    Math.max(HISTORY_FAST_WINDOW, requestedGames),
+    HISTORY_FRIEND_FALLBACK_LIMIT,
+    Math.max(HISTORY_PANEL_PREVIEW_COUNT, requestedGames),
   );
   // 先交付本地缓存/页面摘要；服务器只在下一步读取当前窗口，
   // 不会因为本地缓存较多而继续向更早分页扩展。
@@ -1825,11 +1825,11 @@ export const loadRecentTeamAnalysis = async (
             player,
             modeKey,
             [],
-            HISTORY_SERVER_FETCH_LIMIT,
+            HISTORY_FRIEND_FALLBACK_LIMIT,
           ),
         };
       }
-      if (entry.serverLimit >= HISTORY_SERVER_FETCH_LIMIT) {
+      if (entry.serverLimit >= HISTORY_FRIEND_FALLBACK_LIMIT) {
         return { player, request: entry.request };
       }
       return {
@@ -1839,7 +1839,7 @@ export const loadRecentTeamAnalysis = async (
             player,
             modeKey,
             result.games,
-            HISTORY_SERVER_FETCH_LIMIT,
+            HISTORY_FRIEND_FALLBACK_LIMIT,
           ),
         ),
       };
@@ -1858,7 +1858,7 @@ export const loadRecentTeamAnalysis = async (
         stage: "full",
         completed: 0,
         total: hydrationEntries.length,
-        message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场）并合并本地缓存`,
+        message: `正在查询服务器最近 1 页（最多 ${HISTORY_FRIEND_FALLBACK_LIMIT} 场）并合并本地缓存`,
       });
   }
 
@@ -1873,7 +1873,7 @@ export const loadRecentTeamAnalysis = async (
         stage: "full",
         completed: hydratedCount,
         total: hydrationEntries.length,
-        message: `正在查询服务器最近 3 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场）并合并本地缓存`,
+        message: `正在查询服务器最近 1 页（最多 ${HISTORY_FRIEND_FALLBACK_LIMIT} 场）并合并本地缓存`,
       });
     }),
   );

@@ -31,9 +31,8 @@ import {
     RecentAnalysisProgress,
 } from "@/recentMatch/utils/recentAnalytics";
 import {
-    HISTORY_FAST_WINDOW,
-    HISTORY_SERVER_FETCH_LIMIT,
-    HISTORY_SERVER_PAGE_COUNT,
+    HISTORY_FRIEND_FALLBACK_LIMIT,
+    HISTORY_PANEL_PREVIEW_COUNT,
 } from "@/recentMatch/utils/historyConfig";
 import type { CurrentMatchProgress } from "@/recentMatch/utils/querySummoner";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
@@ -198,7 +197,7 @@ const init = () => {
                 message: "正在读取缓存并校验服务器最新战绩",
                 detail: playerTotal < 10
                     ? `当前已识别 ${playerTotal}/10 人，先显示已有玩家。`
-                    : `每名玩家只查询服务器最近 ${HISTORY_SERVER_PAGE_COUNT} 页（最多 ${HISTORY_SERVER_FETCH_LIMIT} 场），再合并本地缓存。`,
+                    : `每名玩家仅消费本地 PG 缓存；本地无缓存时拉取服务器最近 1 页（最多 ${HISTORY_FRIEND_FALLBACK_LIMIT} 场）作为兜底。`,
             });
 
             let completedHistory = 0;
@@ -249,8 +248,8 @@ const init = () => {
                         total: progress.total,
                         message: progress.message,
                         detail: progress.stage === "full"
-                            ? `${progress.completed}/${progress.total} 名玩家已完成三页服务器数据与本地缓存合并。`
-                            : `最近 ${HISTORY_FAST_WINDOW} 场已可查看，后台继续合并服务器最近三页。`,
+                            ? `${progress.completed}/${progress.total} 名玩家已完成服务器兜底与本地缓存合并。`
+                            : `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场已可查看，后台继续基于本地缓存计算团队分析。`,
                     });
                 },
             )
@@ -266,7 +265,7 @@ const init = () => {
                     setLoadingState({
                         stage: "error",
                         message: "最近历史分析部分失败",
-                        detail: `最近 ${HISTORY_FAST_WINDOW} 场仍可查看，服务器最近三页合并失败，可稍后重试。`,
+                        detail: `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场仍可查看，团队分析合并失败，可稍后重试。`,
                     });
                 })
                 .finally(() => {
