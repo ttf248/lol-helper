@@ -28,7 +28,7 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         .ok_or_else(|| {
             tracing::warn!(
                 target = "lcu.auth",
-                "lcu.auth process not found (LeagueClientUx.exe)"
+                "LeagueClientUx.exe 进程未找到"
             );
             ProcessInfoError::ProcessNotAvailable
         })?;
@@ -40,7 +40,7 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         .ok_or_else(|| {
             tracing::warn!(
                 target = "lcu.auth",
-                "lcu.auth --app-port not present in process args"
+                "LeagueClientUx.exe 启动参数缺少 --app-port"
             );
             ProcessInfoError::PortNotFound
         })?;
@@ -55,7 +55,7 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         .ok_or_else(|| {
             tracing::warn!(
                 target = "lcu.auth",
-                "lcu.auth --remoting-auth-token not present in process args"
+                "LeagueClientUx.exe 启动参数缺少 --remoting-auth-token"
             );
             ProcessInfoError::AuthTokenNotFound
         })?;
@@ -67,7 +67,7 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         .ok_or_else(|| {
             tracing::warn!(
                 target = "lcu.auth",
-                "lcu.auth --rso_platform_id not present in process args"
+                "LeagueClientUx.exe 启动参数缺少 --rso_platform_id"
             );
             ProcessInfoError::PlatformIdNotFound
         })?;
@@ -78,7 +78,7 @@ pub(crate) fn get_auth_info() -> Result<AuthResponse, ProcessInfoError> {
         port_len = port.len(),
         region = %rso_platform_id,
         token_len = token_b64.len(),
-        "lcu.auth parsed"
+        "LCU 鉴权信息解析成功"
     );
     Ok(AuthResponse {
         token: token_b64,

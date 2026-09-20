@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, EventTarget, Manager};
 pub fn init_global_keyboard(app: AppHandle) {
     tracing::info!(
         target = "lcu.keyboard",
-        "global keyboard listener starting"
+        "全局键盘监听启动"
     );
     let mut shift_state: bool = false;
     // 捕获全局键盘事件
@@ -12,7 +12,7 @@ pub fn init_global_keyboard(app: AppHandle) {
         tracing::error!(
             target = "lcu.keyboard",
             error = ?error,
-            "global keyboard listener failed"
+            "全局键盘监听启动失败"
         );
     }
 }
@@ -54,14 +54,14 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
                     tracing::debug!(
                         target = "lcu.keyboard",
                         window = win_name,
-                        "hiding window"
+                        "隐藏窗口"
                     );
                     if let Err(error) = win.hide() {
                         tracing::warn!(
                             target = "lcu.keyboard",
                             window = win_name,
                             error = %error,
-                            "hide window failed"
+                            "隐藏窗口失败"
                         );
                     }
                 }
@@ -69,14 +69,14 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
                     tracing::debug!(
                         target = "lcu.keyboard",
                         window = win_name,
-                        "showing window"
+                        "显示窗口"
                     );
                     if let Err(error) = win.show() {
                         tracing::warn!(
                             target = "lcu.keyboard",
                             window = win_name,
                             error = %error,
-                            "show window failed"
+                            "显示窗口失败"
                         );
                     }
                 }
@@ -85,7 +85,7 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
                         target = "lcu.keyboard",
                         window = win_name,
                         error = %error,
-                        "check window visibility failed"
+                        "检查窗口可见性失败"
                     );
                 }
             }
@@ -93,7 +93,7 @@ fn handle_show_hide_window(shift_state: &mut bool, app: &AppHandle, win_name: &s
             tracing::info!(
                 target = "lcu.keyboard",
                 window = win_name,
-                "window not present, requesting recovery"
+                "窗口不存在，请求后台恢复"
             );
             // 软件可能在对局开始后才启动，或窗口曾被关闭。通知前端按当前
             // LCU session 恢复窗口，而不是只对已存在的窗口做显隐切换。

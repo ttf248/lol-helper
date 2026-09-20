@@ -32,7 +32,7 @@ impl LcuWebsocketClient {
         } = process_info::get_auth_info()
             .map_err(|e| LcuWebsocketError::LcuNotAvailable(e.to_string()))?;
 
-        tracing::info!(target = "lcu.ws", port = %port, "lcu.ws connecting");
+        tracing::info!(target = "lcu.ws", port = %port, "正在连接 LCU WebSocket");
 
         let cert = native_tls::Certificate::from_pem(include_bytes!("./riotgames.pem")).unwrap();
         let tls = native_tls::TlsConnector::builder()
@@ -44,14 +44,14 @@ impl LcuWebsocketClient {
         let mut url = format!("wss://127.0.0.1:{port}")
             .into_client_request()
             .map_err(|e| {
-                tracing::error!(target = "lcu.ws", error = %e, "lcu.ws url build failed");
+                tracing::error!(target = "lcu.ws", error = %e, "LCU WebSocket URL 构造失败");
                 LcuWebsocketError::AuthError
             })?;
         url.headers_mut()
             .insert(
                 "Authorization",
                 HeaderValue::from_str(format!("Basic {auth_token}").as_str()).map_err(|e| {
-                    tracing::error!(target = "lcu.ws", error = %e, "lcu.ws auth header failed");
+                    tracing::error!(target = "lcu.ws", error = %e, "LCU WebSocket 鉴权头设置失败");
                     LcuWebsocketError::AuthError
                 })?,
             );
@@ -65,7 +65,7 @@ impl LcuWebsocketClient {
                         target = "lcu.ws",
                         duration_ms = started.elapsed().as_millis() as u64,
                         error = %e,
-                        "lcu.ws connect failed"
+                        "LCU WebSocket 连接失败"
                     );
                     LcuWebsocketError::Disconnected(e.to_string())
                 })?;
@@ -73,7 +73,7 @@ impl LcuWebsocketClient {
         tracing::info!(
             target = "lcu.ws",
             duration_ms = started.elapsed().as_millis() as u64,
-            "lcu.ws connected"
+            "LCU WebSocket 连接成功"
         );
 
         Ok(Self(ws_stream))
@@ -87,7 +87,7 @@ impl LcuWebsocketClient {
         &mut self,
         subscription: LcuSubscriptionType,
     ) -> Result<(), LcuWebsocketError> {
-        tracing::debug!(target = "lcu.ws", subscription = %subscription, "lcu.ws subscribe");
+        tracing::debug!(target = "lcu.ws", subscription = %subscription, "WS 订阅");
         self.0
             .send(Message::text(format!("[5, \"{subscription}\"]")))
             .await
@@ -97,7 +97,7 @@ impl LcuWebsocketClient {
                         target = "lcu.ws",
                         subscription = %subscription,
                         error = %e,
-                        "lcu.ws subscribe: connection closed"
+                        "WS 订阅失败：连接已关闭"
                     );
                     LcuWebsocketError::Disconnected(e.to_string())
                 }
@@ -106,7 +106,7 @@ impl LcuWebsocketClient {
                         target = "lcu.ws",
                         subscription = %subscription,
                         error = %e,
-                        "lcu.ws subscribe: send failed"
+                        "WS 订阅失败：发送失败"
                     );
                     LcuWebsocketError::SendError
                 }
@@ -121,7 +121,7 @@ impl LcuWebsocketClient {
         &mut self,
         subscription: LcuSubscriptionType,
     ) -> Result<(), LcuWebsocketError> {
-        tracing::debug!(target = "lcu.ws", subscription = %subscription, "lcu.ws unsubscribe");
+        tracing::debug!(target = "lcu.ws", subscription = %subscription, "WS 取消订阅");
         self.0
             .send(Message::text(format!("[6, \"{subscription}\"]")))
             .await
@@ -131,7 +131,7 @@ impl LcuWebsocketClient {
                         target = "lcu.ws",
                         subscription = %subscription,
                         error = %e,
-                        "lcu.ws unsubscribe: connection closed"
+                        "WS 取消订阅失败：连接已关闭"
                     );
                     LcuWebsocketError::Disconnected(e.to_string())
                 }
@@ -140,7 +140,7 @@ impl LcuWebsocketClient {
                         target = "lcu.ws",
                         subscription = %subscription,
                         error = %e,
-                        "lcu.ws unsubscribe: send failed"
+                        "WS 取消订阅失败：发送失败"
                     );
                     LcuWebsocketError::SendError
                 }
@@ -160,7 +160,7 @@ impl Stream for LcuWebsocketClient {
                         tracing::warn!(
                             target = "lcu.ws",
                             text_len = text.len(),
-                            "lcu.ws event deserialize failed"
+                            "WS 事件解析失败"
                         );
                         continue;
                     };
@@ -168,19 +168,19 @@ impl Stream for LcuWebsocketClient {
                         target = "lcu.ws",
                         event_type = %event.event_type,
                         subscription = %event.subscription_type,
-                        "lcu.ws recv"
+                        "WS 事件"
                     );
                     Poll::Ready(Some(event))
                 }
                 Poll::Ready(Some(Ok(Message::Close(_)))) => {
-                    tracing::warn!(target = "lcu.ws", "lcu.ws closed by server");
+                    tracing::warn!(target = "lcu.ws", "WS 被服务端关闭");
                     Poll::Ready(None)
                 }
                 Poll::Ready(Some(Err(error))) => {
                     tracing::warn!(
                         target = "lcu.ws",
                         error = %error,
-                        "lcu.ws stream error"
+                        "WS 流异常"
                     );
                     Poll::Ready(None)
                 }

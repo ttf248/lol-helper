@@ -179,7 +179,7 @@ impl DatabaseState {
             message: "正在连接 PostgreSQL".to_string(),
             checked_at: now_unix(),
         }));
-        let client_slot = Arc::new(Mutex::new(None));
+        let client_slot = Arc::new(tokio::sync::Mutex::new(None));
         let started = std::time::Instant::now();
 
         match tokio::time::timeout(
@@ -190,10 +190,10 @@ impl DatabaseState {
         {
             Err(_) => {
                 tracing::warn!(
-                    target: "db",
+                    target: "db.cache",
                     timeout_secs = 3,
                     duration_ms = started.elapsed().as_millis() as u64,
-                    "db.connect timeout"
+                    "数据库连接超时"
                 );
                 let mut current = status.write().await;
                 current.message = "连接 PostgreSQL 超时（3 秒）".to_string();
@@ -204,9 +204,9 @@ impl DatabaseState {
                 tokio::spawn(async move {
                     if let Err(error) = connection.await {
                         tracing::warn!(
-                            target: "db",
+                            target: "db.cache",
                             error = %error,
-                            "db.connection dropped"
+                            "PostgreSQL 连接断开"
                         );
                         let mut status = connection_status.write().await;
                         status.available = false;
@@ -219,9 +219,10 @@ impl DatabaseState {
                     Ok(()) => {
                         *client_slot.lock().await = Some(client);
                         tracing::info!(
-                            target: "db",
+                            target: "db.cache",
                             duration_ms = started.elapsed().as_millis() as u64,
-                            "db.connect ok, schema ready"
+                            notice_count = 0_u32,
+                            "数据库连接成功，表结构已就绪"
                         );
                         let mut current = status.write().await;
                         current.available = true;
@@ -230,10 +231,10 @@ impl DatabaseState {
                     }
                     Err(error) => {
                         tracing::error!(
-                            target: "db",
+                            target: "db.cache",
                             duration_ms = started.elapsed().as_millis() as u64,
                             error = %error,
-                            "db.schema init failed"
+                            "数据库表结构初始化失败"
                         );
                         let mut current = status.write().await;
                         current.message = format!("数据库表结构初始化失败: {error}");
@@ -243,10 +244,10 @@ impl DatabaseState {
             }
             Ok(Err(error)) => {
                 tracing::error!(
-                    target: "db",
+                    target: "db.cache",
                     duration_ms = started.elapsed().as_millis() as u64,
                     error = %error,
-                    "db.connect failed"
+                    "数据库连接失败"
                 );
                 let mut current = status.write().await;
                 current.message = format!("无法连接 PostgreSQL: {error}");
@@ -267,9 +268,9 @@ impl DatabaseState {
             if let Some(client) = client.as_ref() {
                 if let Err(error) = client.query_one("SELECT 1", &[]).await {
                     tracing::warn!(
-                        target: "db",
+                        target: "db.cache",
                         error = %error,
-                        "db.status probe failed"
+                        "数据库健康探测失败"
                     );
                     current.available = false;
                     current.message = format!("PostgreSQL 查询失败: {error}");
@@ -293,8 +294,9 @@ impl DatabaseState {
         let started = std::time::Instant::now();
         if request.puuid.trim().is_empty() || request.mode_key.trim().is_empty() {
             tracing::warn!(
-                target: "db",
-                "db.cache_history rejected: missing puuid or mode_key"
+                target: "db.cache",
+                op = "cache_history",
+                "缓存战绩请求被拒：缺少 puuid 或 modeKey"
             );
             return Err("缓存战绩缺少 puuid 或 modeKey".to_string());
         }
@@ -443,12 +445,13 @@ impl DatabaseState {
 
         transaction.commit().await.map_err(|error| error.to_string())?;
         tracing::info!(
-            target: "db",
+            target: "db.cache",
+            op = "cache_history",
             puuid = %mask_puuid(&request.puuid),
             mode_key = %request.mode_key,
             cached_games = request.games.len(),
             duration_ms = started.elapsed().as_millis() as u64,
-            "db.cache_history committed"
+            "缓存历史已写入"
         );
         Ok(request.games.len())
     }
@@ -535,7 +538,8 @@ impl DatabaseState {
 
         match &result {
             Ok(games) => tracing::info!(
-                target: "db",
+                target: "db.cache",
+                op = "cached_history",
                 puuid = %mask_puuid(&request.puuid),
                 mode_key = ?request.mode_key,
                 queue_id = ?request.queue_id,
@@ -543,13 +547,17 @@ impl DatabaseState {
                 offset,
                 count = games.len(),
                 duration_ms = started.elapsed().as_millis() as u64,
-                "db.cached_history ok"
+                "读取缓存历史成功"
             ),
             Err(error) => tracing::warn!(
-                target: "db",
+                target: "db.cache",
+                op = "cached_history",
+                puuid = %mask_puuid(&request.puuid),
+                mode_key = ?request.mode_key,
+                queue_id = ?request.queue_id,
                 error = %error,
                 duration_ms = started.elapsed().as_millis() as u64,
-                "db.cached_history failed"
+                "读取缓存历史失败"
             ),
         }
         result
@@ -605,13 +613,14 @@ impl DatabaseState {
             modes,
         };
         tracing::info!(
-            target: "db",
+            target: "db.cache",
+            op = "summary",
             total_matches = result.total_matches,
             total_participants = result.total_participants,
             total_players = result.total_players,
             modes = result.modes.len(),
             duration_ms = started.elapsed().as_millis() as u64,
-            "db.summary ok"
+            "读取全局汇总成功"
         );
         Ok(result)
     }
@@ -623,8 +632,9 @@ impl DatabaseState {
         let started = std::time::Instant::now();
         if request.puuid.trim().is_empty() {
             tracing::warn!(
-                target: "db",
-                "db.player_summary rejected: missing puuid"
+                target: "db.cache",
+                op = "player_summary",
+                "玩家汇总请求被拒：缺少 puuid"
             );
             return Err("查询缓存汇总缺少 puuid".to_string());
         }
@@ -691,7 +701,8 @@ impl DatabaseState {
                 .collect(),
         };
         tracing::info!(
-            target: "db",
+            target: "db.cache",
+            op = "player_summary",
             puuid = %mask_puuid(&result.puuid),
             mode_key = ?result.mode_key,
             matches = result.matches,
@@ -699,10 +710,34 @@ impl DatabaseState {
             wins = result.wins,
             sources = result.sources.len(),
             duration_ms = started.elapsed().as_millis() as u64,
-            "db.player_summary ok"
+            "读取玩家汇总成功"
         );
         Ok(result)
     }
+}
+
+/// 把 PostgreSQL NOTICE 翻译成中文（保留以便未来 NOTICE 来源接入时直接复用）。
+/// 当前 tokio-postgres 0.7 未暴露 notice_handler，故通过 EnvFilter 直接压制
+/// `tokio_postgres::connection` 的 info 级 NOTICE（仅英文 `relation X already exists`）。
+#[allow(dead_code)]
+fn translate_notice(msg: &str) -> String {
+    if let Some(name) = extract_after(msg, "relation \"") {
+        if msg.contains("already exists") {
+            return format!("跳过建表 {}（已存在）", name.trim_end_matches('"'));
+        }
+    }
+    if let Some(name) = extract_after(msg, "index \"") {
+        if msg.contains("already exists") {
+            return format!("跳过建索引 {}（已存在）", name.trim_end_matches('"'));
+        }
+    }
+    msg.to_string()
+}
+
+#[allow(dead_code)]
+fn extract_after<'a>(haystack: &'a str, prefix: &str) -> Option<&'a str> {
+    let idx = haystack.find(prefix)?;
+    Some(&haystack[idx + prefix.len()..])
 }
 
 fn now_unix() -> i64 {
@@ -716,11 +751,6 @@ fn now_unix() -> i64 {
 pub async fn database_status(
     state: tauri::State<'_, DatabaseState>,
 ) -> Result<DatabaseStatus, String> {
-    tracing::debug!(
-        target: "db",
-        cmd = "database_status",
-        "tauri.command.database_status"
-    );
     Ok(state.status().await)
 }
 
@@ -729,14 +759,6 @@ pub async fn cache_match_history(
     state: tauri::State<'_, DatabaseState>,
     request: CacheHistoryRequest,
 ) -> Result<usize, String> {
-    tracing::debug!(
-        target: "db",
-        cmd = "cache_match_history",
-        puuid = %mask_puuid(&request.puuid),
-        mode_key = %request.mode_key,
-        games = request.games.len(),
-        "tauri.command.cache_match_history"
-    );
     state.cache_history(request).await
 }
 
@@ -745,16 +767,6 @@ pub async fn get_cached_match_history(
     state: tauri::State<'_, DatabaseState>,
     request: CachedHistoryQuery,
 ) -> Result<Vec<CachedMatchGame>, String> {
-    tracing::debug!(
-        target: "db",
-        cmd = "get_cached_match_history",
-        puuid = %mask_puuid(&request.puuid),
-        mode_key = ?request.mode_key,
-        queue_id = ?request.queue_id,
-        limit = request.limit,
-        offset = request.offset,
-        "tauri.command.get_cached_match_history"
-    );
     state.cached_history(request).await
 }
 
@@ -762,11 +774,6 @@ pub async fn get_cached_match_history(
 pub async fn database_summary(
     state: tauri::State<'_, DatabaseState>,
 ) -> Result<DatabaseSummary, String> {
-    tracing::debug!(
-        target: "db",
-        cmd = "database_summary",
-        "tauri.command.database_summary"
-    );
     state.summary().await
 }
 
@@ -775,12 +782,5 @@ pub async fn get_cached_player_summary(
     state: tauri::State<'_, DatabaseState>,
     request: CachedPlayerSummaryQuery,
 ) -> Result<CachedPlayerSummary, String> {
-    tracing::debug!(
-        target: "db",
-        cmd = "get_cached_player_summary",
-        puuid = %mask_puuid(&request.puuid),
-        mode_key = ?request.mode_key,
-        "tauri.command.get_cached_player_summary"
-    );
     state.player_summary(request).await
 }

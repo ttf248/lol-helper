@@ -34,7 +34,7 @@ pub async fn run() {
     tracing::info!(
         target = "observability",
         exe_dir = ?std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())),
-        "logger initialized"
+        "日志系统初始化完成"
     );
     let database = DatabaseState::initialize().await;
     tauri::Builder::default()
@@ -45,7 +45,7 @@ pub async fn run() {
             dock_side: Arc::new(Mutex::new("Right".to_string())),
         })
         .setup(|_| {
-            tracing::info!(target = "observability", "tauri app initialized");
+            tracing::info!(target = "observability", "Tauri 应用初始化完成");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
