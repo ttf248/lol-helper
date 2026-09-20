@@ -251,8 +251,20 @@ class QueryMatch {
         queueId: number,
         targetSummonerId?: number,
     ): Promise<[MatchItemTypes[], number, RecentHistoryStatus]> => {
+        const startedAt = Date.now();
+        const modeKey = modeForQueue(queueId);
+        logger.info({
+            tag: "recent.history",
+            message: "对局内面板历史查询发起",
+            context: {
+                purpose: "对局内面板按 queueId 拉取最近 100 场历史",
+                puuid,
+                queue_id: queueId,
+                mode_key: modeKey,
+                target_summoner_id: targetSummonerId ?? null,
+            },
+        });
         try {
-            const modeKey = modeForQueue(queueId);
             const cachedMatches = await getCachedHistory({
                 puuid,
                 // 对局内历史按模式读取，而不是把 420/440 或 400/430/490
@@ -272,9 +284,11 @@ class QueryMatch {
                 tag: "recent.history",
                 message: "历史查询阶段：读取本地缓存",
                 context: {
+                    purpose: "对局内面板按 queueId 拉取最近 100 场历史",
                     stage: "cache",
                     puuid,
                     queue_id: queueId,
+                    mode_key: modeKey,
                     cached_games: cachedMatchItems.length,
                 },
             });
@@ -283,7 +297,9 @@ class QueryMatch {
             // 这是"shift tab 不查那么多历史"的边界：永远不为对局内面板
             // 拉超过 1 页服务器战绩。
             let serverRequestFailed = false;
+            let fallbackTriggered = false;
             if (cachedMatchItems.length === 0) {
+                fallbackTriggered = true;
                 const fallback = await this.fallbackSinglePage(
                     puuid,
                     modeKey,
@@ -305,15 +321,21 @@ class QueryMatch {
             });
             logger.info({
                 tag: "recent.history",
-                message: "历史查询阶段：缓存优先 + 1 页兜底",
+                message: "对局内面板历史查询完成",
                 context: {
-                    stage: "server",
+                    purpose: "对局内面板按 queueId 拉取最近 100 场历史",
+                    stage: "done",
                     puuid,
                     queue_id: queueId,
+                    mode_key: modeKey,
                     cached_games: cachedMatchItems.length,
+                    fallback_triggered: fallbackTriggered,
                     request_failed: serverRequestFailed,
                     final_status: status.kind,
+                    final_matches: matches.length,
+                    duration_ms: Date.now() - startedAt,
                 },
+                durationMs: Date.now() - startedAt,
             });
             return [
                 matches,
@@ -325,9 +347,12 @@ class QueryMatch {
                 tag: "recent.history",
                 message: "历史查询异常",
                 context: {
+                    purpose: "对局内面板按 queueId 拉取最近 100 场历史",
                     puuid,
                     queue_id: queueId,
-                    error: String(error).slice(0, 200),
+                    mode_key: modeKey,
+                    duration_ms: Date.now() - startedAt,
+                    error: String(error).slice(0, 500),
                 },
             });
             // Return default values in case of error
@@ -363,6 +388,19 @@ class QueryMatch {
         matches: MatchItemTypes[];
         requestFailed: boolean;
     }> => {
+        const startedAt = Date.now();
+        logger.info({
+            tag: "recent.history",
+            message: "对局内面板服务器兜底发起",
+            context: {
+                purpose: "本地无缓存时服务器兜底 1 页（20 场）",
+                puuid,
+                queue_id: queueId ?? null,
+                mode_key: modeKey,
+                target_summoner_id: targetSummonerId ?? null,
+                limit: HISTORY_FRIEND_FALLBACK_LIMIT,
+            },
+        });
         const result = await queryMatchHistoryWithSource(
             puuid,
             0,
@@ -372,10 +410,33 @@ class QueryMatch {
             logger.warn({
                 tag: "recent.history",
                 message: "对局内面板服务器兜底拉取失败",
-                context: { puuid, queue_id: queueId },
+                context: {
+                    purpose: "本地无缓存时服务器兜底 1 页（20 场）",
+                    puuid,
+                    queue_id: queueId ?? null,
+                    mode_key: modeKey,
+                    duration_ms: Date.now() - startedAt,
+                },
             });
             return { matches: [], requestFailed: true };
         }
+
+        logger.info({
+            tag: "recent.history",
+            message: "对局内面板服务器兜底拉取成功",
+            context: {
+                purpose: "本地无缓存时服务器兜底 1 页（20 场）",
+                puuid,
+                queue_id: queueId ?? null,
+                mode_key: modeKey,
+                resolved_source: result.source,
+                resolved_endpoints: result.endpoints,
+                games_count: result.games.length,
+                total_count: result.totalCount,
+                duration_ms: Date.now() - startedAt,
+            },
+            durationMs: Date.now() - startedAt,
+        });
 
         // 异步写缓存，不阻塞首屏返回
         void this.cacheRawGames(puuid, result.games, result.source).catch(
@@ -385,7 +446,8 @@ class QueryMatch {
                     message: "兜底写入历史缓存失败",
                     context: {
                         puuid,
-                        error: String(error).slice(0, 200),
+                        mode_key: modeKey,
+                        error: String(error).slice(0, 500),
                     },
                 });
             },

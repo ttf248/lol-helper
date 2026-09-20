@@ -30,6 +30,7 @@ import type {
     HistoryCacheSyncStatus,
     HistoryCacheSyncKind,
 } from "@/recentMatch/utils/queryTypes";
+import { logger } from "@/utils/logger";
 
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
@@ -224,6 +225,7 @@ export default class BaseMatch {
         endIndex: number,
         serverLimit: number = HISTORY_SERVER_PAGE_SIZE,
     ): Promise<ProcessedMatchHistory | null> => {
+        const startedAt = Date.now();
         // 写入玩家id
         let localSumInfo: Partial<sumInfoTypes> = {};
         try {
@@ -238,6 +240,19 @@ export default class BaseMatch {
         }
 
         const requestedCount = Math.max(0, endIndex - begIndex);
+        logger.info({
+            tag: "home.history",
+            message: "首页列表读取发起",
+            context: {
+                purpose: "首页战绩列表读取（缓存优先 + 服务器最近一页合并）",
+                puuid,
+                beg_index: begIndex,
+                end_index: endIndex,
+                requested_count: requestedCount,
+                server_limit: serverLimit,
+                summoner_id: this.summonerId,
+            },
+        });
         if (requestedCount <= 0) {
             return {
                 matches: [],
@@ -318,6 +333,26 @@ export default class BaseMatch {
         };
     };
 
+    private logHomeHistoryDone(
+        op: string,
+        puuid: string,
+        startedAt: number,
+        extra: Record<string, unknown>,
+    ) {
+        logger.info({
+            tag: "home.history",
+            message: `首页列表${op}完成`,
+            context: {
+                purpose: "首页战绩列表读取",
+                op,
+                puuid,
+                duration_ms: Date.now() - startedAt,
+                ...extra,
+            },
+            durationMs: Date.now() - startedAt,
+        });
+    }
+
     /**
      * 在主页后台补齐当前用户的历史战绩（冷启动最小集）。
      *
@@ -333,9 +368,22 @@ export default class BaseMatch {
         onProgress?: (progress: HistoryCacheSyncProgress) => void,
         shouldContinue: () => boolean = () => true,
     ): Promise<HistoryCacheSyncResult> => {
+        const startedAt = Date.now();
         // 冷启动最小集：服务启动 / 登录后只后台缓存最近 3 页（60 场），
         // 翻页未覆盖时由 fetchAndCacheSinglePage 增量补齐。
         const maxPages = HISTORY_COLD_START_PAGES;
+        logger.info({
+            tag: "home.history",
+            message: "冷启动同步发起",
+            context: {
+                purpose: "主页当前用户后台逐页回填历史战绩到 PG",
+                op: "syncCurrentUserHistory",
+                puuid,
+                max_pages: maxPages,
+                page_size: HISTORY_SERVER_PAGE_SIZE,
+                sync_limit: HISTORY_CACHE_SYNC_LIMIT,
+            },
+        });
         const pageSize = HISTORY_SERVER_PAGE_SIZE;
         let totalPages: number | null = null;
         let totalCount: number | null = null;
@@ -369,6 +417,25 @@ export default class BaseMatch {
                 message,
                 detail,
             };
+            logger.info({
+                tag: "home.history",
+                message: `冷启动同步阶段事件：${kind}`,
+                context: {
+                    purpose: "主页当前用户后台逐页回填历史战绩到 PG",
+                    op: "syncCurrentUserHistory",
+                    puuid,
+                    kind,
+                    current_page: currentPage,
+                    max_pages: maxPages,
+                    total_pages: totalPages,
+                    total_count: totalCount,
+                    cached_games: cachedGameIds.size,
+                    downloaded_games: downloadedGames,
+                    progress_message: message,
+                    progress_detail: detail,
+                    elapsed_ms: Date.now() - startedAt,
+                },
+            });
             onProgress?.(progress);
             return progress;
         };
@@ -384,6 +451,21 @@ export default class BaseMatch {
             if (!shouldContinue()) return cancelled();
 
             currentPage = pageIndex + 1;
+            logger.info({
+                tag: "home.history",
+                message: `冷启动同步第 ${currentPage}/${maxPages} 页发起`,
+                context: {
+                    purpose: "主页当前用户后台逐页回填历史战绩到 PG",
+                    op: "syncCurrentUserHistory",
+                    puuid,
+                    current_page: currentPage,
+                    max_pages: maxPages,
+                    page_size: HISTORY_SERVER_PAGE_SIZE,
+                    beg_index: pageIndex * HISTORY_SERVER_PAGE_SIZE,
+                    end_index: (pageIndex + 1) * HISTORY_SERVER_PAGE_SIZE,
+                    cached_before_page: cachedGameIds.size,
+                },
+            });
             emit(
                 "syncing",
                 totalPages
@@ -517,7 +599,21 @@ export default class BaseMatch {
         puuid: string,
         pageIndex: number,
     ): Promise<{ cachedGames: number; reachedEnd: boolean }> => {
+        const startedAt = Date.now();
         const pageSize = HISTORY_SERVER_PAGE_SIZE;
+        logger.info({
+            tag: "home.history",
+            message: "首页翻页单页增量拉取发起",
+            context: {
+                purpose: "首页翻页遇本地未覆盖时单页增量拉取并写入缓存",
+                op: "fetchAndCacheSinglePage",
+                puuid,
+                page_index: pageIndex,
+                page_size: pageSize,
+                beg_index: pageIndex * pageSize,
+                end_index: (pageIndex + 1) * pageSize,
+            },
+        });
         const safePageIndex = Math.max(0, Math.floor(pageIndex));
         const begIndex = safePageIndex * pageSize;
         const endIndex = begIndex + pageSize;
@@ -561,6 +657,22 @@ export default class BaseMatch {
 
         // 清理 TTL 缓存里 serverLimit 等于 20 的条目，避免与本次增量重复
         this.recentServerHistory.delete(`${puuid}|${pageSize}`);
+
+        logger.info({
+            tag: "home.history",
+            message: "首页翻页单页增量拉取完成",
+            context: {
+                purpose: "首页翻页遇本地未覆盖时单页增量拉取并写入缓存",
+                op: "fetchAndCacheSinglePage",
+                puuid,
+                page_index: pageIndex,
+                write_succeeded: writeSucceeded,
+                cached_games: writeSucceeded ? pageGames.length : 0,
+                reached_end: pageResult.games.length < pageSize,
+                duration_ms: Date.now() - startedAt,
+            },
+            durationMs: Date.now() - startedAt,
+        });
 
         return {
             cachedGames: writeSucceeded ? pageGames.length : 0,

@@ -82,17 +82,40 @@ const combineEndpoints = (
 ): MatchHistoryEndpoint[] => Array.from(new Set(endpoints));
 
 const tokenFetcher = async (): Promise<string | null> => {
+	const startedAt = Date.now();
+	const url = "/entitlements/v1/token";
+	logger.info({
+		tag: "lcu.token",
+		message: "entitlements token 拉取发起",
+		context: { purpose: "SGP 历史接口鉴权", url, method: "GET" },
+	});
 	const entitlements: EntitlementsTokenTypes | null = await invokeLcu(
 		"get",
-		"/entitlements/v1/token",
+		url,
 	);
 	if (entitlements === null) {
 		logger.error({
 			tag: "lcu.token",
 			message: "entitlements token 获取失败",
+			context: {
+				purpose: "SGP 历史接口鉴权",
+				url,
+				duration_ms: Date.now() - startedAt,
+			},
 		});
 		return null;
 	}
+	logger.info({
+		tag: "lcu.token",
+		message: "entitlements token 拉取完成",
+		context: {
+			purpose: "SGP 历史接口鉴权",
+			url,
+			token_bytes: entitlements.accessToken?.length ?? 0,
+			entitlements_token_bytes: entitlements.token?.length ?? 0,
+		},
+		durationMs: Date.now() - startedAt,
+	}, JSON.stringify(entitlements));
 	return entitlements.accessToken;
 };
 
@@ -146,18 +169,57 @@ const fetchCurrentSummonerMatchHistory = async (
 	begIndex: number,
 	count: number,
 ): Promise<MatchHistoryPageResult | null> => {
+	const startedAt = Date.now();
+	const url = `/lol-match-history/v1/products/lol/current-summoner/matches`;
+	const query = new URLSearchParams({
+		begIndex: String(begIndex),
+		endIndex: String(begIndex + count),
+	});
+	const fullUrl = `${url}?${query.toString()}`;
+	logger.info({
+		tag: "lcu.history",
+		message: "LCU current-summoner 历史接口发起",
+		context: {
+			purpose: "查询当前召唤师最近 N 场历史战绩",
+			url: fullUrl,
+			method: "GET",
+			beg_index: begIndex,
+			count,
+		},
+	});
 	try {
-		const query = new URLSearchParams({
-			begIndex: String(begIndex),
-			endIndex: String(begIndex + count),
-		});
 		const matchList = await invokeLcu<LcuMatchList>(
 			"get",
-			`/lol-match-history/v1/products/lol/current-summoner/matches?${query.toString()}`,
+			fullUrl,
 		);
+		if (matchList === null) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU current-summoner 历史接口无响应",
+				context: {
+					purpose: "查询当前召唤师最近 N 场历史战绩",
+					url: fullUrl,
+					beg_index: begIndex,
+					count,
+					duration_ms: Date.now() - startedAt,
+				},
+			});
+			return null;
+		}
 		const history = matchList?.games;
 		const games = history?.games;
 		if (!Array.isArray(games)) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU current-summoner 历史接口响应缺少 games 数组",
+				context: {
+					purpose: "查询当前召唤师最近 N 场历史战绩",
+					url: fullUrl,
+					beg_index: begIndex,
+					count,
+					duration_ms: Date.now() - startedAt,
+				},
+			}, JSON.stringify(matchList));
 			return null;
 		}
 		cacheLcuGames(games, "lcu-current-summoner");
@@ -180,11 +242,40 @@ const fetchCurrentSummonerMatchHistory = async (
 			: !alreadyPaged
 			? games.length
 			: null;
+		logger.info({
+			tag: "lcu.history",
+			message: "LCU current-summoner 历史接口响应成功",
+			context: {
+				purpose: "查询当前召唤师最近 N 场历史战绩",
+				url: fullUrl,
+				beg_index: begIndex,
+				count,
+				games_count: games.length,
+				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
+				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
+				game_count: totalCount,
+				already_paged: alreadyPaged,
+				duration_ms: Date.now() - startedAt,
+			},
+			durationMs: Date.now() - startedAt,
+		}, JSON.stringify(matchList));
 		return {
 			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
 			totalCount,
 		};
-	} catch {
+	} catch (error) {
+		logger.warn({
+			tag: "lcu.history",
+			message: "LCU current-summoner 历史接口异常",
+			context: {
+				purpose: "查询当前召唤师最近 N 场历史战绩",
+				url: fullUrl,
+				beg_index: begIndex,
+				count,
+				duration_ms: Date.now() - startedAt,
+				error: String(error).slice(0, 500),
+			},
+		});
 		return null;
 	}
 };
@@ -199,17 +290,59 @@ const fetchSummonerMatchHistoryFromLcu = async (
 	begIndex: number,
 	count: number,
 ): Promise<MatchHistoryPageResult | null> => {
+	const startedAt = Date.now();
+	const url = `/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches`;
+	const query = new URLSearchParams({
+		begIndex: String(begIndex),
+		endIndex: String(begIndex + count),
+	});
+	const fullUrl = `${url}?${query.toString()}`;
+	logger.info({
+		tag: "lcu.history",
+		message: "LCU PUUID 历史接口发起",
+		context: {
+			purpose: "按 PUUID 查询最近 N 场历史战绩",
+			url: fullUrl,
+			method: "GET",
+			puuid,
+			beg_index: begIndex,
+			count,
+		},
+	});
 	try {
-		const query = new URLSearchParams({
-			begIndex: String(begIndex),
-			endIndex: String(begIndex + count),
-		});
 		const matchList = await invokeLcu<LcuMatchList>(
 			"get",
-			`/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches?${query.toString()}`,
+			fullUrl,
 		);
+		if (matchList === null) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU PUUID 历史接口无响应",
+				context: {
+					purpose: "按 PUUID 查询最近 N 场历史战绩",
+					url: fullUrl,
+					puuid,
+					beg_index: begIndex,
+					count,
+					duration_ms: Date.now() - startedAt,
+				},
+			});
+			return null;
+		}
 		const games = matchList?.games?.games;
 		if (!Array.isArray(games)) {
+			logger.warn({
+				tag: "lcu.history",
+				message: "LCU PUUID 历史接口响应缺少 games 数组",
+				context: {
+					purpose: "按 PUUID 查询最近 N 场历史战绩",
+					url: fullUrl,
+					puuid,
+					beg_index: begIndex,
+					count,
+					duration_ms: Date.now() - startedAt,
+				},
+			}, JSON.stringify(matchList));
 			return null;
 		}
 		cacheLcuGames(games, "lcu-puuid");
@@ -228,11 +361,42 @@ const fetchSummonerMatchHistoryFromLcu = async (
 			: !alreadyPaged
 			? games.length
 			: null;
+		logger.info({
+			tag: "lcu.history",
+			message: "LCU PUUID 历史接口响应成功",
+			context: {
+				purpose: "按 PUUID 查询最近 N 场历史战绩",
+				url: fullUrl,
+				puuid,
+				beg_index: begIndex,
+				count,
+				games_count: games.length,
+				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
+				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
+				game_count: totalCount,
+				already_paged: alreadyPaged,
+				duration_ms: Date.now() - startedAt,
+			},
+			durationMs: Date.now() - startedAt,
+		}, JSON.stringify(matchList));
 		return {
 			games: alreadyPaged ? games : games.slice(begIndex, begIndex + count),
 			totalCount,
 		};
-	} catch {
+	} catch (error) {
+		logger.warn({
+			tag: "lcu.history",
+			message: "LCU PUUID 历史接口异常",
+			context: {
+				purpose: "按 PUUID 查询最近 N 场历史战绩",
+				url: fullUrl,
+				puuid,
+				beg_index: begIndex,
+				count,
+				duration_ms: Date.now() - startedAt,
+				error: String(error).slice(0, 500),
+			},
+		});
 		return null;
 	}
 };
@@ -278,6 +442,20 @@ const fetchMatchHistory = async (
 	endIndex: number,
 	fullParticipants = false,
 ): Promise<MatchHistoryBatchResult> => {
+	const stageStartedAt = Date.now();
+	logger.info({
+		tag: "lcu.history",
+		message: "历史接口三级降级开始",
+		context: {
+			purpose: fullParticipants
+				? "拉取完整参与者历史（团队/开黑分析用）"
+				: "拉取摘要历史（胜率统计用）",
+			puuid,
+			beg_index: begIndex,
+			count: endIndex,
+			full_participants: fullParticipants,
+		},
+	});
 	// 普通战绩列表可以使用当前召唤师历史 endpoint；它仍然是历史数据，
 	// 不是当前正在进行的对局。完整分析则必须继续检查参与者是否齐全。
 	if (!fullParticipants && isCurrentSummoner(puuid)) {
@@ -290,12 +468,17 @@ const fetchMatchHistory = async (
 				tag: "lcu.history",
 				message: "历史接口解析完成",
 				context: {
+					purpose: fullParticipants
+						? "拉取完整参与者历史（团队/开黑分析用）"
+						: "拉取摘要历史（胜率统计用）",
 					puuid,
 					beg_index: begIndex,
 					count: endIndex,
 					full_participants: fullParticipants,
 					resolved: "lcu-current-summoner",
 					count_games: currentResult.games.length,
+					game_count: currentResult.totalCount,
+					stage_duration_ms: Date.now() - stageStartedAt,
 				},
 			});
 			return {
@@ -323,12 +506,17 @@ const fetchMatchHistory = async (
 			tag: "lcu.history",
 			message: "历史接口解析完成",
 			context: {
+				purpose: fullParticipants
+					? "拉取完整参与者历史（团队/开黑分析用）"
+					: "拉取摘要历史（胜率统计用）",
 				puuid,
 				beg_index: begIndex,
 				count: endIndex,
 				full_participants: fullParticipants,
 				resolved: "lcu-puuid",
 				count_games: lcuResult.games.length,
+				game_count: lcuResult.totalCount,
+				stage_duration_ms: Date.now() - stageStartedAt,
 			},
 		});
 		return {
@@ -353,12 +541,16 @@ const fetchMatchHistory = async (
 				tag: "lcu.history",
 				message: "历史接口解析完成",
 				context: {
+					purpose: fullParticipants
+						? "拉取完整参与者历史（团队/开黑分析用）"
+						: "拉取摘要历史（胜率统计用）",
 					puuid,
 					beg_index: begIndex,
 					count: endIndex,
 					full_participants: fullParticipants,
 					resolved: fullParticipants ? "sgp-summary-full" : "sgp-summary",
 					count_games: sgpGames.length,
+					stage_duration_ms: Date.now() - stageStartedAt,
 				},
 			});
 			return {
@@ -373,12 +565,16 @@ const fetchMatchHistory = async (
 			tag: "lcu.history",
 			message: "SGP 历史接口失败，回退到 LCU",
 			context: {
+				purpose: fullParticipants
+					? "拉取完整参与者历史（团队/开黑分析用）"
+					: "拉取摘要历史（胜率统计用）",
 				puuid,
 				beg_index: begIndex,
 				count: endIndex,
 				full_participants: fullParticipants,
 				resolved: "sgp-error",
-				error: String(sgpError).slice(0, 200),
+				error: String(sgpError).slice(0, 500),
+				stage_duration_ms: Date.now() - stageStartedAt,
 			},
 		});
 	}
@@ -395,12 +591,17 @@ const fetchMatchHistory = async (
 				tag: "lcu.history",
 				message: "历史接口解析完成（LCU 降级）",
 				context: {
+					purpose: fullParticipants
+						? "拉取完整参与者历史（团队/开黑分析用）"
+						: "拉取摘要历史（胜率统计用）",
 					puuid,
 					beg_index: begIndex,
 					count: endIndex,
 					full_participants: fullParticipants,
 					resolved: "lcu-current-summoner",
 					count_games: currentResult.games.length,
+					game_count: currentResult.totalCount,
+					stage_duration_ms: Date.now() - stageStartedAt,
 				},
 			});
 			return {
@@ -416,12 +617,17 @@ const fetchMatchHistory = async (
 			tag: "lcu.history",
 			message: "历史接口解析完成（LCU 降级）",
 			context: {
+				purpose: fullParticipants
+					? "拉取完整参与者历史（团队/开黑分析用）"
+					: "拉取摘要历史（胜率统计用）",
 				puuid,
 				beg_index: begIndex,
 				count: endIndex,
 				full_participants: fullParticipants,
 				resolved: "lcu-puuid",
 				count_games: lcuResult.games.length,
+				game_count: lcuResult.totalCount,
+				stage_duration_ms: Date.now() - stageStartedAt,
 			},
 		});
 		return {
@@ -435,11 +641,15 @@ const fetchMatchHistory = async (
 		tag: "lcu.history",
 		message: "历史接口全部失败，无可用数据",
 		context: {
+			purpose: fullParticipants
+				? "拉取完整参与者历史（团队/开黑分析用）"
+				: "拉取摘要历史（胜率统计用）",
 			puuid,
 			beg_index: begIndex,
 			count: endIndex,
 			full_participants: fullParticipants,
 			resolved: "none",
+			stage_duration_ms: Date.now() - stageStartedAt,
 		},
 	});
 	throw new Error("Match history interfaces returned no data");

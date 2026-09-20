@@ -80,6 +80,10 @@ pub struct LogEntry {
     pub span: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// 响应体原文（不走 mask.ts）。开发环境让 body / Authorization /
+    /// puuid 等完整值落盘，便于 grep 分析业务流程。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_body: Option<String>,
 }
 
 // ---------- TextLayer ----------
@@ -306,7 +310,25 @@ pub fn format_frontend_entry(entry: &LogEntry) -> String {
         .or(entry.duration_ms);
 
     // 前端 level 是字符串，重建为 Level 不必要；直接展示。
-    format_log_line_by_str(&entry.level, &entry.tag, &entry.message, None, &fields, duration_ms)
+    let mut line = format_log_line_by_str(
+        &entry.level,
+        &entry.tag,
+        &entry.message,
+        None,
+        &fields,
+        duration_ms,
+    );
+    if let Some(raw_body) = &entry.raw_body {
+        if !raw_body.is_empty() {
+            line.push_str("\n    ↳ raw_body:\n");
+            for raw_line in raw_body.split('\n') {
+                line.push_str("      ");
+                line.push_str(raw_line);
+                line.push('\n');
+            }
+        }
+    }
+    line
 }
 
 fn format_log_line_by_str(

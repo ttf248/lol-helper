@@ -17,6 +17,11 @@ export interface LogEntry {
   source: "backend" | "frontend";
   durationMs?: number;
   window?: string;
+  /**
+   * 响应体原文（不走 mask.ts）。开发环境让 body / Authorization / puuid
+   * 等完整值落盘，便于 grep 分析业务流程。仅 INFO/WARN/ERRO 级别使用。
+   */
+  rawBody?: string;
 }
 
 export interface LogOptions {
@@ -24,6 +29,7 @@ export interface LogOptions {
   message?: string;
   context?: unknown;
   durationMs?: number;
+  rawBody?: string;
 }
 
 const DEFAULT_LEVEL: LogLevel = "info";
@@ -81,34 +87,40 @@ function build(level: LogLevel, opts: LogOptions): LogEntry | null {
     source: "frontend",
     durationMs: opts.durationMs,
     window: currentWindow(),
+    rawBody: opts.rawBody,
   };
 }
 
-function log(level: LogLevel, opts: LogOptions | string, context?: unknown): void {
+function log(
+  level: LogLevel,
+  opts: LogOptions | string,
+  context?: unknown,
+  rawBody?: string,
+): void {
   const normalized: LogOptions =
     typeof opts === "string"
-      ? { tag: "app", message: opts, context }
-      : opts;
+      ? { tag: "app", message: opts, context, rawBody }
+      : { ...opts, rawBody: rawBody ?? opts.rawBody };
   const entry = build(level, normalized);
   if (!entry) return;
   emitEntry(entry);
 }
 
 export const logger = {
-  trace(opts: LogOptions | string, context?: unknown) {
-    log("trace", opts, context);
+  trace(opts: LogOptions | string, context?: unknown, rawBody?: string) {
+    log("trace", opts, context, rawBody);
   },
-  debug(opts: LogOptions | string, context?: unknown) {
-    log("debug", opts, context);
+  debug(opts: LogOptions | string, context?: unknown, rawBody?: string) {
+    log("debug", opts, context, rawBody);
   },
-  info(opts: LogOptions | string, context?: unknown) {
-    log("info", opts, context);
+  info(opts: LogOptions | string, context?: unknown, rawBody?: string) {
+    log("info", opts, context, rawBody);
   },
-  warn(opts: LogOptions | string, context?: unknown) {
-    log("warn", opts, context);
+  warn(opts: LogOptions | string, context?: unknown, rawBody?: string) {
+    log("warn", opts, context, rawBody);
   },
-  error(opts: LogOptions | string, context?: unknown) {
-    log("error", opts, context);
+  error(opts: LogOptions | string, context?: unknown, rawBody?: string) {
+    log("error", opts, context, rawBody);
   },
   /** 标记 logger 已就绪，防止重复挂全局钩子。 */
   isInstalled(): boolean {

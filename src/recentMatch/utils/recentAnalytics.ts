@@ -353,6 +353,19 @@ const syncPlayerModeGames = async (
     HISTORY_FRIEND_FALLBACK_LIMIT,
     Math.max(1, serverLimit),
   );
+  logger.info({
+    tag: "recent.analysis",
+    message: "玩家历史同步发起",
+    context: {
+      purpose: "单玩家单模式历史同步：摘要接口 + 完整参与者接口 + 缓存合并",
+      puuid: player.puuid,
+      summoner_id: player.summonerId ?? null,
+      summoner_name: player.summonerName ?? null,
+      mode_key: modeKey,
+      server_limit: boundedServerLimit,
+      cached_games: existingGames.length,
+    },
+  });
 
   // 先走和战绩分页相同的轻量摘要接口。当前模式没有记录时，
   // 不再继续进入完整参与者/SGP 链路。
@@ -421,15 +434,21 @@ const syncPlayerModeGames = async (
 
   logger.info({
     tag: "recent.analysis",
-    message: "历史同步完成",
+    message: "玩家历史同步完成",
     context: {
-      puuid: `…${player.puuid.slice(-8)}`,
+      purpose: "单玩家单模式历史同步：摘要接口 + 完整参与者接口 + 缓存合并",
+      puuid: player.puuid,
+      summoner_id: player.summonerId ?? null,
+      summoner_name: player.summonerName ?? null,
       mode_key: modeKey,
       server_limit: boundedServerLimit,
       cached_games: existingGames.length,
       summary_games: summaryGames.size,
       merged_games: finalGames.length,
       full_requested: fullRequested,
+      final_source: finalSource,
+      final_endpoints: finalEndpoints,
+      duration_ms: Date.now() - startedAt,
     },
     durationMs: Date.now() - startedAt,
   });
@@ -1751,6 +1770,20 @@ export const loadRecentTeamAnalysis = async (
       [...friendList, ...enemyList].map((player) => [player.puuid, player]),
     ).values(),
   );
+  const startedAt = Date.now();
+  logger.info({
+    tag: "recent.analysis",
+    message: "近期团队分析发起",
+    context: {
+      purpose: "对局内面板：双方全员近期分析（团队/开黑关系 + 个人统计）",
+      queue_id: queueId,
+      mode_key: modeForQueue(queueId),
+      friends: friendList.length,
+      enemies: enemyList.length,
+      players: players.length,
+      player_puuids: players.map((p) => p.puuid),
+    },
+  });
 
   if (players.length === 0) {
     onProgress?.({
@@ -1759,13 +1792,29 @@ export const loadRecentTeamAnalysis = async (
       total: 0,
       message: "暂无可分析的本局玩家",
     });
+    logger.info({
+      tag: "recent.analysis",
+      message: "近期团队分析完成（无玩家）",
+      context: {
+        purpose: "对局内面板：双方全员近期分析（团队/开黑关系 + 个人统计）",
+        queue_id: queueId,
+        players: 0,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
     return buildNetworkAnalysis(friendList, enemyList, new Map());
   }
 
   logger.info({
     tag: "recent.analysis",
     message: "近期分析阶段：读取本地缓存",
-    context: { stage: "cache", queue_id: queueId, players: players.length },
+    context: {
+      purpose: "对局内面板：双方全员近期分析（团队/开黑关系 + 个人统计）",
+      stage: "cache",
+      queue_id: queueId,
+      players: players.length,
+    },
   });
   onProgress?.({
     stage: "cache",
@@ -1956,11 +2005,18 @@ export const loadRecentTeamAnalysis = async (
     tag: "recent.analysis",
     message: "近期分析阶段：100 场完成",
     context: {
+      purpose: "对局内面板：双方全员近期分析（团队/开黑关系 + 个人统计）",
       stage: "done",
       queue_id: queueId,
+      mode_key: modeForQueue(queueId),
       players: players.length,
       hydrated: hydrationEntries.length,
+      nodes: network.nodes.length,
+      edges: network.edges.length,
+      available_games: network.availableGames,
+      duration_ms: Date.now() - startedAt,
     },
+    durationMs: Date.now() - startedAt,
   });
   onProgress?.({
     stage: "done",

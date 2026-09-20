@@ -4,17 +4,6 @@ import { SgpServers } from "@/resources/areaList";
 import { GamesBySgp, Participant } from "./types/queryMatchSgpGameTypes";
 import { logger } from "@/utils/logger";
 
-// SGP 请求/响应 body 日志预览上限（字符数）。超过则截断并打 truncated 标记。
-const SGP_BODY_PREVIEW_CHARS = 1024;
-
-/**
- * 截断字符串到安全长度（按字符数），保持 UTF-16 surrogate 配对不被切断。
- */
-function truncatePreview(text: string, maxChars: number): string {
-	if (text.length <= maxChars) return text;
-	return text.slice(0, maxChars);
-}
-
 export interface SgpRequestParams {
 	playerPuuid: string;
 	start: number;
@@ -38,14 +27,39 @@ export class SgpMatchHistoryService {
 
 	private getToken = async (): Promise<string | null> => {
 		if (this._cachedToken) {
+			logger.debug({
+				tag: "lcu.sgp",
+				message: "SGP token 复用缓存",
+				context: { token_bytes: this._cachedToken.length },
+			});
 			return this._cachedToken;
 		}
 		if (this._tokenRequest) {
+			logger.debug({
+				tag: "lcu.sgp",
+				message: "SGP token 复用进行中请求",
+			});
 			return this._tokenRequest;
 		}
 
+		const startedAt = Date.now();
+		logger.info({
+			tag: "lcu.sgp",
+			message: "SGP token 拉取发起",
+			context: { purpose: "刷新 entitlements token 供 SGP 鉴权" },
+		});
 		this._tokenRequest = this._tokenProvider().then((token) => {
 			if (token) this._cachedToken = token;
+			logger.info({
+				tag: "lcu.sgp",
+				message: "SGP token 拉取完成",
+				context: {
+					purpose: "刷新 entitlements token 供 SGP 鉴权",
+					token_bytes: token ? token.length : 0,
+					success: token !== null,
+				},
+				durationMs: Date.now() - startedAt,
+			}, token ?? undefined);
 			return token;
 		}).finally(() => {
 			this._tokenRequest = null;
@@ -112,8 +126,9 @@ export class SgpMatchHistoryService {
 					context: {
 						url,
 						duration_ms: Date.now() - startedAt,
+						error: String(error).slice(0, 500),
 					},
-				});
+				}, undefined, undefined);
 				throw new Error(`SGP request timed out after ${this.TIMEOUT}ms`);
 			}
 			throw error;
@@ -163,10 +178,14 @@ export class SgpMatchHistoryService {
 				tag: "lcu.sgp",
 				message: "SGP token 过期，刷新中",
 				context: {
+					purpose: fullParticipants
+						? "SGP 完整参与者历史接口 401 重试"
+						: "SGP 摘要历史接口 401 重试",
 					player_puuid: params.playerPuuid,
 					start: params.start,
 					count: params.count,
 					full_participants: fullParticipants,
+					error: String(error).slice(0, 500),
 				},
 			});
 
@@ -212,48 +231,58 @@ export class SgpMatchHistoryService {
 			: this.sgpBaseUrl;
 		const url = `${baseUrl}/match-history-query/v1/products/lol/player/${playerPuuid}/SUMMARY?${query.toString()}`;
 
-		logger.debug({
+		const purpose = fullParticipants
+			? "SGP SUMMARY 完整参与者历史（用于团队/开黑关系分析）"
+			: "SGP SUMMARY 摘要历史（用于胜率统计）";
+
+		const requestHeaders: Record<string, string> = {
+			"User-Agent": this.USER_AGENT,
+			Authorization: `Bearer ${token}`,
+			Accept: "application/json",
+			"x-akari-force-stream-collect": "true",
+			"x-akari-token-type": "entitlements",
+		};
+		logger.info({
 			tag: "lcu.sgp",
-			message: "SGP 请求发送",
+			message: "SGP 请求发起",
 			context: {
+				purpose,
 				url,
 				method: "GET",
+				player_puuid: playerPuuid,
 				start,
 				count,
 				full_participants: fullParticipants,
-				token_bytes: token.length,
+				tag: tag ?? null,
+				query: query.toString(),
+				headers: requestHeaders,
 			},
-		});
+		}, undefined, undefined);
 
 		const { response, body, data } = await this.fetchJsonWithTimeout<{
 			games?: unknown;
 		}>(url, {
 			method: "GET",
-			headers: {
-				"User-Agent": this.USER_AGENT,
-				Authorization: `Bearer ${token}`,
-				Accept: "application/json",
-				// 与 LeagueAkari 的 SGP 适配层保持一致：告知中间层收集
-				// chunked 响应，并声明 entitlements token 类型。
-				"x-akari-force-stream-collect": "true",
-				"x-akari-token-type": "entitlements",
-			},
+			headers: requestHeaders,
 			connectTimeout: this.TIMEOUT,
 		});
 
 		const bodyChars = body.length;
-		const truncated = bodyChars > SGP_BODY_PREVIEW_CHARS;
-		logger.debug({
-			tag: "lcu.sgp",
-			message: truncated ? "SGP 响应 body 预览（已截断）" : "SGP 响应 body 预览",
-			context: {
-				url,
-				status: response.status,
-				body_chars: bodyChars,
-				...(truncated ? { body_truncated: true } : {}),
-				body_preview: truncatePreview(body, SGP_BODY_PREVIEW_CHARS),
-			},
-		});
+		if (response.ok && bodyChars > 0) {
+			logger.info({
+				tag: "lcu.sgp",
+				message: "SGP 响应成功",
+				context: {
+					purpose,
+					url,
+					status: response.status,
+					body_chars: bodyChars,
+					games_count: Array.isArray(data?.games) ? (data!.games as unknown[]).length : 0,
+					duration_ms: Date.now() - startedAt,
+				},
+				durationMs: Date.now() - startedAt,
+			}, body);
+		}
 
 		if (!response.ok) {
 			// 如果状态码是 401，说明 Token 过期，此处抛出错误触发 catch 块中的重试
@@ -261,8 +290,20 @@ export class SgpMatchHistoryService {
 				logger.warn({
 					tag: "lcu.sgp",
 					message: "SGP 401 未授权，token 已失效",
-					context: { url, status: response.status },
-				});
+					context: { url, status: response.status, purpose },
+				}, body);
+			} else {
+				logger.warn({
+					tag: "lcu.sgp",
+					message: "SGP 响应非 2xx",
+					context: {
+						url,
+						status: response.status,
+						body_chars: bodyChars,
+						duration_ms: Date.now() - startedAt,
+						purpose,
+					},
+				}, body);
 			}
 			throw new Error(`SGP_HTTP_ERROR_${response.status}: ${body.slice(0, 500)}`);
 		}
@@ -271,8 +312,8 @@ export class SgpMatchHistoryService {
 			logger.warn({
 				tag: "lcu.sgp",
 				message: "SGP 响应缺少 games 数组",
-				context: { url },
-			});
+				context: { url, purpose, body_chars: bodyChars },
+			}, body);
 			throw new Error("SGP match history response has no games array");
 		}
 
@@ -309,11 +350,15 @@ export class SgpMatchHistoryService {
 			tag: "lcu.sgp",
 			message: "SGP 历史接口解析完成",
 			context: {
+				purpose,
+				url,
 				start,
 				count,
 				full_participants: fullParticipants,
 				status: response.status,
 				games: gamesList.length,
+				cached_games: this.matchCache.size,
+				duration_ms: Date.now() - startedAt,
 			},
 			durationMs: Date.now() - startedAt,
 		});

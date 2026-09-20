@@ -102,6 +102,21 @@ export const getCachedHistory = async (
     });
     return cached!.value;
   }
+  const startedAt = Date.now();
+  logger.info({
+    tag: "db.cache",
+    message: "读取缓存历史发起",
+    context: {
+      purpose: "读取 PostgreSQL 缓存历史",
+      op: "get_cached_match_history",
+      puuid: query.puuid,
+      queue_id: query.queueId ?? null,
+      mode_key: query.modeKey ?? null,
+      limit: query.limit,
+      offset: query.offset ?? 0,
+      request: query,
+    },
+  });
   try {
     const games = await invoke<CachedGame[]>("get_cached_match_history", {
       request: query,
@@ -125,6 +140,22 @@ export const getCachedHistory = async (
       })),
     }));
     historyCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    logger.info({
+      tag: "db.cache",
+      message: "读取缓存历史完成",
+      context: {
+        purpose: "读取 PostgreSQL 缓存历史",
+        op: "get_cached_match_history",
+        puuid: query.puuid,
+        mode_key: query.modeKey ?? null,
+        queue_id: query.queueId ?? null,
+        limit: query.limit,
+        offset: query.offset ?? 0,
+        count: value.length,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    }, JSON.stringify(games ?? []));
     return value;
   } catch (error) {
     logger.warn({
@@ -132,7 +163,10 @@ export const getCachedHistory = async (
       message: "读取 PostgreSQL 历史缓存失败",
       context: {
         op: "get_cached_match_history",
-        error: String(error).slice(0, 200),
+        puuid: query.puuid,
+        mode_key: query.modeKey ?? null,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
       },
     });
     return [];
@@ -163,23 +197,35 @@ export const cacheHistory = async (request: {
   source: string;
   games: NormalizedHistoryGame[];
 }): Promise<boolean> => {
+  const startedAt = Date.now();
+  const payload = {
+    puuid: request.puuid,
+    summonerId: request.summonerId,
+    summonerName: request.summonerName,
+    modeKey: request.modeKey,
+    games: request.games.map((game) => ({
+      gameId: game.gameId,
+      gameCreation: game.gameCreation,
+      queueId: game.queueId,
+      modeKey: request.modeKey,
+      source: request.source,
+      participants: game.participants,
+    })),
+  };
+  logger.info({
+    tag: "db.cache",
+    message: "写入缓存历史发起",
+    context: {
+      purpose: "将归一化后的历史写入 PostgreSQL 缓存",
+      op: "cache_match_history",
+      puuid: request.puuid,
+      mode_key: request.modeKey,
+      source: request.source,
+      games_count: request.games.length,
+    },
+  }, JSON.stringify(payload));
   try {
-    await invoke("cache_match_history", {
-      request: {
-        puuid: request.puuid,
-        summonerId: request.summonerId,
-        summonerName: request.summonerName,
-        modeKey: request.modeKey,
-        games: request.games.map((game) => ({
-          gameId: game.gameId,
-          gameCreation: game.gameCreation,
-          queueId: game.queueId,
-          modeKey: request.modeKey,
-          source: request.source,
-          participants: game.participants,
-        })),
-      },
-    });
+    await invoke("cache_match_history", { request: payload });
     // 写入成功后清掉同 puuid 的 history / playerSummary 缓存，下次读取会
     // 重新走 invoke。summaryCache 是全局统计，不受影响。
     for (const key of Array.from(historyCache.keys())) {
@@ -188,6 +234,20 @@ export const cacheHistory = async (request: {
       }
     }
     playerSummaryCache.delete(`${request.puuid}|${request.modeKey}`);
+    logger.info({
+      tag: "db.cache",
+      message: "写入缓存历史完成",
+      context: {
+        purpose: "将归一化后的历史写入 PostgreSQL 缓存",
+        op: "cache_match_history",
+        puuid: request.puuid,
+        mode_key: request.modeKey,
+        source: request.source,
+        games_count: request.games.length,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
     return true;
   } catch (error) {
     logger.warn({
@@ -195,7 +255,11 @@ export const cacheHistory = async (request: {
       message: "写入 PostgreSQL 历史缓存失败",
       context: {
         op: "cache_match_history",
-        error: String(error).slice(0, 200),
+        puuid: request.puuid,
+        mode_key: request.modeKey,
+        games_count: request.games.length,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
       },
     });
     return false;
@@ -256,9 +320,32 @@ export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
     });
     return summaryCache.current!.value;
   }
+  const startedAt = Date.now();
+  logger.info({
+    tag: "db.cache",
+    message: "读取全局汇总发起",
+    context: {
+      purpose: "读取 PostgreSQL 全局汇总",
+      op: "database_summary",
+    },
+  });
   try {
     const value = await invoke<DatabaseSummary>("database_summary");
     summaryCache.current = { value, fetchedAt: Date.now() };
+    logger.info({
+      tag: "db.cache",
+      message: "读取全局汇总完成",
+      context: {
+        purpose: "读取 PostgreSQL 全局汇总",
+        op: "database_summary",
+        total_matches: value.totalMatches,
+        total_participants: value.totalParticipants,
+        total_players: value.totalPlayers,
+        modes_count: value.modes.length,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    }, JSON.stringify(value));
     return value;
   } catch (error) {
     logger.warn({
@@ -266,7 +353,8 @@ export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
       message: "读取 PostgreSQL 缓存汇总失败",
       context: {
         op: "database_summary",
-        error: String(error).slice(0, 200),
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
       },
     });
     return {
@@ -306,11 +394,39 @@ export const getCachedPlayerSummary = async (
     latestGameCreation: null,
     sources: [],
   };
+  const startedAt = Date.now();
+  logger.info({
+    tag: "db.cache",
+    message: "读取玩家汇总发起",
+    context: {
+      purpose: "读取玩家级 PostgreSQL 缓存汇总",
+      op: "get_cached_player_summary",
+      puuid,
+      mode_key: modeKey ?? null,
+    },
+  });
   try {
     const value = await invoke<CachedPlayerSummary>("get_cached_player_summary", {
       request: { puuid, modeKey: modeKey || null },
     });
     playerSummaryCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    logger.info({
+      tag: "db.cache",
+      message: "读取玩家汇总完成",
+      context: {
+        purpose: "读取玩家级 PostgreSQL 缓存汇总",
+        op: "get_cached_player_summary",
+        puuid,
+        mode_key: modeKey ?? null,
+        matches: value.matches,
+        complete_matches: value.completeMatches,
+        wins: value.wins,
+        latest_game_creation: value.latestGameCreation ?? null,
+        sources_count: value.sources.length,
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    }, JSON.stringify(value));
     return value;
   } catch (error) {
     logger.warn({
@@ -318,8 +434,10 @@ export const getCachedPlayerSummary = async (
       message: "读取玩家汇总缓存失败",
       context: {
         op: "get_cached_player_summary",
-        puuid: puuid?.slice(-8) ?? "",
-        error: String(error).slice(0, 200),
+        puuid,
+        mode_key: modeKey ?? null,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
       },
     });
     return empty;

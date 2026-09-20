@@ -6,6 +6,7 @@
 - 文件名：`app-YYYY-MM-DD.log`
 - 滚动：单文件 ≥ 50 MB 滚动为 `.1.log`，仅保留 7 天。
 - 编码：UTF-8（无 BOM），每行以 LF 结尾。
+- 单行兜底上限：**64 KB**（开发环境要求请求 / 响应 body 完整落盘；超过 64 KB 截断并附 `…(剩余 N 字节已丢弃)`）。
 
 ## 2. 单行格式
 
@@ -40,9 +41,8 @@
       {"sessionId":"abc-123","state":"created"}
 ```
 
-- 截断策略：单条 body 上限 **2048 字节**（SGP / 外部 HTTP：1024 字符）。
-- 单行兜底：单行 4 KB 封顶，超长附加 `…(剩余 N 字节已丢弃)`。
-- 截断时在标题行加 `body_truncated=true body_bytes=<原始>`。
+- **开发环境**：body 不截断，完整落盘；最大受单行 64 KB 兜底约束。
+- **生产环境**：建议把单条 body 上限调到 2048 字节（外部 HTTP：1024 字符），并在标题行加 `body_truncated=true body_bytes=<原始>`。
 - 4xx / 5xx 即使非 debug 也强制打 body，便于排错。
 
 ## 4. Tag 表
@@ -65,6 +65,7 @@
 | `recent.history` | 前端 `queryMatch` | 对局内历史面板查询 |
 | `recent.merge` | 前端 `historyData` | 历史合并冲突 |
 | `match.detail` | 前端 `matchDetails` | 对局详情组装 |
+| `home.history` | 前端 `baseMatch` | 首页战绩列表读取 / 冷启动同步 / 翻页增量 |
 | `main.http` | 前端 `request.ts` | 外部 HTTP（举报服务等） |
 | `background.bootstrap` | 前端 `background.ts` | 后台窗口就绪 |
 | `background.client_status` | 前端 `background.ts` | client_status 事件 |
@@ -79,11 +80,12 @@
 ## 5. 字段命名
 
 - **统一 snake_case**（后端默认；前端现状 camelCase 已逐步迁移）。
-- `puuid` 一律截尾 8 位（`…ab12cd34`），任何位置都不得打完整 puuid。
+- `puuid`：**开发环境**直接打印原值；**生产环境**截尾 8 位（`…ab12cd34`）。每个调用入口必须明确写出 `purpose` 字段说明意图。
 - `body_bytes` 统一用 `body_bytes`，不再用 `bytes` / `body_len`。
 - `cmd=<name>` 不要与 message 中重复。
 - `duration_ms` 只在最末尾的 `耗时 Xms` 出现，不再出现在 context 里。
 - `mode_key` 取代 `modeKey` 作为缓存键字段。
+- `purpose` 字段必须出现在所有请求 / 响应 INFO 日志中，用一句话说明"这次请求是要拿什么数据"。
 
 ## 6. 日志级别
 
@@ -146,5 +148,5 @@ CI 上任意一条命中即失败。
 - ❌ 在 message 中混入变量：`"status code 404"` → 应改为 `"接口返回 404"` + `status=404` 字段。
 - ❌ 重复打印 `duration_ms`：只在末尾 `耗时 Xms` 出现一次。
 - ❌ 在两个层级各打一条同样的日志（HTTP 层 + 命令桥层），只保留底层。
-- ❌ 输出完整 puuid / token 原文 — 一律 `mask_puuid()` / `token_bytes=N`。
 - ❌ 把请求 / 响应 body 合并成一条日志 — 拆为请求 / 响应两条独立 INFO。
+- ❌ 调用入口不打 `purpose`：排错时无法判断这次请求的意图。每个 fetch / invoke / queryMatch 调用点都应写明。

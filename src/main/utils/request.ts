@@ -2,17 +2,6 @@ import {BlacklistListTypes, Hater, UserInfos} from "@/main/views/record/blackLis
 import {fetch} from "@tauri-apps/plugin-http";
 import { logger } from "@/utils/logger";
 
-// 外部 HTTP 请求 body 日志预览上限（字符数）。超过则截断并打 truncated 标记。
-const EXTERNAL_BODY_PREVIEW_CHARS = 1024;
-
-/**
- * 截断字符串到安全长度（按字符数），保持 UTF-16 surrogate 配对不被切断。
- */
-function truncatePreview(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars);
-}
-
 
 export const requestFetch = async <T>(url: string, method: string, body?: string,timeout?:number): Promise<T | null> => {
   const controller = new AbortController();
@@ -22,16 +11,27 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
   const startedAt = Date.now();
   try {
     if (body && body.length > 0) {
-      const truncated = body.length > EXTERNAL_BODY_PREVIEW_CHARS;
-      logger.debug({
+      logger.info({
         tag: "main.http",
-        message: truncated ? "外部请求 body 预览（已截断）" : "外部请求 body 预览",
+        message: "外部 HTTP 请求发起",
         context: {
+          purpose: "黑名单举报服务外部 HTTP 请求",
           url,
           method,
           body_chars: body.length,
-          ...(truncated ? { body_truncated: true } : {}),
-          body_preview: truncatePreview(body, EXTERNAL_BODY_PREVIEW_CHARS),
+          timeout_ms: timeout ?? null,
+        },
+      }, body);
+    } else {
+      logger.info({
+        tag: "main.http",
+        message: "外部 HTTP 请求发起",
+        context: {
+          purpose: "黑名单举报服务外部 HTTP 请求",
+          url,
+          method,
+          body_chars: 0,
+          timeout_ms: timeout ?? null,
         },
       });
     }
@@ -48,13 +48,15 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
         tag: "main.http",
         message: "外部 HTTP 响应成功",
         context: {
+          purpose: "黑名单举报服务外部 HTTP 请求",
           url,
           method,
           status: res.status,
           response_chars: text.length,
           duration_ms: Date.now() - startedAt,
         },
-      });
+        durationMs: Date.now() - startedAt,
+      }, text);
       try {
         return JSON.parse(text) as T;
       } catch (error) {
@@ -65,13 +67,15 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
             url,
             method,
             status: res.status,
-            error: String(error).slice(0, 200),
+            error: String(error).slice(0, 500),
             response_chars: text.length,
+            duration_ms: Date.now() - startedAt,
           },
-        });
+        }, text);
         return null;
       }
     }
+    const text = await res.text().catch(() => "");
     logger.warn({
       tag: "main.http",
       message: "外部 HTTP 状态码非 200",
@@ -79,9 +83,10 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
         url,
         method,
         status: res.status,
+        response_chars: text.length,
         duration_ms: Date.now() - startedAt,
       },
-    });
+    }, text);
     return null;
   } catch (error) {
     logger.warn({
@@ -91,7 +96,7 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
         url,
         method,
         duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 200),
+        error: String(error).slice(0, 500),
       },
     });
     return null;

@@ -9,6 +9,9 @@ pub const DATABASE_URL: &str =
     "postgres://lol:helper@127.0.0.1/lol?sslmode=disable";
 
 /// 始终只打印 puuid 末 8 位，避免完整 puuid 进入日志。
+/// 开发环境不再调用此函数（直接打印 puuid 原值，便于排错）。
+/// 函数保留以备生产环境回滚后复用。
+#[allow(dead_code)]
 fn mask_puuid(puuid: &str) -> String {
     if puuid.is_empty() {
         return String::new();
@@ -301,6 +304,16 @@ impl DatabaseState {
             return Err("缓存战绩缺少 puuid 或 modeKey".to_string());
         }
 
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_history",
+            purpose = "将归一化后的历史写入 PostgreSQL 缓存",
+            puuid = %request.puuid,
+            mode_key = %request.mode_key,
+            games_count = request.games.len(),
+            "缓存历史写入发起"
+        );
+
         let mut client_guard = self.require_client().await?;
         let client = client_guard
             .as_mut()
@@ -447,7 +460,8 @@ impl DatabaseState {
         tracing::info!(
             target: "db.cache",
             op = "cache_history",
-            puuid = %mask_puuid(&request.puuid),
+            purpose = "将归一化后的历史写入 PostgreSQL 缓存",
+            puuid = %request.puuid,
             mode_key = %request.mode_key,
             cached_games = request.games.len(),
             duration_ms = started.elapsed().as_millis() as u64,
@@ -461,6 +475,17 @@ impl DatabaseState {
         request: CachedHistoryQuery,
     ) -> Result<Vec<CachedMatchGame>, String> {
         let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_history",
+            purpose = "读取 PostgreSQL 缓存历史",
+            puuid = %request.puuid,
+            mode_key = ?request.mode_key,
+            queue_id = ?request.queue_id,
+            limit = request.limit,
+            offset = request.offset,
+            "读取缓存历史发起"
+        );
         let client_guard = self.require_client().await?;
         let client = client_guard
             .as_ref()
@@ -540,19 +565,22 @@ impl DatabaseState {
             Ok(games) => tracing::info!(
                 target: "db.cache",
                 op = "cached_history",
-                puuid = %mask_puuid(&request.puuid),
+                purpose = "读取 PostgreSQL 缓存历史",
+                puuid = %request.puuid,
                 mode_key = ?request.mode_key,
                 queue_id = ?request.queue_id,
                 limit,
                 offset,
                 count = games.len(),
                 duration_ms = started.elapsed().as_millis() as u64,
+                raw_body = %serde_json::to_string(games).unwrap_or_default(),
                 "读取缓存历史成功"
             ),
             Err(error) => tracing::warn!(
                 target: "db.cache",
                 op = "cached_history",
-                puuid = %mask_puuid(&request.puuid),
+                purpose = "读取 PostgreSQL 缓存历史",
+                puuid = %request.puuid,
                 mode_key = ?request.mode_key,
                 queue_id = ?request.queue_id,
                 error = %error,
@@ -565,6 +593,12 @@ impl DatabaseState {
 
     pub async fn summary(&self) -> Result<DatabaseSummary, String> {
         let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "summary",
+            purpose = "读取 PostgreSQL 全局汇总",
+            "读取全局汇总发起"
+        );
         let client_guard = self.require_client().await?;
         let client = client_guard
             .as_ref()
@@ -615,11 +649,13 @@ impl DatabaseState {
         tracing::info!(
             target: "db.cache",
             op = "summary",
+            purpose = "读取 PostgreSQL 全局汇总",
             total_matches = result.total_matches,
             total_participants = result.total_participants,
             total_players = result.total_players,
             modes = result.modes.len(),
             duration_ms = started.elapsed().as_millis() as u64,
+            raw_body = %serde_json::to_string(&result).unwrap_or_default(),
             "读取全局汇总成功"
         );
         Ok(result)
@@ -639,6 +675,14 @@ impl DatabaseState {
             return Err("查询缓存汇总缺少 puuid".to_string());
         }
 
+        tracing::info!(
+            target: "db.cache",
+            op = "player_summary",
+            purpose = "读取玩家级 PostgreSQL 缓存汇总",
+            puuid = %request.puuid,
+            mode_key = ?request.mode_key,
+            "读取玩家汇总发起"
+        );
         let client_guard = self.require_client().await?;
         let client = client_guard
             .as_ref()
@@ -703,13 +747,15 @@ impl DatabaseState {
         tracing::info!(
             target: "db.cache",
             op = "player_summary",
-            puuid = %mask_puuid(&result.puuid),
+            purpose = "读取玩家级 PostgreSQL 缓存汇总",
+            puuid = %result.puuid,
             mode_key = ?result.mode_key,
             matches = result.matches,
             complete_matches = result.complete_matches,
             wins = result.wins,
             sources = result.sources.len(),
             duration_ms = started.elapsed().as_millis() as u64,
+            raw_body = %serde_json::to_string(&result).unwrap_or_default(),
             "读取玩家汇总成功"
         );
         Ok(result)

@@ -58,6 +58,17 @@ export default class MatchDetails {
         sumId: number,
         sumPuuid?: string,
     ) => {
+        const startedAt = Date.now();
+        logger.info({
+            tag: "match.detail",
+            message: "对局详情查询发起",
+            context: {
+                purpose: "查询单局对局详情（包含双方十人数据）",
+                game_id: gameId,
+                sum_id: sumId,
+                sum_puuid: sumPuuid ?? null,
+            },
+        });
         // 实例级缓存：同一 gameId 在 mainWindow 会话内已经拼装过一次
         // ParticipantsInfo，直接复用，省掉 SGP/LCU/单局详情三条路径
         // 的所有调用。
@@ -67,11 +78,14 @@ export default class MatchDetails {
                 tag: "match.detail",
                 message: "对局详情解析完成",
                 context: {
+                    purpose: "查询单局对局详情（包含双方十人数据）",
                     game_id: gameId,
                     sum_puuid: sumPuuid,
                     resolved: "instance-cache",
+                    duration_ms: Date.now() - startedAt,
                 },
-            });
+                durationMs: Date.now() - startedAt,
+            }, JSON.stringify(cached));
             return this.withDataSource(
                 cached,
                 getCachedLcuMatchSource(gameId) || "lcu-game-detail",
@@ -94,11 +108,14 @@ export default class MatchDetails {
                     tag: "match.detail",
                     message: "对局详情解析完成",
                     context: {
+                        purpose: "查询单局对局详情（包含双方十人数据）",
                         game_id: gameId,
                         sum_puuid: sumPuuid,
                         resolved: "sgp-summary",
+                        duration_ms: Date.now() - startedAt,
                     },
-                });
+                    durationMs: Date.now() - startedAt,
+                }, JSON.stringify(sgpResult));
                 this.detailCache.set(gameId, sgpResult);
                 return this.withDataSource(sgpResult, "sgp-summary");
             }
@@ -136,12 +153,15 @@ export default class MatchDetails {
                     tag: "match.detail",
                     message: "对局详情解析完成",
                     context: {
+                        purpose: "查询单局对局详情（包含双方十人数据）",
                         game_id: gameId,
                         sum_puuid: sumPuuid,
                         resolved:
                             getCachedLcuMatchSource(gameId) || "lcu-puuid",
+                        duration_ms: Date.now() - startedAt,
                     },
-                });
+                    durationMs: Date.now() - startedAt,
+                }, JSON.stringify(lcuResult));
                 this.detailCache.set(gameId, lcuResult);
                 return this.withDataSource(
                     lcuResult,
@@ -150,15 +170,33 @@ export default class MatchDetails {
             }
         }
 
+        const lcuUrl = `/lol-match-history/v1/games/${gameId}`;
+        logger.info({
+            tag: "match.detail",
+            message: "对局详情 LCU /games/{gameId} 发起",
+            context: {
+                purpose: "查询单局对局详情（包含双方十人数据）",
+                game_id: gameId,
+                sum_puuid: sumPuuid ?? null,
+                url: lcuUrl,
+                method: "GET",
+            },
+        });
         const response: GameDetailedInfo | null = await invokeLcu(
             "get",
-            `/lol-match-history/v1/games/${gameId}`,
+            lcuUrl,
         );
         if (response === null || response?.queueId === undefined) {
             logger.warn({
                 tag: "match.detail",
                 message: "对局详情无响应",
-                context: { game_id: gameId, sum_puuid: sumPuuid },
+                context: {
+                    purpose: "查询单局对局详情（包含双方十人数据）",
+                    game_id: gameId,
+                    sum_puuid: sumPuuid ?? null,
+                    url: lcuUrl,
+                    duration_ms: Date.now() - startedAt,
+                },
             });
             return null;
         }
@@ -167,19 +205,9 @@ export default class MatchDetails {
         // 翻页能直接命中缓存分支，省一次 LCU 调用。
         cacheLcuGameDetail(response as unknown as Games);
 
-        logger.info({
-            tag: "match.detail",
-            message: "对局详情解析完成",
-            context: {
-                game_id: gameId,
-                sum_puuid: sumPuuid,
-                resolved: "lcu-game-detail",
-                queue_id: response.queueId,
-            },
-        });
-
+        let assembled: ParticipantsInfo | null = null;
         if (response.queueId === 1700) {
-            const result = this.getFighterParticipantsDetails(
+            assembled = this.getFighterParticipantsDetails(
                 response,
                 response.participants,
                 response.participantIdentities,
@@ -187,24 +215,36 @@ export default class MatchDetails {
                 sumId,
                 response.queueId,
             );
-            if (result) {
-                this.detailCache.set(gameId, result);
-            }
-            return this.withDataSource(result, "lcu-game-detail");
+        } else {
+            assembled = this.getParticipantsDetails(
+                response,
+                response.participants,
+                response.participantIdentities,
+                sumId,
+                response.queueId,
+                gameId,
+                sumPuuid,
+            );
         }
-        const result = this.getParticipantsDetails(
-            response,
-            response.participants,
-            response.participantIdentities,
-            sumId,
-            response.queueId,
-            gameId,
-            sumPuuid,
-        );
-        if (result) {
-            this.detailCache.set(gameId, result);
+
+        logger.info({
+            tag: "match.detail",
+            message: "对局详情解析完成",
+            context: {
+                purpose: "查询单局对局详情（包含双方十人数据）",
+                game_id: gameId,
+                sum_puuid: sumPuuid,
+                resolved: "lcu-game-detail",
+                queue_id: response.queueId,
+                duration_ms: Date.now() - startedAt,
+            },
+            durationMs: Date.now() - startedAt,
+        }, JSON.stringify(assembled));
+
+        if (assembled) {
+            this.detailCache.set(gameId, assembled);
         }
-        return this.withDataSource(result, "lcu-game-detail");
+        return this.withDataSource(assembled, "lcu-game-detail");
     };
 
     /** 将 SGP SUMMARY 的扁平 participant 转成现有详情组件使用的 LCU 结构。 */
