@@ -23,7 +23,7 @@ import {
     NormalizedHistoryGame,
 } from "@/recentMatch/utils/recentAnalytics";
 import {
-    HISTORY_ANALYSIS_LIMIT,
+    HISTORY_CACHE_PAGE_SIZE,
     HISTORY_FRIEND_FALLBACK_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
@@ -270,7 +270,7 @@ class QueryMatch {
                 // 对局内历史按模式读取，而不是把 420/440 或 400/430/490
                 // 拆成不同数据集；这样缓存和接口的筛选边界完全一致。
                 modeKey,
-                limit: HISTORY_ANALYSIS_LIMIT,
+                limit: HISTORY_CACHE_PAGE_SIZE,
             });
             let cachedMatchItems = cachedMatches
                 .map((game) =>
@@ -588,7 +588,7 @@ class QueryMatch {
         return {
             matches: this.uniqueAndSortMatches(matchList).slice(
                 0,
-                HISTORY_ANALYSIS_LIMIT,
+                HISTORY_CACHE_PAGE_SIZE,
             ),
             serverGames,
             modeGames,

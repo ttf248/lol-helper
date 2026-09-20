@@ -424,7 +424,7 @@ const teamInsight = computed(() => {
       >
         <div class="flex items-center justify-between mb-2">
           <div class="font-medium">
-            {{ selectedPlayer.summonerName }} · 近期 {{ selectedPlayer.recentAnalysis?.requestedGames || 10 }} 场分析
+            {{ selectedPlayer.summonerName }} · 近期 {{ selectedPlayer.recentAnalysis?.actualGames || 0 }} 场分析
           </div>
           <n-button text size="tiny" @click="selectedPuuid = null">关闭</n-button>
         </div>
@@ -434,7 +434,7 @@ const teamInsight = computed(() => {
             <div class="rounded bg-gray-100 dark:bg-gray-800 p-2">
               <div class="text-gray-500">样本</div>
               <div class="font-medium">
-                {{ selectedPlayer.recentAnalysis.actualGames }}/{{ selectedPlayer.recentAnalysis.requestedGames }} 场
+                {{ selectedPlayer.recentAnalysis.actualGames }} 场
               </div>
             </div>
             <div class="rounded bg-gray-100 dark:bg-gray-800 p-2">
@@ -475,22 +475,6 @@ const teamInsight = computed(() => {
 					>
 						当前队列历史不足 100 场，以上数据按实际可用样本统计。
 					</div>
-
-          <div class="mb-3">
-            <div class="font-medium mb-1">胜率趋势</div>
-				<div class="grid grid-cols-4 gap-2">
-              <div
-                v-for="trend in selectedPlayer.recentAnalysis.trends"
-                :key="trend.window"
-                class="rounded bg-gray-100 dark:bg-gray-800 p-2"
-              >
-                <div class="text-gray-500">最近{{ trend.window }}场</div>
-                <div class="font-medium">
-                  {{ trend.wins }}胜 / {{ trend.games }}场 · {{ formatRate(trend.winRate) }}
-                </div>
-              </div>
-            </div>
-          </div>
 
           <div class="mb-3">
             <div class="font-medium mb-1">个人置信度：{{ confidenceLabel(selectedPlayer.recentAnalysis.confidence) }}</div>

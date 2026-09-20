@@ -23,14 +23,7 @@ import {
   MatchModeKey,
   modeLabel,
 } from "@/recentMatch/utils/matchMode";
-import {
-  loadPlayerModeAnalysis,
-  RECENT_ANALYSIS_WINDOWS,
-} from "@/recentMatch/utils/recentAnalytics";
-import {
-  HISTORY_ANALYSIS_LIMIT,
-  HISTORY_FRIEND_FALLBACK_LIMIT,
-} from "@/recentMatch/utils/historyConfig";
+import { loadPlayerCacheAnalysis } from "@/recentMatch/utils/recentAnalytics";
 import {
   PlayerRecentAnalysis,
   PlayerAnalysisProgress,
@@ -38,20 +31,13 @@ import {
   RecentSumInfo,
   TeammateSynergyStats,
 } from "@/recentMatch/utils/queryTypes";
-import {
-  MATCH_HISTORY_ENDPOINT_LABELS,
-  MATCH_HISTORY_ENDPOINT_PATHS,
-  MATCH_HISTORY_SOURCE_LABELS,
-} from "@/lcu/aboutMatch";
+import { MATCH_HISTORY_SOURCE_LABELS } from "@/lcu/aboutMatch";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
-import { logger } from "@/utils/logger";
 
-type AnalysisWindow = (typeof RECENT_ANALYSIS_WINDOWS)[number];
 type PartyRankingMode = "frequency" | "winRate";
 
 const props = defineProps<{ player: RecentSumInfo }>();
 const selectedMode = ref<MatchModeKey>("match");
-const selectedWindow = ref<AnalysisWindow>(HISTORY_ANALYSIS_LIMIT);
 const partyRankingMode = ref<PartyRankingMode>("frequency");
 const analysis = ref<PlayerRecentAnalysis | null>(null);
 const analysisProgress = ref<PlayerAnalysisProgress | null>(null);
@@ -80,18 +66,9 @@ const cachedPlayerSummary = ref<CachedPlayerSummary>({
 });
 const databasePlayerLoading = ref(false);
 let databaseRequestId = 0;
-const exporting = ref(false);
-const exportMessage = ref("");
-
-const activeTrend = computed(() =>
-  analysis.value?.trends.find((item) => item.window === selectedWindow.value),
-);
 
 const partyAnalysisGames = computed(
-  () =>
-    analysis.value?.trends.find((item) => item.window === 100)?.games ||
-    analysis.value?.actualGames ||
-    0,
+  () => analysis.value?.actualGames || 0,
 );
 
 const coverageRate = computed(() => {
@@ -99,31 +76,6 @@ const coverageRate = computed(() => {
   if (!coverage || coverage.mergedGames === 0) return null;
   return Math.round((coverage.completeGames / coverage.mergedGames) * 1000) / 10;
 });
-
-const endpointLabel = (endpoint: string) =>
-  MATCH_HISTORY_ENDPOINT_LABELS[
-    endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_LABELS
-  ] || endpoint;
-
-const sourceLabel = (source: string) =>
-  MATCH_HISTORY_SOURCE_LABELS[
-    source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
-  ] || source;
-
-const analysisEndpointLabels = computed(() =>
-  (analysis.value?.sourceEndpoints || []).map(endpointLabel),
-);
-
-const analysisEndpointTitle = computed(() =>
-  (analysis.value?.sourceEndpoints || [])
-    .map(
-      (endpoint) =>
-        MATCH_HISTORY_ENDPOINT_PATHS[
-          endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_PATHS
-        ] || endpoint,
-    )
-    .join("\n"),
-);
 
 const partyRankingSections = computed(() => {
   const groups = analysis.value?.partyGroups || [];
@@ -220,10 +172,9 @@ const loadAnalysis = async () => {
   };
   errorMessage.value = "";
   try {
-    const result = await loadPlayerModeAnalysis(
+    const result = await loadPlayerCacheAnalysis(
       props.player,
       selectedMode.value,
-      selectedWindow.value,
       (progress) => {
         if (currentRequest !== requestId) return;
         analysisProgress.value = progress;
@@ -295,138 +246,6 @@ const cachedPlayerSources = computed(() =>
     .join("、"),
 );
 
-const safeFileName = (value: string) =>
-  value.replace(/[\\/:*?"<>|]/g, "_").trim() || "player";
-
-const downloadExport = (content: string, fileName: string, type: string) => {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-};
-
-const analysisExportPayload = () => ({
-  schemaVersion: 1,
-  exportedAt: new Date().toISOString(),
-  player: {
-    puuid: props.player.puuid,
-    summonerId: props.player.summonerId,
-    summonerName: props.player.summonerName,
-  },
-  mode: {
-    key: selectedMode.value,
-    label: modeLabel(selectedMode.value),
-  },
-  window: selectedWindow.value,
-  database: {
-    status: databaseStatus.value,
-    playerSummary: cachedPlayerSummary.value,
-  },
-  analysis: analysis.value,
-});
-
-const csvCell = (value: unknown) =>
-  `"${String(value ?? "").replace(/"/g, '""')}"`;
-
-const exportCsv = () => {
-  if (!analysis.value) return "";
-  const rows: unknown[][] = [
-    ["section", "name", "games", "wins", "winRate", "details"],
-    [
-      "summary",
-      "overall",
-      analysis.value.actualGames,
-      analysis.value.wins,
-      analysis.value.winRate,
-      analysis.value.source,
-    ],
-    ...analysis.value.trends.map((item) => [
-      "trend",
-      `recent-${item.window}`,
-      item.games,
-      item.wins,
-      item.winRate,
-      "",
-    ]),
-    ...analysis.value.champions.map((item) => [
-      "champion",
-      championName(item.championId),
-      item.games,
-      item.wins,
-      item.winRate,
-      `championId=${item.championId}`,
-    ]),
-    ...analysis.value.positions.map((item) => [
-      "position",
-      positionName(item.position),
-      item.games,
-      item.wins,
-      item.winRate,
-      "",
-    ]),
-    ...(analysis.value.teammateSynergy || []).map((item) => [
-      "teammate-synergy",
-      item.teammate.summonerName,
-      item.games,
-      item.wins,
-      item.winRate,
-      `puuid=${item.teammate.puuid}`,
-    ]),
-    ...analysis.value.partyGroups.map((item) => [
-      "party-group",
-      partyGroupNames(item),
-      item.games,
-      item.wins,
-      item.winRate,
-      `stability=${item.stabilityScore};confidence=${item.confidence.level}`,
-    ]),
-    ...analysis.value.opponents.map((item) => [
-      "opponent",
-      item.opponent.summonerName,
-      item.games,
-      item.wins,
-      item.winRate,
-      `opponentWins=${item.opponentWins}`,
-    ]),
-  ];
-  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
-};
-
-const exportAnalysis = (format: "json" | "csv") => {
-  if (!analysis.value || exporting.value) return;
-  exporting.value = true;
-  exportMessage.value = "";
-  try {
-    const baseName = `${safeFileName(props.player.summonerName)}-${selectedMode.value}-analysis`;
-    if (format === "json") {
-      downloadExport(
-        JSON.stringify(analysisExportPayload(), null, 2),
-        `${baseName}.json`,
-        "application/json;charset=utf-8",
-      );
-    } else {
-      downloadExport(
-        `\uFEFF${exportCsv()}`,
-        `${baseName}.csv`,
-        "text/csv;charset=utf-8",
-      );
-    }
-    exportMessage.value = `已导出 ${format.toUpperCase()} 分析证据`;
-  } catch (error) {
-    logger.error({
-      tag: "history_analytics.export",
-      message: "导出历史分析证据失败",
-      context: { error: String(error).slice(0, 200) },
-    });
-    exportMessage.value = "导出失败，请重试";
-  } finally {
-    exporting.value = false;
-  }
-};
-
 const cacheModeSummary = (modeKey: string) => {
   const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
   return mode
@@ -434,9 +253,10 @@ const cacheModeSummary = (modeKey: string) => {
     : "暂无缓存";
 };
 
-const historyQueryPlan = `本地无缓存时服务器兜底最近 1 页（最多 ${HISTORY_FRIEND_FALLBACK_LIMIT} 场）+ PostgreSQL 本地缓存最新 ${HISTORY_ANALYSIS_LIMIT} 场`;
+const historyQueryPlan =
+  "仅使用 PostgreSQL 本地缓存，按 gameCreation DESC 读取全部缓存对局；不发起服务器请求。";
 
-watch([selectedMode, selectedWindow], () => {
+watch(selectedMode, () => {
   void loadAnalysis();
   if (selectedMode.value !== cachedPlayerSummary.value.modeKey) {
     void loadDatabaseInfo();
@@ -464,36 +284,16 @@ onMounted(() => {
       <div>
         <div class="font-medium">历史战绩分析</div>
         <div class="text-xs text-gray-500">
-          {{ props.player.summonerName }} · 历史数据 · {{ modeLabel(selectedMode) }} · 当前最近 {{ selectedWindow }} 场
+          {{ props.player.summonerName }} · 历史数据 · {{ modeLabel(selectedMode) }} · 已加载 {{ partyAnalysisGames }} 场
         </div>
       </div>
       <div class="flex items-center gap-2">
         <n-tag size="small" :type="databaseStatus.available ? 'success' : 'warning'" :bordered="false">
           {{ databaseStatus.available ? "PostgreSQL 已连接" : "实时数据模式" }}
         </n-tag>
-        <n-button-group size="small">
-          <n-button
-            :disabled="!analysis || loading"
-            :loading="exporting"
-            secondary
-            @click="exportAnalysis('json')"
-          >
-            导出 JSON
-          </n-button>
-          <n-button
-            :disabled="!analysis || loading"
-            :loading="exporting"
-            secondary
-            @click="exportAnalysis('csv')"
-          >
-            导出 CSV
-          </n-button>
-        </n-button-group>
         <n-button size="small" secondary @click="refresh">刷新</n-button>
       </div>
     </div>
-
-    <div v-if="exportMessage" class="export-message">{{ exportMessage }}</div>
 
     <div class="analytics-controls">
       <span class="control-label">模式</span>
@@ -507,24 +307,11 @@ onMounted(() => {
           {{ mode.label }}
         </n-button>
       </n-button-group>
-      <span class="control-label window-label">窗口</span>
-      <n-button-group size="small">
-        <n-button
-          v-for="window in RECENT_ANALYSIS_WINDOWS"
-          :key="window"
-          :type="selectedWindow === window ? 'primary' : 'default'"
-          @click="selectedWindow = window"
-        >
-          {{ window }}场
-        </n-button>
-      </n-button-group>
     </div>
 
     <div class="history-query-plan">
       <span class="history-query-plan-label">数据策略</span>
       <span>{{ historyQueryPlan }}</span>
-      <span class="history-query-plan-divider">·</span>
-      <span>统计取合并后最新 {{ selectedWindow }} 场</span>
     </div>
 
     <div v-if="errorMessage" class="error-strip">
@@ -549,11 +336,10 @@ onMounted(() => {
         :height="6"
       />
       <div class="analysis-progress-text">
-        <span v-if="analysisProgress.stage === 'cache'">先检查 PostgreSQL，命中缓存就不重复请求服务器。</span>
-        <span v-else-if="analysisProgress.stage === 'personal'">个人胜率、英雄表现先使用本地缓存或页面摘要展示。</span>
-        <span v-else-if="analysisProgress.stage === 'full'">服务器仅在本地无缓存时拉取最近 1 页，再与本地缓存合并；完整参与者用于同队、对手和关系图分析。</span>
+        <span v-if="analysisProgress.stage === 'cache'">正在按 gameCreation DESC 读取 PostgreSQL 本地缓存，按 500 场分页拉取。</span>
+        <span v-else-if="analysisProgress.stage === 'personal'">正在汇总个人胜率、英雄与位置表现。</span>
         <span v-else-if="analysisProgress.stage === 'relations'">正在计算共同对局、交手胜率和黑名单关联。</span>
-        <span v-else>个人指标与关系分析均已完成。</span>
+        <span v-else>分析完成。</span>
       </div>
     </div>
 
@@ -563,34 +349,24 @@ onMounted(() => {
       <div v-if="analysis" class="analysis-content">
         <div class="metric-grid">
           <n-card size="small" :bordered="false">
-            <div class="metric-label">近{{ selectedWindow }}场胜率</div>
-            <div class="metric-value">{{ formatRate(activeTrend?.winRate) }}</div>
+            <div class="metric-label">整体胜率</div>
+            <div class="metric-value">{{ formatRate(analysis.winRate) }}</div>
             <div class="metric-sub">
-              {{ activeTrend?.wins || 0 }} 胜 / {{ activeTrend?.games || 0 }} 场
+              {{ analysis.wins || 0 }} 胜 / {{ analysis.actualGames || 0 }} 场
             </div>
           </n-card>
           <n-card size="small" :bordered="false">
             <div class="metric-label">有效样本</div>
             <div class="metric-value">{{ analysis.actualGames }}</div>
             <div class="metric-sub">
-              {{ analysis.historyComplete
-                ? "已覆盖完整 100 场"
-                : `当前窗口可用 ${analysis.actualGames}/${analysis.requestedGames} 场` }}
+              缓存 {{ cachedPlayerSummary.matches }} 场 · 已分析 {{ analysis.actualGames }} 场
             </div>
           </n-card>
           <n-card size="small" :bordered="false">
             <div class="metric-label">个人置信度</div>
             <div class="metric-value">{{ analysis.confidence.score }}</div>
             <div class="metric-sub">
-              {{ confidenceLabel(analysis.confidence.level) }} · {{ sourceLabel(analysis.source) }}
-            </div>
-            <div
-              class="metric-source"
-              :title="analysisEndpointTitle || 'PostgreSQL 本地缓存'"
-            >
-              服务器：{{ analysisEndpointLabels.length
-                ? analysisEndpointLabels.join("、")
-                : "未直接命中（本地缓存）" }}
+              {{ confidenceLabel(analysis.confidence.level) }} · 数据来源：PostgreSQL 本地缓存
             </div>
           </n-card>
           <n-card size="small" :bordered="false">
@@ -599,29 +375,11 @@ onMounted(() => {
               {{ coverageRate === null ? "--" : `${coverageRate}%` }}
             </div>
             <div class="metric-sub">
-              缓存 {{ analysis.dataCoverage?.cachedGames || 0 }} · 接口
-              {{ analysis.dataCoverage?.interfaceGames || 0 }} · 冲突
-              {{ analysis.dataCoverage?.conflicts || 0 }}
+              缓存 {{ analysis.dataCoverage?.cachedGames || 0 }} · 完整
+              {{ analysis.dataCoverage?.completeGames || 0 }}
             </div>
           </n-card>
         </div>
-
-        <n-card size="small" title="胜率趋势" :bordered="false">
-          <div class="trend-list">
-            <div v-for="trend in analysis.trends" :key="trend.window" class="trend-row">
-              <span class="trend-name">近{{ trend.window }}场</span>
-              <n-progress
-                type="line"
-                :percentage="trend.winRate || 0"
-                :show-indicator="false"
-                :status="trend.winRate !== null && trend.winRate >= 50 ? 'success' : 'error'"
-                :height="9"
-              />
-              <span class="trend-rate">{{ formatRate(trend.winRate) }}</span>
-              <span class="trend-games">{{ trend.games }}场</span>
-            </div>
-          </div>
-        </n-card>
 
         <div class="two-columns">
           <n-card size="small" title="英雄表现" :bordered="false">
@@ -656,7 +414,7 @@ onMounted(() => {
                 <span>{{ formatRate(position.winRate) }}</span>
               </div>
             </div>
-            <n-empty v-else size="small" description="接口未返回位置" />
+            <n-empty v-else size="small" description="暂无位置数据" />
           </n-card>
         </div>
 
@@ -827,14 +585,6 @@ onMounted(() => {
           >
             本次分析来源：{{ analysis.dataCoverage.sources.join("、") }}
           </div>
-          <div
-            class="text-xs text-gray-500 mt-1"
-            :title="analysisEndpointTitle || 'PostgreSQL 本地缓存'"
-          >
-            服务器接口：{{ analysisEndpointLabels.length
-              ? analysisEndpointLabels.join("、")
-              : "本次未直接命中，使用 PostgreSQL 本地缓存" }}
-          </div>
         </n-card>
       </div>
 
@@ -854,7 +604,6 @@ onMounted(() => {
 
 .analytics-heading,
 .analytics-controls,
-.trend-row,
 .hero-row,
 .position-row,
 .relation-row,
@@ -894,10 +643,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.history-query-plan-divider {
-  color: #aaa;
-}
-
 .control-label,
 .metric-label,
 .metric-sub {
@@ -905,20 +650,10 @@ onMounted(() => {
   color: #888;
 }
 
-.window-label {
-  margin-left: 0.3rem;
-}
-
 .error-strip {
   color: #d03050;
   font-size: 0.75rem;
   margin: 0.35rem 0;
-}
-
-.export-message {
-  color: #18a058;
-  font-size: 0.7rem;
-  margin: 0.25rem 0;
 }
 
 .analysis-progress {
@@ -966,7 +701,6 @@ onMounted(() => {
   margin: 0.1rem 0;
 }
 
-.trend-list,
 .hero-list,
 .position-list,
 .relation-list,
@@ -977,7 +711,6 @@ onMounted(() => {
   gap: 0.35rem;
 }
 
-.trend-row,
 .hero-row,
 .position-row,
 .relation-row,
@@ -1004,25 +737,9 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.trend-row :deep(.n-progress),
 .position-row :deep(.n-progress) {
   flex: 1;
   min-width: 2rem;
-}
-
-.trend-name {
-  width: 3.6rem;
-}
-
-.trend-rate {
-  width: 2.8rem;
-  text-align: right;
-}
-
-.trend-games {
-  width: 2.5rem;
-  text-align: right;
-  color: #888;
 }
 
 .two-columns {
@@ -1049,10 +766,6 @@ onMounted(() => {
   display: block;
   padding: 0.25rem 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.12);
-}
-
-.relation-name {
-  line-height: 1.5;
 }
 
 .party-ranking-caption,

@@ -232,13 +232,6 @@ export interface ConfidenceInfo {
   reasons: string[];
 }
 
-export interface WinRateTrendPoint {
-  window: 10 | 20 | 50 | 100;
-  games: number;
-  wins: number;
-  winRate: number | null;
-}
-
 export interface PositionRecentStats {
   position: string;
   games: number;
@@ -307,13 +300,11 @@ export interface TeammateSynergyStats {
 }
 
 export interface PlayerRecentAnalysis {
-  requestedGames: number;
   actualGames: number;
   wins: number;
   winRate: number | null;
   currentChampion: ChampionRecentStats | null;
   champions: ChampionRecentStats[];
-  trends: WinRateTrendPoint[];
   positions: PositionRecentStats[];
   opponents: OpponentMatchupStats[];
   partyGroups: PartyGroupAnalysis[];
@@ -329,7 +320,7 @@ export interface PlayerRecentAnalysis {
 }
 
 export interface PlayerAnalysisProgress {
-  stage: "cache" | "personal" | "full" | "relations" | "done";
+  stage: "cache" | "personal" | "relations" | "done";
   completed: number;
   total: number;
   percentage: number;

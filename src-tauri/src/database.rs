@@ -490,9 +490,9 @@ impl DatabaseState {
         let client = client_guard
             .as_ref()
             .ok_or_else(|| "数据库连接不可用".to_string())?;
-        // 主页后台同步最多扫描 20 页，每页 20 场；允许一次读取完整
-        // 的同步边界，才能判断“当前页是否已经全部在数据库中”。
-        let limit = request.limit.clamp(1, 500);
+        // 缓存读取上限：足够覆盖一个玩家跨赛季的全部历史；首页历史分析
+        // 需要一次性读取该 puuid 在某 mode 下的全部缓存对局，避免多次翻页。
+        let limit = request.limit.clamp(1, 5000);
         let offset = request.offset.max(0);
         let rows = client
             .query(

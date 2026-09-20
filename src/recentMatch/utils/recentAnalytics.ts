@@ -7,7 +7,7 @@ import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import BlackList from "@/main/views/record/blackList";
 import { Hater } from "@/main/views/record/blackListTypes";
-import { cacheHistory, getCachedHistory } from "@/recentMatch/utils/databaseCache";
+import { cacheHistory, getCachedHistory, getCachedPlayerSummary } from "@/recentMatch/utils/databaseCache";
 import { isModeQueue, MatchModeKey, modeForQueue } from "@/recentMatch/utils/matchMode";
 import {
   ChampionRecentStats,
@@ -29,23 +29,20 @@ import {
   RecentNetworkNode,
   RecentSumInfo,
   TeammateSynergyStats,
-  WinRateTrendPoint,
 } from "@/recentMatch/utils/queryTypes";
 import {
   historyGameQuality,
   mergeHistoryGames,
 } from "@/recentMatch/utils/historyData";
 import {
-  HISTORY_ANALYSIS_LIMIT,
+  HISTORY_CACHE_PAGE_SIZE,
   HISTORY_FRIEND_FALLBACK_LIMIT,
   HISTORY_PANEL_PREVIEW_COUNT,
   HISTORY_SERVER_PAGE_SIZE,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
 
-export const RECENT_ANALYSIS_GAME_COUNT = HISTORY_ANALYSIS_LIMIT;
 export const RECENT_DEFAULT_GAME_COUNT = HISTORY_PANEL_PREVIEW_COUNT;
-export const RECENT_ANALYSIS_WINDOWS = [10, 20, 50, 100] as const;
 
 const HISTORY_CONCURRENCY = 5;
 const RECENT_ACTIVITY_DAYS = 30;
@@ -383,13 +380,13 @@ const syncPlayerModeGames = async (
   const summaryMerged = mergeHistoryGames(
     existingGames,
     Array.from(summaryGames.values()),
-    RECENT_ANALYSIS_GAME_COUNT,
+    HISTORY_CACHE_PAGE_SIZE,
     { puuid: player.puuid, modeKey },
   );
 
   // 本地已有完整窗口时，摘要只负责刷新最近数据，不必再请求完整参与者。
   const needsFullParticipants =
-    existingGames.length < RECENT_ANALYSIS_GAME_COUNT ||
+    existingGames.length < HISTORY_CACHE_PAGE_SIZE ||
     !hasParticipantRoster(existingGames);
 
   let finalGames = summaryMerged.games;
@@ -418,7 +415,7 @@ const syncPlayerModeGames = async (
     const merged = mergeHistoryGames(
       existingGames,
       [...summaryGames.values(), ...fullGames.values()],
-      RECENT_ANALYSIS_GAME_COUNT,
+      HISTORY_CACHE_PAGE_SIZE,
       { puuid: player.puuid, modeKey },
     );
     finalGames = merged.games;
@@ -514,7 +511,7 @@ const hydratePlayerQueueHistory = (
       coverage: mergeHistoryGames(
         existingGames,
         [],
-        RECENT_ANALYSIS_GAME_COUNT,
+        HISTORY_CACHE_PAGE_SIZE,
       ).coverage,
     };
   });
@@ -543,14 +540,14 @@ const loadPlayerHistory = async (
     const cachedGames = await getCachedHistory({
       puuid: player.puuid,
       modeKey,
-      limit: RECENT_ANALYSIS_GAME_COUNT,
+      limit: HISTORY_CACHE_PAGE_SIZE,
     });
     if (cachedGames.length > 0) {
       // 即使本地已经有 100 场，也只向服务器同步最近三页；
       // 合并时通过 gameId 去重并让接口的完整 participant 覆盖旧缓存。
       void hydratePlayerQueueHistory(player, modeKey, cachedGames);
       const limitedGames = new Map(
-        cachedGames.slice(0, RECENT_ANALYSIS_GAME_COUNT).map((game) => [
+        cachedGames.slice(0, HISTORY_CACHE_PAGE_SIZE).map((game) => [
           game.gameId,
           game,
         ]),
@@ -561,12 +558,12 @@ const loadPlayerHistory = async (
         source: "PostgreSQL 本地缓存",
         sourceEndpoints: player.historyStatus?.sourceEndpoints || [],
         complete:
-          limitedGames.size >= RECENT_ANALYSIS_GAME_COUNT &&
+          limitedGames.size >= HISTORY_CACHE_PAGE_SIZE &&
           hasParticipantRoster(Array.from(limitedGames.values())),
         dataCoverage: mergeHistoryGames(
           cachedGames,
           [],
-          RECENT_ANALYSIS_GAME_COUNT,
+          HISTORY_CACHE_PAGE_SIZE,
         ).coverage,
       };
     }
@@ -624,123 +621,9 @@ const toHistorySnapshot = (
   source,
   sourceEndpoints,
   complete:
-    games.length >= RECENT_ANALYSIS_GAME_COUNT && hasParticipantRoster(games),
+    games.length >= HISTORY_CACHE_PAGE_SIZE && hasParticipantRoster(games),
   dataCoverage,
 });
-
-const loadPlayerModeHistory = async (
-  player: RecentSumInfo,
-  modeKey: MatchModeKey,
-  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
-  onProgress?: PlayerAnalysisProgressHandler,
-): Promise<PlayerHistorySnapshot> => {
-  const progressTotal = Math.max(requestedGames, 1);
-  onProgress?.({
-    stage: "cache",
-    completed: 0,
-    total: 1,
-    percentage: 5,
-    message: "正在读取 PostgreSQL 本地缓存",
-  });
-  const cachedGames = await getCachedHistory({
-    puuid: player.puuid,
-    modeKey,
-    limit: RECENT_ANALYSIS_GAME_COUNT,
-  });
-
-  // 个人战绩面板已经加载过一批历史摘要，先把它作为历史数据种子。
-  // 这里绝不读取当前对局；当前对局玩家列表只在 recentMatch 面板使用。
-  const seededGames = sortGames(
-    (Array.isArray(player.matchList) ? player.matchList : [])
-      .filter((match) => isModeQueue(match.queueId, modeKey))
-      .map((match, index) => quickMatchToGame(match, player, index)),
-  );
-  const initial = mergeHistoryGames(
-    cachedGames,
-    seededGames,
-    RECENT_ANALYSIS_GAME_COUNT,
-  );
-  const initialGames = initial.games;
-  onProgress?.({
-    stage: "cache",
-    completed: 1,
-    total: 1,
-    percentage: 12,
-    message:
-      cachedGames.length > 0
-      ? `本地缓存命中 ${cachedGames.length} 场，正在检查个人样本`
-      : `本地暂无缓存，已使用面板中的 ${seededGames.length} 场个人战绩作为种子`,
-  });
-  // 这里只读取本地缓存和已经加载的个人摘要，不再额外扫描服务器。
-  // 后续 hydrate 阶段统一只消费本地缓存；本地无缓存时拉取服务器最近 1 页（20 场）作为兜底。
-  onProgress?.({
-    stage: "personal",
-    completed: Math.min(initialGames.length, progressTotal),
-    total: progressTotal,
-    percentage: 28,
-    message:
-      initialGames.length > 0
-        ? `已从本地与页面数据取得 ${Math.min(initialGames.length, progressTotal)} 场，准备进行本地缓存团队分析`
-        : "本地暂无可用样本，准备进行本地缓存团队分析",
-  });
-  return toHistorySnapshot(
-    player,
-    initialGames,
-    cachedGames.length > 0
-      ? "PostgreSQL 本地缓存"
-      : seededGames.length > 0
-        ? "当前个人战绩列表"
-        : "等待服务器历史接口",
-    [],
-    initial.coverage,
-  );
-};
-
-const hydratePlayerModeHistory = async (
-  player: RecentSumInfo,
-  modeKey: MatchModeKey,
-  existingSnapshot: PlayerHistorySnapshot,
-  serverLimit = HISTORY_FRIEND_FALLBACK_LIMIT,
-  onProgress?: PlayerAnalysisProgressHandler,
-): Promise<PlayerHistorySnapshot> => {
-  const existingGames = Array.from(existingSnapshot.games.values());
-  onProgress?.({
-    stage: "full",
-    completed: 0,
-    total: 1,
-    percentage: 45,
-    message: `正在查询服务器最近 ${Math.ceil(serverLimit / HISTORY_SERVER_PAGE_SIZE)} 页（最多 ${serverLimit} 场），并与本地缓存按 gameId 合并`,
-  });
-  // 与对局内分析共用同一份补全任务，避免打开历史分析后再重复请求
-  // 同一玩家/模式的完整历史。
-  const hydrated = await hydratePlayerQueueHistory(
-    player,
-    modeKey,
-    existingGames,
-    serverLimit,
-  );
-  const mergedGames = hydrated.games;
-  const result = toHistorySnapshot(
-    player,
-    mergedGames,
-    mergedGames.length > existingGames.length || hydrated.source !== "PostgreSQL 本地缓存"
-      ? hydrated.source || "历史接口完整参与者"
-      : existingSnapshot.source,
-    hydrated.sourceEndpoints.length > 0
-      ? hydrated.sourceEndpoints
-      : existingSnapshot.sourceEndpoints,
-    hydrated.coverage,
-  );
-  onProgress?.({
-    stage: "full",
-    completed: 1,
-    total: 1,
-    percentage: 72,
-    message:
-      `服务器最近 ${serverLimit} 场已与本地缓存合并，共 ${mergedGames.length} 场，正在计算关系`,
-  });
-  return result;
-};
 
 const mapWithConcurrency = async <T, R>(
   items: T[],
@@ -908,24 +791,6 @@ const buildPositionStats = (
     );
 };
 
-const buildTrendStats = (
-  games: NormalizedHistoryGame[],
-  player: RecentSumInfo,
-): WinRateTrendPoint[] =>
-  RECENT_ANALYSIS_WINDOWS.map((window) => {
-    const selectedGames = games.slice(0, window);
-    const participants = selectedGames
-      .map((game) => findPlayerParticipant(game, player))
-      .filter(Boolean) as NormalizedHistoryParticipant[];
-    const wins = participants.filter((participant) => participant.win).length;
-    return {
-      window,
-      games: participants.length,
-      wins,
-      winRate: roundRate(wins, participants.length),
-    };
-  });
-
 const quickMatchToGame = (
   match: MatchItemTypes,
   player: RecentSumInfo,
@@ -981,14 +846,12 @@ const buildQuickPlayerAnalysis = (
   const confidenceScore = Math.min(actualGames / requestedGames, 1) * 70;
 
   return {
-    requestedGames,
     actualGames,
     wins,
     winRate: roundRate(wins, actualGames),
     currentChampion:
       champions.find((item) => item.championId === player.champId) || null,
     champions,
-    trends: buildTrendStats(games, player),
     positions: [],
     opponents: [],
     partyGroups: [],
@@ -1416,10 +1279,8 @@ const buildPlayerAnalysis = (
   partyGroups: PartyGroupAnalysis[],
   opponents: OpponentMatchupStats[],
   moderation: PlayerModerationInfo,
-  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
 ): PlayerRecentAnalysis => {
-  const allGames = Array.from(snapshot.games.values());
-  const games = allGames.slice(0, requestedGames);
+  const games = Array.from(snapshot.games.values());
   const playerGames = games
     .map((game) => findPlayerParticipant(game, player))
     .filter(
@@ -1429,28 +1290,25 @@ const buildPlayerAnalysis = (
   const wins = playerGames.filter((participant) => participant.win).length;
   const actualGames = playerGames.length;
   const champions = buildChampionStats(games, player);
-  const sampleScore = Math.min(actualGames / requestedGames, 1) * 80;
-  const confidenceScore = sampleScore +
-    (snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT ? 20 : 0);
+  // 缓存驱动；不再按窗口裁剪，confidence 反映「样本量与完整度」。
+  const sampleScore = Math.min(actualGames / HISTORY_CACHE_PAGE_SIZE, 1) * 80;
+  const confidenceScore =
+    sampleScore + (snapshot.complete ? 20 : 0);
   const confidenceReasons = [
-    `有效样本 ${actualGames}/${requestedGames} 场`,
-    snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT
-      ? "已覆盖完整 100 场窗口"
-      : `当前按最近 ${requestedGames} 场样本统计`,
+    `已使用本地缓存全部 ${actualGames} 场`,
+    snapshot.complete
+      ? "本地缓存包含完整参与者"
+      : "部分对局仅含单人摘要，关系分析不完整",
     "统计基于完整 participant 身份关联",
   ];
 
   return {
-    requestedGames,
     actualGames,
     wins,
     winRate: roundRate(wins, actualGames),
     currentChampion:
       champions.find((item) => item.championId === player.champId) || null,
     champions,
-    // 主指标遵循当前窗口；趋势始终使用已加载的完整历史，避免默认 10 场时
-    // 20/50/100 场被错误地显示为无数据。
-    trends: buildTrendStats(allGames, player),
     positions: buildPositionStats(games, player),
     opponents,
     partyGroups,
@@ -1458,86 +1316,17 @@ const buildPlayerAnalysis = (
     moderation,
     source: snapshot.source,
     sourceEndpoints: snapshot.sourceEndpoints,
-    historyComplete:
-      snapshot.complete && requestedGames >= RECENT_ANALYSIS_GAME_COUNT,
+    historyComplete: snapshot.complete,
     dataCoverage: snapshot.dataCoverage,
   };
 };
 
-/** 历史分析默认使用最近 100 场；对局内面板另有最近 10 场快速首屏。 */
-export const loadPlayerModeAnalysis = async (
+const computePlayerRelations = async (
   player: RecentSumInfo,
-  modeKey: MatchModeKey,
-  requestedGames = RECENT_ANALYSIS_GAME_COUNT,
+  snapshot: PlayerHistorySnapshot,
+  baseAnalysis: PlayerRecentAnalysis,
   onProgress?: PlayerAnalysisProgressHandler,
 ): Promise<PlayerRecentAnalysis> => {
-  let snapshot = await loadPlayerModeHistory(
-    player,
-    modeKey,
-    requestedGames,
-    onProgress,
-  );
-  const serverLimit = Math.min(
-    HISTORY_FRIEND_FALLBACK_LIMIT,
-    Math.max(HISTORY_PANEL_PREVIEW_COUNT, requestedGames),
-  );
-  // 先交付本地缓存/页面摘要；服务器只在下一步读取当前窗口，
-  // 不会因为本地缓存较多而继续向更早分页扩展。
-  const personalAnalysis = snapshot.games.size > 0
-    ? buildPlayerAnalysis(
-        player,
-        snapshot,
-        [],
-        [],
-        emptyModeration(),
-        requestedGames,
-      )
-    : buildQuickPlayerAnalysis(player, modeKey, requestedGames);
-  onProgress?.({
-    stage: "personal",
-    completed: Math.min(personalAnalysis.actualGames, requestedGames),
-    total: Math.max(requestedGames, 1),
-    percentage: 38,
-    message: `个人战绩已展示 ${personalAnalysis.actualGames} 场，正在查询服务器最近 ${Math.ceil(serverLimit / HISTORY_SERVER_PAGE_SIZE)} 页`,
-    analysis: personalAnalysis,
-  });
-
-  snapshot = await hydratePlayerModeHistory(
-    player,
-    modeKey,
-    snapshot,
-    serverLimit,
-    onProgress,
-  );
-  if (snapshot.games.size === 0) {
-    onProgress?.({
-      stage: "done",
-      completed: 0,
-      total: Math.max(requestedGames, 1),
-      percentage: 100,
-      message: `服务器最近 ${serverLimit} 场和本地缓存均没有可用历史数据`,
-      analysis: personalAnalysis,
-    });
-    return personalAnalysis;
-  }
-
-  const hydratedPersonalAnalysis = buildPlayerAnalysis(
-    player,
-    snapshot,
-    [],
-    [],
-    emptyModeration(),
-    requestedGames,
-  );
-  onProgress?.({
-    stage: "full",
-    completed: hydratedPersonalAnalysis.actualGames,
-    total: Math.max(requestedGames, 1),
-    percentage: 74,
-    message: `合并后个人历史可用 ${hydratedPersonalAnalysis.actualGames} 场，正在计算共同对局`,
-    analysis: hydratedPersonalAnalysis,
-  });
-
   // 单个用户的默认面板也需要展示关系分析。历史详情已经包含每局的
   // participant，因此可以从同一份缓存构造共同对局快照，不必为每个队友
   // 再发起一次历史接口请求。
@@ -1639,27 +1428,151 @@ export const loadPlayerModeAnalysis = async (
     buildPlayerPartyGroups(player, snapshot, moderationMap),
     buildOpponentStats(player, opponentPlayers, snapshots, moderationMap),
     moderationMap.get(player.puuid) || emptyModeration(),
-    requestedGames,
   );
-  playerAnalysis.teammateSynergy = buildTeammateSynergy(
+  // 保留 baseAnalysis 中已经填好的指标字段（胜率、英雄、位置等），
+  // 只覆盖由 computePlayerRelations 计算的关系字段。
+  return {
+    ...baseAnalysis,
+    partyGroups: playerAnalysis.partyGroups,
+    opponents: playerAnalysis.opponents,
+    teammateSynergy: buildTeammateSynergy(player, snapshot, moderationMap),
+    network: buildNetworkAnalysis(
+      [player, ...partyPlayers.slice(0, 5)],
+      opponentPlayers.slice(0, 5),
+      snapshots,
+    ),
+    moderation: moderationMap.get(player.puuid) || emptyModeration(),
+  };
+};
+
+/**
+ * 首页"历史分析"专用入口：完全运行在 PostgreSQL 本地缓存上，
+ * 按 gameCreation DESC 读取该玩家在该模式下的全部缓存对局。
+ * 不再向服务器发起任何请求。
+ */
+export const loadPlayerCacheAnalysis = async (
+  player: RecentSumInfo,
+  modeKey: MatchModeKey,
+  onProgress?: PlayerAnalysisProgressHandler,
+): Promise<PlayerRecentAnalysis> => {
+  const startedAt = Date.now();
+  logger.info({
+    tag: "recent.analysis.cache_only",
+    message: "首页历史分析发起（仅本地缓存）",
+    context: {
+      purpose: "按 puuid + mode_key 全量读取本地缓存并做预定分析",
+      puuid: player.puuid,
+      summoner_id: player.summonerId ?? null,
+      summoner_name: player.summonerName ?? null,
+      mode_key: modeKey,
+    },
+  });
+
+  const summary = await getCachedPlayerSummary(player.puuid, modeKey);
+  const totalCached = summary.matches;
+
+  onProgress?.({
+    stage: "cache",
+    completed: 0,
+    total: Math.max(totalCached, 1),
+    percentage: 10,
+    message:
+      totalCached > 0
+        ? `本地缓存命中 ${totalCached} 场，正在分页读取`
+        : "本地暂无缓存，等待首次同步",
+  });
+
+  // 按 PAGE=500 分页读取，避免单次 invoke 拉超过 PG 索引阈值的数据。
+  const PAGE = HISTORY_CACHE_PAGE_SIZE;
+  const collected: NormalizedHistoryGame[] = [];
+  for (let offset = 0; offset < totalCached; offset += PAGE) {
+    const limit = Math.min(PAGE, totalCached - offset);
+    if (limit <= 0) break;
+    const games = await getCachedHistory({
+      puuid: player.puuid,
+      modeKey,
+      limit,
+      offset,
+    });
+    collected.push(...games);
+    onProgress?.({
+      stage: "cache",
+      completed: Math.min(collected.length, totalCached),
+      total: Math.max(totalCached, 1),
+      percentage:
+        10 +
+        Math.round((40 * Math.min(collected.length, totalCached)) / Math.max(totalCached, 1)),
+      message: `已读取 ${collected.length}/${totalCached} 场`,
+    });
+  }
+
+  // 把列表转成 PlayerHistorySnapshot。snapshot.source 固定为本地缓存。
+  const gamesMap = new Map<number, NormalizedHistoryGame>();
+  collected.forEach((game) => gamesMap.set(game.gameId, game));
+  const snapshot: PlayerHistorySnapshot = {
+    puuid: player.puuid,
+    games: gamesMap,
+    source: "PostgreSQL 本地缓存",
+    sourceEndpoints: [],
+    complete:
+      gamesMap.size > 0 && hasParticipantRoster(Array.from(gamesMap.values())),
+  };
+
+  onProgress?.({
+    stage: "personal",
+    completed: snapshot.games.size,
+    total: Math.max(totalCached, 1),
+    percentage: 55,
+    message: `已合并 ${gamesMap.size} 场本地缓存，准备个人统计`,
+  });
+
+  const personalAnalysis = buildPlayerAnalysis(
     player,
     snapshot,
-    moderationMap,
+    [],
+    [],
+    emptyModeration(),
   );
-  playerAnalysis.network = buildNetworkAnalysis(
-    [player, ...partyPlayers.slice(0, 5)],
-    opponentPlayers.slice(0, 5),
-    snapshots,
+  onProgress?.({
+    stage: "personal",
+    completed: personalAnalysis.actualGames,
+    total: Math.max(totalCached, 1),
+    percentage: 70,
+    message: `个人统计完成：${personalAnalysis.actualGames} 场`,
+    analysis: personalAnalysis,
+  });
+
+  const finalAnalysis = await computePlayerRelations(
+    player,
+    snapshot,
+    personalAnalysis,
+    onProgress,
   );
+
   onProgress?.({
     stage: "done",
     completed: 1,
     total: 1,
     percentage: 100,
-    message: `历史分析完成：${playerAnalysis.actualGames} 场个人样本，${playerAnalysis.partyGroups.length} 组共同同队关系`,
-    analysis: playerAnalysis,
+    message: `历史分析完成：${finalAnalysis.actualGames} 场个人样本，${finalAnalysis.partyGroups.length} 组开黑关系`,
+    analysis: finalAnalysis,
   });
-  return playerAnalysis;
+
+  logger.info({
+    tag: "recent.analysis.cache_only",
+    message: "首页历史分析完成",
+    context: {
+      puuid: player.puuid,
+      mode_key: modeKey,
+      total_cached: totalCached,
+      loaded: snapshot.games.size,
+      party_groups: finalAnalysis.partyGroups.length,
+      duration_ms: Date.now() - startedAt,
+    },
+    durationMs: Date.now() - startedAt,
+  });
+
+  return finalAnalysis;
 };
 
 const buildNetworkAnalysis = (
@@ -1735,7 +1648,6 @@ const applyTeamAnalysis = (
   enemyList: RecentSumInfo[],
   snapshotMap: Map<string, PlayerHistorySnapshot>,
   moderationMap: Map<string, PlayerModerationInfo>,
-  requestedGames: number,
 ) => {
   for (const [team, opposingTeam] of [
     [friendList, enemyList],
@@ -1753,7 +1665,6 @@ const applyTeamAnalysis = (
         ),
         buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
         moderationMap.get(player.puuid) || emptyModeration(),
-        requestedGames,
       );
     }
   }
@@ -1849,7 +1760,6 @@ export const loadRecentTeamAnalysis = async (
     enemyList,
     snapshotMap,
     new Map(players.map((player) => [player.puuid, emptyModeration()])),
-    RECENT_DEFAULT_GAME_COUNT,
   );
   logger.info({
     tag: "recent.analysis",
@@ -1934,7 +1844,6 @@ export const loadRecentTeamAnalysis = async (
     enemyList,
     snapshotMap,
     moderationMap,
-    RECENT_DEFAULT_GAME_COUNT,
   );
 
   if (hydrationEntries.length === 0) {
@@ -1967,7 +1876,7 @@ export const loadRecentTeamAnalysis = async (
       const mergedGames = sortGames([
         ...initialSnapshot.games.values(),
         ...hydratedGames,
-      ]).slice(0, RECENT_ANALYSIS_GAME_COUNT);
+      ]).slice(0, HISTORY_CACHE_PAGE_SIZE);
       if (
         mergedGames.length <= initialSnapshot.games.size &&
         !hasParticipantRoster(mergedGames)
@@ -1986,7 +1895,7 @@ export const loadRecentTeamAnalysis = async (
             ? hydratedResult.sourceEndpoints
             : initialSnapshot.sourceEndpoints,
         complete:
-          mergedGames.length >= RECENT_ANALYSIS_GAME_COUNT &&
+          mergedGames.length >= HISTORY_CACHE_PAGE_SIZE &&
           hasParticipantRoster(mergedGames),
       };
     });
@@ -1998,7 +1907,6 @@ export const loadRecentTeamAnalysis = async (
     enemyList,
     hydratedSnapshotMap,
     moderationMap,
-    RECENT_ANALYSIS_GAME_COUNT,
   );
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
   logger.info({

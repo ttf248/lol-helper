@@ -21,7 +21,7 @@ import {
 import { mergeHistoryGames as mergeNormalizedHistoryGames } from "@/recentMatch/utils/historyData";
 import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 import {
-    HISTORY_ANALYSIS_LIMIT,
+    HISTORY_CACHE_PAGE_SIZE,
     HISTORY_CACHE_SYNC_LIMIT,
     HISTORY_COLD_START_PAGES,
     HISTORY_SERVER_PAGE_SIZE,
@@ -268,7 +268,7 @@ export default class BaseMatch {
         // 按 gameId 覆盖/补充缓存，最终固定按时间排序后再取页面。
         const cachedGames = await getCachedHistory({
             puuid,
-            limit: HISTORY_ANALYSIS_LIMIT,
+            limit: HISTORY_CACHE_PAGE_SIZE,
             offset: 0,
         });
         // 列表路径只同步最近 20 场，分析面板路径同步全量 60 场；不同
@@ -293,7 +293,7 @@ export default class BaseMatch {
         const mergedGames = this.mergeHistoryGames(
             cachedGames,
             synced.games,
-            HISTORY_ANALYSIS_LIMIT,
+            HISTORY_CACHE_PAGE_SIZE,
             synced.source || "interface",
         );
         const cachedMatches = mergedGames
@@ -747,7 +747,7 @@ export default class BaseMatch {
         const result = await this.dealMatchHistoryWithSource(
             puuid,
             0,
-            HISTORY_ANALYSIS_LIMIT,
+            HISTORY_CACHE_PAGE_SIZE,
         );
         if (result === null) {
             return {

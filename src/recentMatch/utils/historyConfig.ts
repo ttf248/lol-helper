@@ -27,8 +27,8 @@ export const HISTORY_CACHE_SYNC_MAX_PAGES = 20;
 export const HISTORY_CACHE_SYNC_LIMIT =
   HISTORY_SERVER_PAGE_SIZE * HISTORY_CACHE_SYNC_MAX_PAGES;
 
-/** 分析窗口最多使用最近 100 场；数据库本身不删除更早的缓存。 */
-export const HISTORY_ANALYSIS_LIMIT = 100;
+/** 首页历史分析缓存分页大小：单次从本地 PG 读取的对局数上限。 */
+export const HISTORY_CACHE_PAGE_SIZE = 500;
 
 /**
  * 对局内队友面板：本地无缓存时的服务器兜底拉取页数（固定 1 页 = 20 场）。
