@@ -10,10 +10,12 @@ import {
     PropertiesToCompareTypes,
     SumPlatInfo,
 } from "./MatchDetail";
+import type { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { queryGameType } from "@/lcu/utils";
 import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
 import {
+    cacheLcuGameDetail,
     getCachedLcuMatch,
     getCachedLcuMatchSource,
     getCachedSgpMatch,
@@ -26,6 +28,10 @@ import {
 import { logger } from "@/utils/logger";
 
 export default class MatchDetails {
+    // 同 gameId 详情请求的实例级缓存。MatchDetails 是 mainWindow
+    // 长期持有的单例，UI 翻页 / 切换分析面板会让同一局被反复请求，
+    // 命中后直接返回即可避免重复打 `/games/{gameId}`。
+    private detailCache = new Map<number, ParticipantsInfo>();
     private team100Kills = 0;
     private team200Kills = 0;
     private team100GoldEarned = 0;
@@ -52,6 +58,26 @@ export default class MatchDetails {
         sumId: number,
         sumPuuid?: string,
     ) => {
+        // 实例级缓存：同一 gameId 在 mainWindow 会话内已经拼装过一次
+        // ParticipantsInfo，直接复用，省掉 SGP/LCU/单局详情三条路径
+        // 的所有调用。
+        const cached = this.detailCache.get(gameId);
+        if (cached) {
+            logger.info({
+                tag: "match.detail",
+                message: "queryGameDetail resolved",
+                context: {
+                    gameId,
+                    sumPuuid,
+                    resolved: "instance-cache",
+                },
+            });
+            return this.withDataSource(
+                cached,
+                getCachedLcuMatchSource(gameId) || "lcu-game-detail",
+            );
+        }
+
         this.init();
 
         // SGP SUMMARY 已经包含完整的十人数据。优先使用它，避免查询外部
@@ -73,6 +99,7 @@ export default class MatchDetails {
                         resolved: "sgp-summary",
                     },
                 });
+                this.detailCache.set(gameId, sgpResult);
                 return this.withDataSource(sgpResult, "sgp-summary");
             }
         }
@@ -115,6 +142,7 @@ export default class MatchDetails {
                             getCachedLcuMatchSource(gameId) || "lcu-puuid",
                     },
                 });
+                this.detailCache.set(gameId, lcuResult);
                 return this.withDataSource(
                     lcuResult,
                     getCachedLcuMatchSource(gameId) || "lcu-puuid",
@@ -135,6 +163,10 @@ export default class MatchDetails {
             return null;
         }
 
+        // 拿到单局响应后写进 LCU 历史缓存，下一次 detail / history
+        // 翻页能直接命中缓存分支，省一次 LCU 调用。
+        cacheLcuGameDetail(response as unknown as Games);
+
         logger.info({
             tag: "match.detail",
             message: "queryGameDetail resolved",
@@ -147,30 +179,32 @@ export default class MatchDetails {
         });
 
         if (response.queueId === 1700) {
-            return this.withDataSource(
-                this.getFighterParticipantsDetails(
-                    response,
-                    response.participants,
-                    response.participantIdentities,
-                    gameId,
-                    sumId,
-                    response.queueId,
-                ),
-                "lcu-game-detail",
-            );
-        }
-        return this.withDataSource(
-            this.getParticipantsDetails(
+            const result = this.getFighterParticipantsDetails(
                 response,
                 response.participants,
                 response.participantIdentities,
+                gameId,
                 sumId,
                 response.queueId,
-                gameId,
-                sumPuuid,
-            ),
-            "lcu-game-detail",
+            );
+            if (result) {
+                this.detailCache.set(gameId, result);
+            }
+            return this.withDataSource(result, "lcu-game-detail");
+        }
+        const result = this.getParticipantsDetails(
+            response,
+            response.participants,
+            response.participantIdentities,
+            sumId,
+            response.queueId,
+            gameId,
+            sumPuuid,
         );
+        if (result) {
+            this.detailCache.set(gameId, result);
+        }
+        return this.withDataSource(result, "lcu-game-detail");
     };
 
     /** 将 SGP SUMMARY 的扁平 participant 转成现有详情组件使用的 LCU 结构。 */
@@ -282,6 +316,7 @@ export default class MatchDetails {
     };
 
     private init() {
+        this.detailCache.clear();
         [
             this.team100Kills,
             this.team200Kills,

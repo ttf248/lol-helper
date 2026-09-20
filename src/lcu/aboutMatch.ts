@@ -102,6 +102,17 @@ const cacheLcuGames = (games: Games[], endpoint: MatchHistoryEndpoint) => {
 	}
 };
 
+/**
+ * 把一次 `/games/{gameId}` 响应写进 LCU 历史缓存。MatchDetails 在
+ * 详情兜底路径上独立拉到单局响应时复用，避免再次请求同一 gameId。
+ */
+export const cacheLcuGameDetail = (game: Games) => {
+	if (game && typeof game.gameId === "number") {
+		lcuMatchCache.set(game.gameId, game);
+		lcuMatchSource.set(game.gameId, "lcu-game-detail");
+	}
+};
+
 export const getCachedLcuMatch = (gameId: number): Games | null =>
 	lcuMatchCache.get(gameId) ?? null;
 
