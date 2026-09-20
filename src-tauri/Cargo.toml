@@ -47,6 +47,7 @@ configparser = "3.1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+deadpool-postgres = "0.14.2"
 
 [profile.release]
 opt-level = "s"     # Optimize for size.

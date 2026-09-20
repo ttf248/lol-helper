@@ -1,9 +1,10 @@
+use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, RwLock};
-use tokio_postgres::{Client, NoTls};
+use tokio::sync::RwLock;
+use tokio_postgres::NoTls;
 
 pub const DATABASE_URL: &str =
     "postgres://lol:helper@127.0.0.1/lol?sslmode=disable";
@@ -525,7 +526,8 @@ pub struct CachedChampionDetail {
 }
 
 pub struct DatabaseState {
-    client: Arc<Mutex<Option<Client>>>,
+    /// 死号状态标：初始化失败时为 None，请求层短路返回错误。
+    pool: Option<Arc<Pool>>,
     status: Arc<RwLock<DatabaseStatus>>,
 }
 
@@ -536,12 +538,62 @@ impl DatabaseState {
             message: "正在连接 PostgreSQL".to_string(),
             checked_at: now_unix(),
         }));
-        let client_slot = Arc::new(tokio::sync::Mutex::new(None));
         let started = std::time::Instant::now();
 
+        // 解析 DATABASE_URL；死号配置立刻短路，不创建池。
+        let pg_config = match DATABASE_URL.parse::<tokio_postgres::Config>() {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(
+                    target: "db.cache",
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    error = %error,
+                    "DATABASE_URL 解析失败"
+                );
+                let mut current = status.write().await;
+                current.message = format!("DATABASE_URL 解析失败: {error}");
+                current.checked_at = now_unix();
+                return Self {
+                    pool: None,
+                    status: status.clone(),
+                };
+            }
+        };
+
+        let mgr_config = ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        };
+        let manager = Manager::from_config(pg_config, NoTls, mgr_config);
+        // 16 个连接足以应对单窗口内同时拉 10 名玩家历史的峰值。
+        // deadpool 内部 lazy-create，到上限后再 acquire 会等待空闲连接。
+        let pool = match Pool::builder(manager).max_size(16).build() {
+            Ok(pool) => Arc::new(pool),
+            Err(error) => {
+                tracing::error!(
+                    target: "db.cache",
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    error = %error,
+                    "数据库连接池构建失败"
+                );
+                let mut current = status.write().await;
+                current.message = format!("数据库连接池构建失败: {error}");
+                current.checked_at = now_unix();
+                return Self {
+                    pool: None,
+                    status: status.clone(),
+                };
+            }
+        };
+
+        // 启动期跑一次 SCHEMA，确保新表存在。失败也保留 pool —— 后续重试
+        // 可能恢复，避免一次性"启动失败 → 整应用 PG 全废"。
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            tokio_postgres::connect(DATABASE_URL, NoTls),
+            async {
+                let client = pool.get().await.map_err(|e| e.to_string())?;
+                client.batch_execute(SCHEMA).await.map_err(|e| e.to_string())?;
+                Ok::<_, String>(client)
+            },
         )
         .await
         {
@@ -556,64 +608,32 @@ impl DatabaseState {
                 current.message = "连接 PostgreSQL 超时（3 秒）".to_string();
                 current.checked_at = now_unix();
             }
-            Ok(Ok((client, connection))) => {
-                let connection_status = Arc::clone(&status);
-                tokio::spawn(async move {
-                    if let Err(error) = connection.await {
-                        tracing::warn!(
-                            target: "db.cache",
-                            error = %error,
-                            "PostgreSQL 连接断开"
-                        );
-                        let mut status = connection_status.write().await;
-                        status.available = false;
-                        status.message = format!("PostgreSQL 连接断开: {error}");
-                        status.checked_at = now_unix();
-                    }
-                });
-
-                match client.batch_execute(SCHEMA).await {
-                    Ok(()) => {
-                        *client_slot.lock().await = Some(client);
-                        tracing::info!(
-                            target: "db.cache",
-                            duration_ms = started.elapsed().as_millis() as u64,
-                            notice_count = 0_u32,
-                            "数据库连接成功，表结构已就绪"
-                        );
-                        let mut current = status.write().await;
-                        current.available = true;
-                        current.message = "PostgreSQL 已连接，缓存表已就绪".to_string();
-                        current.checked_at = now_unix();
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            target: "db.cache",
-                            duration_ms = started.elapsed().as_millis() as u64,
-                            error = %error,
-                            "数据库表结构初始化失败"
-                        );
-                        let mut current = status.write().await;
-                        current.message = format!("数据库表结构初始化失败: {error}");
-                        current.checked_at = now_unix();
-                    }
-                }
+            Ok(Ok(_)) => {
+                tracing::info!(
+                    target: "db.cache",
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "数据库连接池就绪，表结构已就绪"
+                );
+                let mut current = status.write().await;
+                current.available = true;
+                current.message = "PostgreSQL 已连接，缓存表已就绪".to_string();
+                current.checked_at = now_unix();
             }
             Ok(Err(error)) => {
                 tracing::error!(
                     target: "db.cache",
                     duration_ms = started.elapsed().as_millis() as u64,
                     error = %error,
-                    "数据库连接失败"
+                    "数据库表结构初始化失败"
                 );
                 let mut current = status.write().await;
-                current.message = format!("无法连接 PostgreSQL: {error}");
+                current.message = format!("数据库表结构初始化失败: {error}");
                 current.checked_at = now_unix();
             }
         }
 
         Self {
-            client: client_slot,
+            pool: Some(pool),
             status,
         }
     }
@@ -621,30 +641,64 @@ impl DatabaseState {
     pub async fn status(&self) -> DatabaseStatus {
         let mut current = self.status.read().await.clone();
         if current.available {
-            let client = self.client.lock().await;
-            if let Some(client) = client.as_ref() {
-                if let Err(error) = client.query_one("SELECT 1", &[]).await {
-                    tracing::warn!(
-                        target: "db.cache",
-                        error = %error,
-                        "数据库健康探测失败"
-                    );
-                    current.available = false;
-                    current.message = format!("PostgreSQL 查询失败: {error}");
-                    current.checked_at = now_unix();
-                    *self.status.write().await = current.clone();
+            if let Some(pool) = self.pool.as_ref() {
+                match pool.get().await {
+                    Ok(client) => {
+                        if let Err(error) = client.query_one("SELECT 1", &[]).await {
+                            tracing::warn!(
+                                target: "db.cache",
+                                error = %error,
+                                "数据库健康探测失败"
+                            );
+                            current.available = false;
+                            current.message = format!("PostgreSQL 查询失败: {error}");
+                            current.checked_at = now_unix();
+                            *self.status.write().await = current.clone();
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "db.cache",
+                            error = %error,
+                            "数据库连接获取失败"
+                        );
+                        current.available = false;
+                        current.message = format!("PostgreSQL 连接池耗尽: {error}");
+                        current.checked_at = now_unix();
+                        *self.status.write().await = current.clone();
+                    }
                 }
+            } else {
+                current.available = false;
+                current.message = "数据库连接池未初始化".to_string();
+                current.checked_at = now_unix();
+                *self.status.write().await = current.clone();
             }
         }
         current
     }
 
-    async fn require_client(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Client>>, String> {
-        let guard = self.client.lock().await;
-        if guard.is_none() {
-            return Err(self.status.read().await.message.clone());
-        }
-        Ok(guard)
+    /// 从 deadpool_postgres::Pool 借出一条连接。失败时把最近一次
+    /// status 文本带回调用方，便于在 IPC 层还原错误。
+    async fn require_client(&self) -> Result<deadpool_postgres::Object, String> {
+        let pool = self.pool.as_ref().ok_or_else(|| {
+            // 这里不在 async 上下文里，需要先读出 status 文本再返回。
+            // try_read 在写入锁持有时立即失败（不阻塞）—— 这里我们只读
+            // 已有的 message，不会与初始化路径产生竞态。
+            self.status
+                .try_read()
+                .ok()
+                .map(|guard| guard.message.clone())
+                .unwrap_or_else(|| "数据库连接池未初始化".to_string())
+        })?;
+        pool.get().await.map_err(|error| {
+            tracing::warn!(
+                target: "db.cache",
+                error = %error,
+                "数据库连接池获取连接失败"
+            );
+            format!("PostgreSQL 连接不可用: {error}")
+        })
     }
 
     pub async fn cache_history(&self, request: CacheHistoryRequest) -> Result<usize, String> {
@@ -668,10 +722,7 @@ impl DatabaseState {
             "缓存历史写入发起"
         );
 
-        let mut client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_mut()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let mut client = self.require_client().await?;
         let transaction = client
             .transaction()
             .await
@@ -840,10 +891,7 @@ impl DatabaseState {
             offset = request.offset,
             "读取缓存历史发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         // 缓存读取上限：足够覆盖一个玩家跨赛季的全部历史；首页历史分析
         // 需要一次性读取该 puuid 在某 mode 下的全部缓存对局，避免多次翻页。
         let limit = request.limit.clamp(1, 5000);
@@ -953,10 +1001,7 @@ impl DatabaseState {
             purpose = "读取 PostgreSQL 全局汇总",
             "读取全局汇总发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let total_matches: i64 = client
             .query_one("SELECT COUNT(*) FROM matches", &[])
             .await
@@ -1037,10 +1082,7 @@ impl DatabaseState {
             mode_key = ?request.mode_key,
             "读取玩家汇总发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let summary_row = client
             .query_one(
                 "WITH player_matches AS (
@@ -1132,10 +1174,7 @@ impl DatabaseState {
             "缓存召唤师写入发起"
         );
 
-        let mut client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_mut()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let mut client = self.require_client().await?;
         let transaction = client
             .transaction()
             .await
@@ -1262,10 +1301,7 @@ impl DatabaseState {
             puuid = %puuid,
             "读取召唤师缓存发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let row = client
             .query_opt(
                 "SELECT puuid, summoner_id, account_id, display_name, internal_name,
@@ -1323,10 +1359,7 @@ impl DatabaseState {
             summoner_id,
             "读取召唤师缓存发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let row = client
             .query_opt(
                 "SELECT puuid, summoner_id, account_id, display_name, internal_name,
@@ -1431,10 +1464,7 @@ impl DatabaseState {
         // TX1: game_details 写 raw_payload（整包 JSONB）。
         // 字段化提取（participants/teams）暂未启用 —— 计划已确认只存原始载荷，
         // game_detail_participants / game_detail_teams 留待有 SQL 级查询需求时回填。
-        let mut client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_mut()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let mut client = self.require_client().await?;
         let transaction = client
             .transaction()
             .await
@@ -1483,10 +1513,7 @@ impl DatabaseState {
 
         // TX2: 独立的 raw_payload_sgp UPDATE。失败不影响 TX1 的写入。
         if let Some(sgp_detail) = request.sgp_detail.as_ref() {
-            let mut client_guard = self.require_client().await?;
-            let client = client_guard
-                .as_mut()
-                .ok_or_else(|| "数据库连接不可用".to_string())?;
+            let client = self.require_client().await?;
             client
                 .execute(
                     r#"
@@ -1533,10 +1560,7 @@ impl DatabaseState {
             game_id,
             "读取对局详情缓存发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let row = client
             .query_opt(
                 "SELECT game_id, game_creation, game_duration, game_mode, game_type,
@@ -1619,10 +1643,7 @@ impl DatabaseState {
             "缓存对局内阵容写入发起"
         );
 
-        let mut client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_mut()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let mut client = self.require_client().await?;
         let transaction = client
             .transaction()
             .await
@@ -1735,10 +1756,7 @@ impl DatabaseState {
             game_id,
             "读取对局内阵容缓存发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
 
         let header = client
             .query_opt(
@@ -1832,10 +1850,7 @@ impl DatabaseState {
             "缓存英雄详情写入发起"
         );
 
-        let mut client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_mut()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         client
             .execute(
                 r#"
@@ -1876,10 +1891,7 @@ impl DatabaseState {
             champion_id,
             "读取英雄详情缓存发起"
         );
-        let client_guard = self.require_client().await?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let client = self.require_client().await?;
         let row = client
             .query_opt(
                 "SELECT payload,
