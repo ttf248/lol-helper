@@ -401,6 +401,43 @@ pub struct CachedSummonerRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheGameDetailRequest {
+    /// LCU /games/{gameId} 的完整响应；作为 raw_payload 落库。
+    /// SGP-only 写入时也用作 raw_payload（NOT NULL 约束），同时把 sgp_detail
+    /// 同步写入 raw_payload_sgp，使读取路径直接命中 SGP 分支。
+    pub detail: serde_json::Value,
+    /// 可选：SGP 摘要响应；存在时作为 raw_payload_sgp 落库。
+    #[serde(default)]
+    pub sgp_detail: Option<serde_json::Value>,
+    /// 写入来源标签。`'lcu-game-detail'`（默认）/ `'sgp-summary-full'` /
+    /// `'sgp-summary'` 等。默认 `'lcu-game-detail'`。
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedGameDetail {
+    pub game_id: i64,
+    pub game_creation: Option<i64>,
+    pub game_duration: Option<i32>,
+    pub game_mode: Option<String>,
+    pub game_type: Option<String>,
+    pub game_version: Option<String>,
+    pub map_id: Option<i32>,
+    pub platform_id: Option<String>,
+    pub season_id: Option<i32>,
+    /// LCU /games/{gameId} 完整响应（始终存在）。
+    pub raw_payload: serde_json::Value,
+    /// SGP 摘要响应（仅当调用方传入时存在）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_payload_sgp: Option<serde_json::Value>,
+    pub source: String,
+    pub fetched_at: i64,
+}
+
 pub struct DatabaseState {
     client: Arc<Mutex<Option<Client>>>,
     status: Arc<RwLock<DatabaseStatus>>,
@@ -1246,6 +1283,234 @@ impl DatabaseState {
         }
         Ok(result)
     }
+
+    pub async fn cache_game_detail(
+        &self,
+        request: CacheGameDetailRequest,
+    ) -> Result<i64, String> {
+        let started = std::time::Instant::now();
+        let game_id = request
+            .detail
+            .get("gameId")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "缓存对局详情缺少 gameId".to_string())?;
+        let has_sgp = request.sgp_detail.is_some();
+        let source_label = request
+            .source
+            .clone()
+            .unwrap_or_else(|| "lcu-game-detail".to_string());
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_game_detail",
+            purpose = "将对局详情（LCU + 可选 SGP）写入 PostgreSQL 缓存",
+            game_id,
+            has_sgp,
+            "缓存对局详情写入发起"
+        );
+
+        // 提取 LCU Games 顶层字段（缺失则填空值；raw_payload 始终保留整包以便回放）。
+        let detail = &request.detail;
+        let game_creation = detail.get("gameCreation").and_then(|v| v.as_i64());
+        let game_creation_date = detail
+            .get("gameCreationDate")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let game_duration = detail
+            .get("gameDuration")
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32);
+        let game_mode = detail
+            .get("gameMode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let game_type = detail
+            .get("gameType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let game_version = detail
+            .get("gameVersion")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let map_id = detail.get("mapId").and_then(|v| v.as_i64()).map(|n| n as i32);
+        let platform_id = detail
+            .get("platformId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let season_id = detail
+            .get("seasonId")
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32);
+
+        // TX1: game_details 写 raw_payload（整包 JSONB）。
+        // 字段化提取（participants/teams）暂未启用 —— 计划已确认只存原始载荷，
+        // game_detail_participants / game_detail_teams 留待有 SQL 级查询需求时回填。
+        let mut client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_mut()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO game_details(
+                    game_id, game_creation, game_creation_date, game_duration,
+                    game_mode, game_type, game_version, map_id, platform_id,
+                    season_id, raw_payload, source, fetched_at
+                )
+                VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+                ON CONFLICT(game_id) DO UPDATE SET
+                    game_creation = EXCLUDED.game_creation,
+                    game_creation_date = EXCLUDED.game_creation_date,
+                    game_duration = EXCLUDED.game_duration,
+                    game_mode = EXCLUDED.game_mode,
+                    game_type = EXCLUDED.game_type,
+                    game_version = EXCLUDED.game_version,
+                    map_id = EXCLUDED.map_id,
+                    platform_id = EXCLUDED.platform_id,
+                    season_id = EXCLUDED.season_id,
+                    raw_payload = EXCLUDED.raw_payload,
+                    source = EXCLUDED.source,
+                    fetched_at = NOW()
+                "#,
+                &[
+                    &game_id,
+                    &game_creation,
+                    &game_creation_date,
+                    &game_duration,
+                    &game_mode,
+                    &game_type,
+                    &game_version,
+                    &map_id,
+                    &platform_id,
+                    &season_id,
+                    detail,
+                    &source_label,
+                ],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction.commit().await.map_err(|error| error.to_string())?;
+
+        // TX2: 独立的 raw_payload_sgp UPDATE。失败不影响 TX1 的写入。
+        if let Some(sgp_detail) = request.sgp_detail.as_ref() {
+            let mut client_guard = self.require_client().await?;
+            let client = client_guard
+                .as_mut()
+                .ok_or_else(|| "数据库连接不可用".to_string())?;
+            client
+                .execute(
+                    r#"
+                    UPDATE game_details
+                       SET raw_payload_sgp = $2,
+                           source = CASE
+                               WHEN source LIKE 'lcu%' THEN source
+                               ELSE $3
+                           END,
+                           fetched_at = NOW()
+                     WHERE game_id = $1
+                    "#,
+                    &[&game_id, sgp_detail, &source_label],
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+
+        tracing::info!(
+            target: "db.cache",
+            op = "cache_game_detail",
+            purpose = "将对局详情（LCU + 可选 SGP）写入 PostgreSQL 缓存",
+            game_id,
+            has_sgp,
+            source = %source_label,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "缓存对局详情已写入"
+        );
+        Ok(game_id)
+    }
+
+    pub async fn get_cached_game_detail(
+        &self,
+        game_id: i64,
+    ) -> Result<Option<CachedGameDetail>, String> {
+        if game_id <= 0 {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "db.cache",
+            op = "cached_game_detail",
+            purpose = "读取 PostgreSQL 对局详情缓存",
+            game_id,
+            "读取对局详情缓存发起"
+        );
+        let client_guard = self.require_client().await?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| "数据库连接不可用".to_string())?;
+        let row = client
+            .query_opt(
+                "SELECT game_id, game_creation, game_duration, game_mode, game_type,
+                        game_version, map_id, platform_id, season_id,
+                        raw_payload, raw_payload_sgp, source,
+                        EXTRACT(EPOCH FROM fetched_at)::BIGINT AS fetched_at_epoch
+                 FROM game_details WHERE game_id = $1",
+                &[&game_id],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = match row {
+            Some(row) => Some(CachedGameDetail {
+                game_id: row.get("game_id"),
+                game_creation: row.try_get("game_creation").ok(),
+                game_duration: row.try_get("game_duration").ok(),
+                game_mode: row.try_get("game_mode").ok(),
+                game_type: row.try_get("game_type").ok(),
+                game_version: row.try_get("game_version").ok(),
+                map_id: row.try_get("map_id").ok(),
+                platform_id: row.try_get("platform_id").ok(),
+                season_id: row.try_get("season_id").ok(),
+                raw_payload: row.get("raw_payload"),
+                raw_payload_sgp: row.try_get("raw_payload_sgp").ok(),
+                source: row.get("source"),
+                fetched_at: row.get("fetched_at_epoch"),
+            }),
+            None => None,
+        };
+        match &result {
+            Some(detail) => {
+                let payload_size = serde_json::to_string(&detail.raw_payload)
+                    .map(|s| s.len())
+                    .unwrap_or_default();
+                tracing::info!(
+                    target: "db.cache",
+                    op = "cached_game_detail",
+                    purpose = "读取 PostgreSQL 对局详情缓存",
+                    game_id,
+                    found = true,
+                    source = %detail.source,
+                    has_sgp = detail.raw_payload_sgp.is_some(),
+                    payload_bytes = payload_size as i64,
+                    fetched_at = detail.fetched_at,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "读取对局详情缓存命中"
+                );
+            }
+            None => tracing::info!(
+                target: "db.cache",
+                op = "cached_game_detail",
+                purpose = "读取 PostgreSQL 对局详情缓存",
+                game_id,
+                found = false,
+                duration_ms = started.elapsed().as_millis() as u64,
+                "读取对局详情缓存未命中"
+            ),
+        }
+        Ok(result)
+    }
 }
 
 /// 把 PostgreSQL NOTICE 翻译成中文（保留以便未来 NOTICE 来源接入时直接复用）。
@@ -1339,4 +1604,20 @@ pub async fn get_cached_summoner_by_id(
     summoner_id: i64,
 ) -> Result<Option<CachedSummonerRow>, String> {
     state.get_cached_summoner_by_id(summoner_id).await
+}
+
+#[tauri::command]
+pub async fn cache_game_detail(
+    state: tauri::State<'_, DatabaseState>,
+    request: CacheGameDetailRequest,
+) -> Result<i64, String> {
+    state.cache_game_detail(request).await
+}
+
+#[tauri::command]
+pub async fn get_cached_game_detail(
+    state: tauri::State<'_, DatabaseState>,
+    game_id: i64,
+) -> Result<Option<CachedGameDetail>, String> {
+    state.get_cached_game_detail(game_id).await
 }

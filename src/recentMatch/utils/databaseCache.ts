@@ -12,6 +12,7 @@ const SUMMARY_TTL_MS = 30_000;
 const PLAYER_SUMMARY_TTL_MS = 15_000;
 const HISTORY_TTL_MS = 10_000;
 const SUMMONER_TTL_MS = 30_000;
+const GAME_DETAIL_TTL_MS = 60_000;
 
 interface CachedEntry<T> {
   value: T;
@@ -25,6 +26,7 @@ const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
 const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
 const summonerByIdCache = new Map<number, CachedEntry<CachedSummonerRow>>();
 const summonerByPuuidCache = new Map<string, CachedEntry<CachedSummonerRow>>();
+const gameDetailCache = new Map<number, CachedEntry<CachedGameDetail>>();
 
 const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
   summonerByIdCache.delete(row.summonerId);
@@ -51,12 +53,14 @@ export const resetDatabaseCache = (reason?: string) => {
     history: historyCache.size,
     summoner_by_id: summonerByIdCache.size,
     summoner_by_puuid: summonerByPuuidCache.size,
+    game_detail: gameDetailCache.size,
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
   historyCache.clear();
   summonerByIdCache.clear();
   summonerByPuuidCache.clear();
+  gameDetailCache.clear();
   logger.info({
     tag: "db.cache",
     message: "TTL 缓存已重置",
@@ -669,3 +673,147 @@ export const summonerRowToLcuInfo = (
   xpUntilNextLevel: row.xpUntilNextLevel ?? 0,
   tagLine: row.tagLine ?? "",
 });
+
+/**
+ * 单局对局详情在 PG `game_details` 表中的完整行。
+ * raw_payload 始终是 LCU /games/{gameId} 的完整响应，
+ * raw_payload_sgp 可选，仅当调用方传入 SGP 数据时存在。
+ * 计划确认只存原始载荷，字段化提取（participants/teams）暂未启用。
+ */
+export interface CachedGameDetail {
+  gameId: number;
+  gameCreation?: number | null;
+  gameDuration?: number | null;
+  gameMode?: string | null;
+  gameType?: string | null;
+  gameVersion?: string | null;
+  mapId?: number | null;
+  platformId?: string | null;
+  seasonId?: number | null;
+  rawPayload: unknown;
+  rawPayloadSgp?: unknown;
+  source: string;
+  fetchedAt: number;
+}
+
+const dropGameDetailCacheEntry = (gameId: number) => {
+  gameDetailCache.delete(gameId);
+};
+
+/**
+ * 将单局 LCU /games/{gameId} 响应 fire-and-forget 写入 PostgreSQL。
+ * raw_payload_sgp 仅在传入时写入，独立事务，失败不影响 LCU 部分。
+ * 当 source === 'sgp-summary-full' / 'sgp-summary' 时，将同一份载荷
+ * 写入 raw_payload + raw_payload_sgp —— 既满足 NOT NULL，又保证读取
+ * 路径走 SGP 分支。
+ */
+export const cacheGameDetail = async (
+  detail: unknown,
+  sgpDetail?: unknown,
+  source?: string,
+): Promise<boolean> => {
+  if (!detail || typeof detail !== "object") {
+    return false;
+  }
+  const gameId = (detail as { gameId?: unknown }).gameId;
+  if (typeof gameId !== "number" || gameId <= 0) {
+    return false;
+  }
+  const isSgpSource = source?.startsWith("sgp") ?? false;
+  const sgpPayload = isSgpSource ? detail : sgpDetail;
+  const startedAt = Date.now();
+  try {
+    await invoke<number>("cache_game_detail", {
+      request: {
+        detail,
+        sgpDetail: sgpPayload ?? null,
+        source: source ?? "lcu-game-detail",
+      },
+    });
+    // 写完清除 TTL —— 下次读会重新走 invoke 拿到最新 payload。
+    dropGameDetailCacheEntry(gameId);
+    logger.info({
+      tag: "db.cache",
+      message: "写入对局详情缓存完成",
+      context: {
+        purpose: "将对局详情（LCU + 可选 SGP）写入 PostgreSQL 缓存",
+        op: "cache_game_detail",
+        game_id: gameId,
+        has_sgp: sgpPayload !== undefined && sgpPayload !== null,
+        source: source ?? "lcu-game-detail",
+        duration_ms: Date.now() - startedAt,
+      },
+      durationMs: Date.now() - startedAt,
+    });
+    return true;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "写入对局详情缓存失败",
+      context: {
+        op: "cache_game_detail",
+        game_id: gameId,
+        has_sgp: sgpPayload !== undefined && sgpPayload !== null,
+        source: source ?? "lcu-game-detail",
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return false;
+  }
+};
+
+/**
+ * 按 gameId 查 PG 中的对局详情；命中后回填 TTL 缓存并返回。
+ * 失败或未命中返回 null，调用方应继续走 LCU/SGP 路径。
+ */
+export const getCachedGameDetail = async (
+  gameId: number,
+): Promise<CachedGameDetail | null> => {
+  if (!Number.isFinite(gameId) || gameId <= 0) {
+    return null;
+  }
+  const cached = gameDetailCache.get(gameId);
+  if (isFresh(cached, GAME_DETAIL_TTL_MS)) {
+    logger.debug({
+      tag: "db.cache",
+      message: "TTL 命中，跳过 invoke",
+      context: { op: "get_cached_game_detail", game_id: gameId },
+    });
+    return cached!.value;
+  }
+  const startedAt = Date.now();
+  try {
+    const value = await invoke<CachedGameDetail | null>(
+      "get_cached_game_detail",
+      { gameId },
+    );
+    if (value) {
+      gameDetailCache.set(gameId, { value, fetchedAt: Date.now() });
+      logger.debug({
+        tag: "db.cache",
+        message: "PG 对局详情缓存命中",
+        context: {
+          op: "get_cached_game_detail",
+          game_id: gameId,
+          source: value.source,
+          has_sgp: value.rawPayloadSgp !== undefined && value.rawPayloadSgp !== null,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取对局详情缓存失败",
+      context: {
+        op: "get_cached_game_detail",
+        game_id: gameId,
+        duration_ms: Date.now() - startedAt,
+        error: String(error).slice(0, 500),
+      },
+    });
+    return null;
+  }
+};

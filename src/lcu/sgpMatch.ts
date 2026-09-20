@@ -3,6 +3,7 @@ import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
 import { SgpServers } from "@/resources/areaList";
 import { GamesBySgp, Participant } from "./types/queryMatchSgpGameTypes";
 import { logger } from "@/utils/logger";
+import { cacheGameDetail } from "@/recentMatch/utils/databaseCache";
 
 export interface SgpRequestParams {
 	playerPuuid: string;
@@ -330,6 +331,13 @@ export class SgpMatchHistoryService {
 
 				// 不修改 SUMMARY 原对象，否则详情页只能拿到一个 participant。
 				this.matchCache.set(games.gameId, games);
+				// 把整包 GamesBySgp 持久化到 PG，作为 raw_payload_sgp。
+				// 重启客户端或跨进程重建时详情页能直接命中 PG，不再走 SGP。
+				// 仅在完整参与者请求时落库 —— SUMMARY 请求只包含被查询玩家的
+				// 单 participant，覆盖后会让 PG 的 sgp 列丢失全员数据。
+				if (fullParticipants) {
+					void cacheGameDetail(games, undefined, "sgp-summary-full");
+				}
 				const participant = games.participants.find(
 					(participant: Participant) => participant.puuid === playerPuuid,
 				);

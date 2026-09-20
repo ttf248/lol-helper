@@ -25,7 +25,8 @@ export type MatchHistoryEndpoint =
 	| "lcu-puuid"
 	| "sgp-summary"
 	| "sgp-summary-full"
-	| "lcu-game-detail";
+	| "lcu-game-detail"
+	| "postgres";
 
 export const MATCH_HISTORY_SOURCE_LABELS: Record<MatchHistorySource, string> = {
 	"lcu-current": "LCU（当前召唤师）",
@@ -41,6 +42,7 @@ export const MATCH_HISTORY_ENDPOINT_LABELS: Record<MatchHistoryEndpoint, string>
 	"sgp-summary": "SGP SUMMARY 历史接口",
 	"sgp-summary-full": "SGP SUMMARY 完整参与者接口",
 	"lcu-game-detail": "LCU 对局详情接口",
+	postgres: "PostgreSQL 详情缓存",
 };
 
 export const MATCH_HISTORY_ENDPOINT_PATHS: Record<MatchHistoryEndpoint, string> = {
@@ -53,6 +55,7 @@ export const MATCH_HISTORY_ENDPOINT_PATHS: Record<MatchHistoryEndpoint, string> 
 	"sgp-summary-full":
 		"/match-history-query/v1/products/lol/player/{puuid}/SUMMARY?startIndex={start}&count={count}",
 	"lcu-game-detail": "/lol-match-history/v1/games/{gameId}",
+	postgres: "postgres://frank@localhost:5432/frank/game_details/{game_id}",
 };
 
 export type MatchHistoryGame = Games | GamesBySgp;

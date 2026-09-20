@@ -21,6 +21,7 @@ import {
     getCachedSgpMatch,
 } from "@/lcu/aboutMatch";
 import type { MatchHistoryEndpoint } from "@/lcu/aboutMatch";
+import { getCachedGameDetail, cacheGameDetail } from "@/recentMatch/utils/databaseCache";
 import {
     GamesBySgp,
     Participant as SgpParticipant,
@@ -69,6 +70,87 @@ export default class MatchDetails {
                 sum_puuid: sumPuuid ?? null,
             },
         });
+        // PG 缓存优先：已经持久化过的对局不再触发 LCU /games/{gameId} 或 SGP。
+        // raw_payload_sgp 存在时优先走 SGP 解析（包含完整的 10 人数据，对外部
+        // 召唤师也可用）；否则用 raw_payload 走 LCU 解析路径。
+        const pgCached = await getCachedGameDetail(gameId);
+        if (pgCached) {
+            const payload = pgCached.rawPayloadSgp ?? pgCached.rawPayload;
+            const resolved = pgCached.rawPayloadSgp ? "sgp-summary" : "lcu-game-detail";
+            const sgpPayload = pgCached.rawPayloadSgp as
+                | Parameters<MatchDetails["getSgpParticipantsDetails"]>[0]
+                | undefined;
+            const sgpResult =
+                sgpPayload !== undefined
+                    ? this.getSgpParticipantsDetails(sgpPayload, sumId, sumPuuid)
+                    : null;
+            if (sgpResult) {
+                this.detailCache.set(gameId, sgpResult);
+                logger.info({
+                    tag: "match.detail",
+                    message: "对局详情解析完成",
+                    context: {
+                        purpose: "查询单局对局详情（包含双方十人数据）",
+                        game_id: gameId,
+                        sum_puuid: sumPuuid,
+                        resolved: "postgres",
+                        sgp_source: true,
+                        duration_ms: Date.now() - startedAt,
+                    },
+                    durationMs: Date.now() - startedAt,
+                }, JSON.stringify(sgpResult));
+                return this.withDataSource(sgpResult, "postgres");
+            }
+            const lcuPayload = payload as unknown as GameDetailedInfo;
+            if (lcuPayload && Array.isArray(lcuPayload.participants)) {
+                const lcuResult =
+                    lcuPayload.queueId === 1700
+                        ? this.getFighterParticipantsDetails(
+                              lcuPayload,
+                              lcuPayload.participants,
+                              lcuPayload.participantIdentities,
+                              gameId,
+                              sumId,
+                              lcuPayload.queueId,
+                          )
+                        : this.getParticipantsDetails(
+                              lcuPayload,
+                              lcuPayload.participants,
+                              lcuPayload.participantIdentities,
+                              sumId,
+                              lcuPayload.queueId,
+                              gameId,
+                              sumPuuid,
+                          );
+                if (lcuResult) {
+                    this.detailCache.set(gameId, lcuResult);
+                    logger.info({
+                        tag: "match.detail",
+                        message: "对局详情解析完成",
+                        context: {
+                            purpose: "查询单局对局详情（包含双方十人数据）",
+                            game_id: gameId,
+                            sum_puuid: sumPuuid,
+                            resolved: "postgres",
+                            sgp_source: false,
+                            duration_ms: Date.now() - startedAt,
+                        },
+                        durationMs: Date.now() - startedAt,
+                    }, JSON.stringify(lcuResult));
+                    return this.withDataSource(lcuResult, "postgres");
+                }
+            }
+            // PG 有 payload 但解析失败 —— 落到内存/SGP/LCU 链路上重试。
+            logger.warn({
+                tag: "match.detail",
+                message: "PG 缓存 payload 无法解析，回落到服务器",
+                context: {
+                    game_id: gameId,
+                    resolved,
+                    has_sgp: pgCached.rawPayloadSgp !== undefined && pgCached.rawPayloadSgp !== null,
+                },
+            });
+        }
         // 实例级缓存：同一 gameId 在 mainWindow 会话内已经拼装过一次
         // ParticipantsInfo，直接复用，省掉 SGP/LCU/单局详情三条路径
         // 的所有调用。
@@ -204,6 +286,13 @@ export default class MatchDetails {
         // 拿到单局响应后写进 LCU 历史缓存，下一次 detail / history
         // 翻页能直接命中缓存分支，省一次 LCU 调用。
         cacheLcuGameDetail(response as unknown as Games);
+        // 同时把原始 payload 持久化到 PG。重启客户端后下次再开这局
+        // 详情直接命中 PG，不再触发 /games/{gameId}。
+        void cacheGameDetail(
+            response as unknown as Games,
+            undefined,
+            "lcu-game-detail",
+        );
 
         let assembled: ParticipantsInfo | null = null;
         if (response.queueId === 1700) {
