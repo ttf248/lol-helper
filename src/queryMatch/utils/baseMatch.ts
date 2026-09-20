@@ -33,6 +33,15 @@ export interface ProcessedMatchHistory {
     availableCount: number;
 }
 
+// 分页和模式筛选共享最近服务器窗口。短 TTL 内翻页/切换模式不应重复
+// 请求相同的 60 场，也不应重复把同一批数据写入 PostgreSQL。
+const SERVER_HISTORY_CACHE_TTL_MS = 30_000;
+
+// 记录上次写入 PG 的内容指纹。同 PUUID + modeKey 在两次同步之间 gameId
+// 列表未变化时跳过 cacheHistory 调用，省掉 IPC + UPSERT 往返。写入完成后
+// 只在源数据出现新 gameId 时才更新。
+const lastWriteFingerprint = new Map<string, string>();
+
 export default class BaseMatch {
     public summonerId = 0;
     private recentServerHistory = new Map<
@@ -41,6 +50,7 @@ export default class BaseMatch {
             games: (Games | GamesBySgp)[];
             source: MatchHistorySource;
             sourceEndpoints: MatchHistoryEndpoint[];
+            fetchedAt: number;
         }
     >();
 
@@ -62,6 +72,7 @@ export default class BaseMatch {
                 games: result.games,
                 source: result.source,
                 sourceEndpoints: result.endpoints,
+                fetchedAt: Date.now(),
             });
         }
         return {
@@ -106,6 +117,19 @@ export default class BaseMatch {
             gamesByMode.set(modeKey, modeGames);
         }
         for (const [modeKey, modeGames] of gamesByMode) {
+            // 同 (puuid, modeKey) 上次同步的 gameId 列表未变化就跳过：
+            // 服务器三页窗口在 30s TTL 内反复复用，内容没变，写 PG 也
+            // 是同一条 ON CONFLICT UPDATE，完全是浪费。出现新 gameId
+            // 或 server games 比上次少（被动裁剪）才重新写入。
+            const sortedIds = modeGames
+                .map((game) => game.gameId)
+                .sort((a, b) => a - b);
+            const fingerprint = sortedIds.join(",");
+            const cacheKey = `${puuid}|${modeKey}`;
+            if (lastWriteFingerprint.get(cacheKey) === fingerprint) {
+                continue;
+            }
+            lastWriteFingerprint.set(cacheKey, fingerprint);
             void cacheHistory({
                 puuid,
                 summonerId: this.summonerId,
@@ -164,11 +188,14 @@ export default class BaseMatch {
             limit: HISTORY_ANALYSIS_LIMIT,
             offset: 0,
         });
-        // 首次查询或重新回到第一页时刷新服务器最近三页；同一玩家
-        // 后续翻页复用本次服务器窗口，第四页及更早页面只读本地缓存。
+        // 首次查询或短缓存过期后刷新服务器窗口；同一玩家的模式切换和
+        // 后续翻页复用窗口，第四页及更早页面只读本地缓存。
         const serverHistory = this.recentServerHistory.get(puuid);
+        const shouldSync =
+            !serverHistory ||
+            Date.now() - serverHistory.fetchedAt >= SERVER_HISTORY_CACHE_TTL_MS;
         const synced =
-            begIndex === 0 || !serverHistory
+            shouldSync
                 ? await this.syncRecentServerHistory(puuid)
                 : {
                       games: serverHistory.games,
@@ -192,7 +219,7 @@ export default class BaseMatch {
         if (synced.failed && mergedGames.length === 0) {
             return null;
         }
-        if (synced.games.length > 0 && synced.source) {
+        if (shouldSync && synced.games.length > 0 && synced.source) {
             // 历史查询面板也负责回填统一分析缓存，后续首页、分页和
             // 模式分析都可以复用这三页 participant 数据。
             this.cacheNormalizedGames(
