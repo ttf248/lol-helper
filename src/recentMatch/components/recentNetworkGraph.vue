@@ -7,7 +7,11 @@ import {
   RecentNetworkNode,
 } from "@/recentMatch/utils/queryTypes";
 
-const { analysis } = defineProps<{ analysis: RecentNetworkAnalysis | null }>();
+const { analysis, onNodeClick } = defineProps<{
+  analysis: RecentNetworkAnalysis | null;
+  /** 节点点击回调；不传则节点不可点击。 */
+  onNodeClick?: (node: RecentNetworkNode) => void;
+}>();
 
 const nodePositions = computed(() => {
   const result = new Map<string, { x: number; y: number }>();
@@ -77,7 +81,12 @@ const edgeDescription = (edge: RecentNetworkEdge) => {
           stroke-linecap="round"
           opacity="0.42"
         />
-        <g v-for="node in analysis.nodes" :key="node.puuid">
+        <g
+          v-for="node in analysis.nodes"
+          :key="node.puuid"
+          :class="{ 'cursor-pointer': !!onNodeClick }"
+          @click="onNodeClick?.(node)"
+        >
           <circle
             :cx="positionOf(node.puuid).x"
             :cy="positionOf(node.puuid).y"
@@ -91,6 +100,7 @@ const edgeDescription = (edge: RecentNetworkEdge) => {
             text-anchor="middle"
             fill="white"
             font-size="10"
+            pointer-events="none"
           >
             {{ node.teamIndex + 1 }}
           </text>
@@ -100,6 +110,7 @@ const edgeDescription = (edge: RecentNetworkEdge) => {
             text-anchor="middle"
             fill="currentColor"
             font-size="11"
+            pointer-events="none"
           >
             {{ displayName(node.summonerName) }}
           </text>

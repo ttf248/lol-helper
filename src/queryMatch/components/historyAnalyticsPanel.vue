@@ -38,6 +38,8 @@ import {
   confidenceLabel,
   formatRate,
 } from "@/recentMatch/utils/partyDisplay";
+import { useSummonerNavigation } from "@/queryMatch/composables/useSummonerNavigation";
+import type { PartyMember, RecentNetworkNode } from "@/recentMatch/utils/queryTypes";
 
 type PartyRankingMode = "frequency" | "winRate";
 
@@ -71,6 +73,11 @@ const cachedPlayerSummary = ref<CachedPlayerSummary>({
 });
 const databasePlayerLoading = ref(false);
 let databaseRequestId = 0;
+
+const { navigate } = useSummonerNavigation();
+// 关系图节点的 puuid/summonerName 字段和 PartyMember 同构，泛化调用即可。
+const navigateToNetworkNode = (node: RecentNetworkNode) =>
+  navigate(node as unknown as PartyMember);
 
 const partyAnalysisGames = computed(
   () => analysis.value?.actualGames || 0,
@@ -239,7 +246,7 @@ const cacheModeSummary = (modeKey: string) => {
 };
 
 const historyQueryPlan =
-  "仅使用 PostgreSQL 本地缓存，按 gameCreation DESC 读取全部缓存对局；不发起服务器请求。";
+  "优先读取 PostgreSQL 全部缓存；发现摘要参与者不完整时，补拉最近 500 场完整队伍并回写缓存。";
 
 watch(selectedMode, () => {
   void loadAnalysis();
@@ -323,6 +330,7 @@ onMounted(() => {
       <div class="analysis-progress-text">
         <span v-if="analysisProgress.stage === 'cache'">正在按 gameCreation DESC 读取 PostgreSQL 本地缓存，按 500 场分页拉取。</span>
         <span v-else-if="analysisProgress.stage === 'personal'">正在汇总个人胜率、英雄与位置表现。</span>
+        <span v-else-if="analysisProgress.stage === 'full'">正在补齐逐局参与者并刷新开黑组合。</span>
         <span v-else-if="analysisProgress.stage === 'relations'">正在计算共同对局、交手胜率和黑名单关联。</span>
         <span v-else>分析完成。</span>
       </div>
@@ -413,7 +421,11 @@ onMounted(() => {
               :key="item.teammate.puuid"
               class="synergy-row"
             >
-              <div class="synergy-name" :title="item.teammate.summonerName">
+              <div
+                class="synergy-name synergy-name--clickable"
+                :title="item.teammate.summonerName"
+                @click="navigate(item.teammate)"
+              >
                 {{ item.teammate.summonerName }}
                 <n-tag v-if="item.teammate.moderation?.marked" size="tiny" type="error">
                   黑名单
@@ -479,6 +491,7 @@ onMounted(() => {
                     :index="index + 1"
                     :self-puuid="props.player.puuid"
                     mode="full"
+                    @summoner-click="navigate"
                   />
                 </div>
               </div>
@@ -497,7 +510,11 @@ onMounted(() => {
               :key="item.opponent.puuid"
               class="opponent-row"
             >
-              <span>{{ item.opponent.summonerName }}</span>
+              <span
+                class="opponent-name"
+                :title="item.opponent.summonerName"
+                @click.stop="navigate(item.opponent)"
+              >{{ item.opponent.summonerName }}</span>
               <n-tag v-if="item.opponent.moderation?.marked" size="tiny" type="error">
                 黑名单
               </n-tag>
@@ -516,7 +533,10 @@ onMounted(() => {
         </n-card>
 
         <n-card size="small" title="历史对局关系图" :bordered="false">
-          <recent-network-graph :analysis="analysis.network || null" />
+          <recent-network-graph
+            :analysis="analysis.network || null"
+            :on-node-click="navigateToNetworkNode"
+          />
         </n-card>
 
         <n-card size="small" title="本玩家缓存派生汇总" :bordered="false">
@@ -705,6 +725,15 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.synergy-name--clickable {
+  cursor: pointer;
+}
+
+.synergy-name--clickable:hover {
+  color: #18a058;
+  text-decoration: underline dotted;
+}
+
 .position-row :deep(.n-progress) {
   flex: 1;
   min-width: 2rem;
@@ -734,6 +763,16 @@ onMounted(() => {
   display: block;
   padding: 0.25rem 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.opponent-name {
+  cursor: pointer;
+  margin-right: 0.4rem;
+}
+
+.opponent-name:hover {
+  color: #d03050;
+  text-decoration: underline dotted;
 }
 
 .party-ranking-caption,

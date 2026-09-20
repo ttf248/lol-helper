@@ -39,7 +39,8 @@ const HistoryAnalyticsPanel = defineAsyncComponent(
 );
 const blackMatchDrawer = ref(false);
 const blackMatchDetails: Ref<[ParticipantsInfo, number] | null> = ref(null);
-const activeTab = ref<"matches" | "analytics">("matches");
+// activeTab 提升到 store 里，让历史分析面板里的可点击玩家 ID
+// 在切换召唤师后能直接写回 "matches"。
 let stopInitHome: (() => void) | null = null;
 
 const historicalMatches = computed<MatchItemTypes[]>(() => {
@@ -164,7 +165,8 @@ const clearBlackMatch = () => {
                     content-style="padding:0 0 0 12px"
                 >
                     <n-tabs
-                        v-model:value="activeTab"
+                        :value="matchStore.activeTab"
+                        @update:value="matchStore.setActiveTab"
                         class="match-tabs"
                         type="line"
                         size="small"

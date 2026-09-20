@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NPopover, NTag } from "naive-ui";
 import { computed } from "vue";
-import type { PartyGroupAnalysis } from "@/recentMatch/utils/queryTypes";
+import type { PartyGroupAnalysis, PartyMember } from "@/recentMatch/utils/queryTypes";
 import {
   confidenceLabel,
   formatRate,
@@ -32,6 +32,7 @@ const props = withDefaults(
 
 defineEmits<{
   (e: "click", group: PartyGroupAnalysis): void;
+  (e: "summoner-click", member: PartyMember): void;
 }>();
 
 const names = computed(() => partyGroupNames(props.group, props.selfPuuid));
@@ -89,7 +90,21 @@ const headerTagText = computed(() =>
 
       <!-- 主体：成员名 + 数字行 -->
       <div class="duo-card-body">
-        <div class="duo-card-names" :title="names">{{ names }}</div>
+        <div class="duo-card-names" :title="names">
+          <template v-for="(member, idx) in group.members" :key="member.puuid">
+            <button
+              v-if="!(selfPuuid && member.puuid === selfPuuid)"
+              type="button"
+              class="duo-name-chip"
+              :title="member.summonerName"
+              @click.stop="$emit('summoner-click', member)"
+            >{{ member.summonerName?.trim() || "未知玩家" }}</button>
+            <span v-else class="duo-name-self">我</span>
+            <span v-if="idx < group.members.length - 1" class="duo-name-sep">
+              +
+            </span>
+          </template>
+        </div>
         <div class="duo-card-metric-row">
           <span class="duo-card-metric duo-card-metric-primary">
             {{ formatRate(group.winRate) }}
@@ -228,6 +243,39 @@ const headerTagText = computed(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+/* 单个名字的 chip：保留 inline 风格，不破坏现有拼接外观，
+   但用 button 以获得键盘可达性，并通过 .stop 阻止冒泡到整卡
+   compact 模式下透明 overlay 的 click 事件。 */
+.duo-name-chip {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.duo-name-chip:hover,
+.duo-name-chip:focus-visible {
+  color: #047857;
+  text-decoration: underline dotted;
+  outline: none;
+}
+
+.duo-name-self {
+  color: #6b7280;
+}
+
+.duo-name-sep {
+  color: #9ca3af;
+  font-weight: 500;
+  padding: 0 1px;
 }
 
 .duo-card-metric-row {
@@ -371,6 +419,19 @@ const headerTagText = computed(() =>
 :global(.dark) .duo-card-names,
 :global(.dark) .duo-card-metric-primary {
   color: #ecfdf5;
+}
+
+:global(.dark) .duo-name-chip:hover,
+:global(.dark) .duo-name-chip:focus-visible {
+  color: #6ee7b7;
+}
+
+:global(.dark) .duo-name-self {
+  color: #a7f3d0;
+}
+
+:global(.dark) .duo-name-sep {
+  color: #6ee7b7;
 }
 
 :global(.dark) .duo-card-metric {

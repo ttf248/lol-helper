@@ -95,9 +95,15 @@ const useMatchStore = defineStore("useMatchStore", {
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
 			detailRequestId: 0,
+			// queryMatch.vue 工作区内的活动页签，提升到 store 便于外部组件
+			// （历史战绩面板里的可点击玩家 ID）切换回 matches。
+			activeTab: "matches" as "matches" | "analytics",
 		};
 	},
 	actions: {
+		setActiveTab(tab: "matches" | "analytics") {
+			this.activeTab = tab;
+		},
 		async init(summonerId?: number, locSumId?: number) {
 			const queryRequestId = ++this.queryRequestId;
 			// 新的召唤师查询会让旧的详情请求失效，避免旧响应覆盖新页面。
