@@ -12,6 +12,7 @@ import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
 import {
     cacheHistory,
     getCachedHistory,
+    getCachedHistoryPage,
 } from "@/recentMatch/utils/databaseCache";
 import {
     normalizeHistoryGame,
@@ -22,9 +23,8 @@ import { modeForQueue, MatchModeKey } from "@/recentMatch/utils/matchMode";
 import {
     HISTORY_ANALYSIS_LIMIT,
     HISTORY_CACHE_SYNC_LIMIT,
-    HISTORY_CACHE_SYNC_MAX_PAGES,
+    HISTORY_COLD_START_PAGES,
     HISTORY_SERVER_PAGE_SIZE,
-    HISTORY_SERVER_FETCH_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import type {
     HistoryCacheSyncStatus,
@@ -222,7 +222,7 @@ export default class BaseMatch {
         puuid: string,
         begIndex: number,
         endIndex: number,
-        serverLimit: number = HISTORY_SERVER_FETCH_LIMIT,
+        serverLimit: number = HISTORY_SERVER_PAGE_SIZE,
     ): Promise<ProcessedMatchHistory | null> => {
         // 写入玩家id
         let localSumInfo: Partial<sumInfoTypes> = {};
@@ -249,7 +249,7 @@ export default class BaseMatch {
             };
         }
 
-        // 读取本地最新 100 场，再只请求服务器最近三页。服务器结果会
+        // 读取本地最新 100 场，再只请求服务器最近一页。服务器结果会
         // 按 gameId 覆盖/补充缓存，最终固定按时间排序后再取页面。
         const cachedGames = await getCachedHistory({
             puuid,
@@ -319,18 +319,23 @@ export default class BaseMatch {
     };
 
     /**
-     * 在主页后台补齐当前用户的历史战绩。
+     * 在主页后台补齐当前用户的历史战绩（冷启动最小集）。
      *
      * 每次只请求一页并在成功后等待 PostgreSQL 写入。整页已经存在时不再
      * 继续向更早历史请求；没有可靠总数时则用短页/空页判断历史末尾，最多
-     * 扫描 HISTORY_CACHE_SYNC_MAX_PAGES 页。
+     * 扫描 HISTORY_COLD_START_PAGES 页（默认 3 页 = 60 场）。
+     *
+     * 翻页遇本地未覆盖时由 fetchAndCacheSinglePage 单页增量补齐，不会
+     * 继续向更早历史走 scan 循环。
      */
     public syncCurrentUserHistory = async (
         puuid: string,
         onProgress?: (progress: HistoryCacheSyncProgress) => void,
         shouldContinue: () => boolean = () => true,
     ): Promise<HistoryCacheSyncResult> => {
-        const maxPages = HISTORY_CACHE_SYNC_MAX_PAGES;
+        // 冷启动最小集：服务启动 / 登录后只后台缓存最近 3 页（60 场），
+        // 翻页未覆盖时由 fetchAndCacheSinglePage 增量补齐。
+        const maxPages = HISTORY_COLD_START_PAGES;
         const pageSize = HISTORY_SERVER_PAGE_SIZE;
         let totalPages: number | null = null;
         let currentPage = 0;
@@ -485,8 +490,70 @@ export default class BaseMatch {
         return emit(
             "limited",
             `已缓存最近 ${maxPages} 页历史战绩`,
-            `已达到后台同步上限，当前已缓存 ${cachedGameIds.size} 场；更早历史将在后续刷新时继续检查。`,
+            `已达到冷启动同步上限，当前已缓存 ${cachedGameIds.size} 场；更早历史将在翻页时按需增量拉取。`,
         );
+    };
+
+    /**
+     * 首页翻页用：单页增量拉取并写入本地缓存。
+     *
+     * 命中本地缓存时直接返回；否则向服务器请求该页（20 场）并写入 PG。
+     * 写入成功后清掉 recentServerHistory 中该 pageIndex 的 TTL 缓存，避免
+     * 下次同步任务读到陈旧分页。
+     */
+    public fetchAndCacheSinglePage = async (
+        puuid: string,
+        pageIndex: number,
+    ): Promise<{ cachedGames: number; reachedEnd: boolean }> => {
+        const pageSize = HISTORY_SERVER_PAGE_SIZE;
+        const safePageIndex = Math.max(0, Math.floor(pageIndex));
+        const begIndex = safePageIndex * pageSize;
+        const endIndex = begIndex + pageSize;
+
+        // 先看本地 PG：已经覆盖的页就不打服务器。
+        const cached = await getCachedHistoryPage(puuid, begIndex, pageSize);
+        if (cached.length > 0) {
+            return { cachedGames: cached.length, reachedEnd: false };
+        }
+
+        // 本地无覆盖 → 单页拉服务器
+        const pageResult = await queryMatchHistoryWithSource(
+            puuid,
+            begIndex,
+            endIndex,
+        );
+        if (pageResult === null) {
+            return { cachedGames: 0, reachedEnd: false };
+        }
+
+        // 短页（< 20）即视为历史末尾；不必再继续翻
+        if (pageResult.games.length === 0) {
+            return { cachedGames: 0, reachedEnd: true };
+        }
+
+        const pageGames = Array.from(
+            new Map(
+                pageResult.games
+                    .filter((game) => Number.isFinite(game.gameId))
+                    .map((game) => [game.gameId, game]),
+            ).values(),
+        );
+
+        // 写入本地缓存（fingerprint 跳过仍生效）
+        const writeSucceeded = await this.cacheNormalizedGames(
+            puuid,
+            pageGames,
+            pageResult.source,
+            this.getLocalSummonerName(),
+        );
+
+        // 清理 TTL 缓存里 serverLimit 等于 20 的条目，避免与本次增量重复
+        this.recentServerHistory.delete(`${puuid}|${pageSize}`);
+
+        return {
+            cachedGames: writeSucceeded ? pageGames.length : 0,
+            reachedEnd: false,
+        };
     };
 
     private getLocalSummonerName = (): string => {

@@ -20,8 +20,12 @@ const historyCacheStatusLabel = computed(() => {
   const status = matchStore.historyCacheSync
   if (status.kind === "complete") return status.message
   if (status.kind === "syncing") {
-    return status.totalPages
-      ? `历史缓存 ${status.currentPage}/${status.totalPages} 页`
+    if (status.totalPages) {
+      return `历史缓存 ${status.currentPage}/${status.totalPages} 页`
+    }
+    const maxPages = status.maxPages || 0
+    return maxPages > 0
+      ? `历史缓存 ${status.currentPage}/${maxPages} 页`
       : `历史缓存第 ${status.currentPage} 页`
   }
   if (status.kind === "limited") return status.message

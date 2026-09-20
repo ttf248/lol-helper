@@ -11,8 +11,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { TencentRsoPlatformId } from "@/resources/areaList";
 import { logger } from "@/utils/logger";
 import {
-	HISTORY_CACHE_SYNC_MAX_PAGES,
+	HISTORY_COLD_START_PAGES,
+	HISTORY_HOMEPAGE_PAGE_SIZE,
+	HISTORY_ANALYSIS_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
+import { getCachedHistory, getCachedHistoryPage } from "@/recentMatch/utils/databaseCache";
 import type { HistoryCacheSyncStatus } from "@/recentMatch/utils/queryTypes";
 
 const baseMatch = new BaseMatch();
@@ -22,7 +25,7 @@ const createIdleHistoryCacheSync = (): HistoryCacheSyncStatus => ({
 	kind: "idle",
 	currentPage: 0,
 	totalPages: null,
-	maxPages: HISTORY_CACHE_SYNC_MAX_PAGES,
+	maxPages: HISTORY_COLD_START_PAGES,
 	cachedGames: 0,
 	downloadedGames: 0,
 	message: "",
@@ -178,23 +181,50 @@ const useMatchStore = defineStore("useMatchStore", {
 			if (this.sumInfo === null) {
 				return false;
 			}
-			if (page < 3 && this.recentMatchList20.length > 18) {
-				// 从缓存的20局中数据取值
-				this.matchList = this.recentMatchList20.slice((page - 1) * 9, page * 9);
+			const puuid = this.sumInfo.info.puuid;
+			const pageSize = HISTORY_HOMEPAGE_PAGE_SIZE;
+			const offset = (page - 1) * pageSize;
+
+			// 第 1 页：优先用首屏已经拿到的 20 场，避免重复请求
+			if (
+				page === 1 &&
+				this.recentMatchList20.length >= pageSize
+			) {
+				this.matchList = this.recentMatchList20.slice(0, pageSize);
 				if (this.matchList.length === 0) {
 					this.matchError = "该页没有可展示的对局数据。";
 					return false;
 				}
 				await this.getMatchDetail(this.matchList[0].gameId);
 				return true;
-			} else {
-				await this.getMatchFromPage(
-					page,
-					this.sumInfo.info.puuid,
-					this.queryRequestId,
-				);
-				return true;
 			}
+
+			// 任意页：先查本地 PG；空则触发单页增量拉取并写缓存
+			let cached = await getCachedHistoryPage(puuid, offset, pageSize);
+			if (cached.length === 0) {
+				await baseMatch.fetchAndCacheSinglePage(puuid, page - 1);
+				cached = await getCachedHistoryPage(puuid, offset, pageSize);
+			}
+			this.matchList = cached as unknown as SimpleMatchDetailsTypes[];
+			await this.refreshMatchAvailableCount(puuid);
+
+			if (this.matchList.length === 0) {
+				this.matchError = "本地暂无更早战绩。";
+				return false;
+			}
+			await this.getMatchDetail(this.matchList[0].gameId);
+			return true;
+		},
+		async refreshMatchAvailableCount(puuid: string) {
+			const all = await getCachedHistory({
+				puuid,
+				limit: HISTORY_ANALYSIS_LIMIT,
+			});
+			this.matchAvailableCount = all.length;
+			this.matchPageCount = Math.max(
+				1,
+				Math.ceil(all.length / HISTORY_HOMEPAGE_PAGE_SIZE),
+			);
 		},
 		async fetchAndProcessMatches(
 			puuid: string,
@@ -227,16 +257,13 @@ const useMatchStore = defineStore("useMatchStore", {
 			this.matchLocalCacheUsed = matchResult.localCacheUsed;
 			const matchResults = matchResult.matches;
 			this.recentMatchList20 = matchResults;
-			this.matchAvailableCount = matchResult.availableCount;
-			this.matchPageCount = Math.max(
-				1,
-				Math.ceil(this.matchAvailableCount / 9),
-			);
-			this.matchList = this.recentMatchList20.slice(0, 9);
+			this.matchList = this.recentMatchList20.slice(0, HISTORY_HOMEPAGE_PAGE_SIZE);
 			this.analysisData =
 				this.recentMatchList20.length === 0
 					? null
 					: findTopChamp(this.recentMatchList20 as any);
+			// 首屏分页计数以本地缓存为基准（翻页增量会持续刷新）
+			await this.refreshMatchAvailableCount(puuid);
 
 			if (this.matchList.length === 0) {
 				this.matchError = "该召唤师没有可展示的公开战绩。";
