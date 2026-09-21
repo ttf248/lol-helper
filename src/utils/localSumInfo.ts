@@ -9,7 +9,15 @@ export const readLocalSumInfo = (): Partial<sumInfoTypes> => {
     try {
         const raw = localStorage.getItem(SUM_INFO_KEY);
         if (raw === null) return {};
-        return JSON.parse(raw) as Partial<sumInfoTypes>;
+        const parsed: unknown = JSON.parse(raw);
+        if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+        ) {
+            return {};
+        }
+        return parsed as Partial<sumInfoTypes>;
     } catch {
         return {};
     }
@@ -19,7 +27,15 @@ export const readLocalSumInfoOrNull = (): Partial<sumInfoTypes> | null => {
     try {
         const raw = localStorage.getItem(SUM_INFO_KEY);
         if (raw === null) return null;
-        return JSON.parse(raw) as Partial<sumInfoTypes>;
+        const parsed: unknown = JSON.parse(raw);
+        if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+        ) {
+            return null;
+        }
+        return parsed as Partial<sumInfoTypes>;
     } catch {
         return null;
     }

@@ -21,7 +21,15 @@ const readConfig = (): ConfigSettingTypes => {
 	const raw = localStorage.getItem("configSetting");
 	if (raw === null) return {} as ConfigSettingTypes;
 	try {
-		return JSON.parse(raw) as ConfigSettingTypes;
+		const parsed: unknown = JSON.parse(raw);
+		if (
+			parsed === null ||
+			typeof parsed !== "object" ||
+			Array.isArray(parsed)
+		) {
+			return {} as ConfigSettingTypes;
+		}
+		return parsed as ConfigSettingTypes;
 	} catch (error) {
 		console.warn("configSetting 解析失败，使用空对象", error);
 		return {} as ConfigSettingTypes;
