@@ -105,6 +105,9 @@ const useMatchStore = defineStore("useMatchStore", {
 			// queryMatch.vue 工作区内的活动页签，提升到 store 便于外部组件
 			// （历史战绩面板里的可点击玩家 ID）切换回 matches。
 			activeTab: "matches" as "matches" | "analytics",
+			// 上次因窗口聚焦自动触发 init 的时间戳 (ms)，5 分钟节流。
+			// 手动 "返回本人" / "强制同步" 不写入此字段，避免污染自动刷新窗口。
+			lastAutoRefreshedAt: 0,
 		};
 	},
 	actions: {
@@ -387,6 +390,9 @@ const useMatchStore = defineStore("useMatchStore", {
 				summonerName,
 				rowId,
 			};
+			// 先更新主状态再进入第一个异步 IPC，避免这段时间内窗口
+			// 聚焦触发自动 init，把正在启动的同步误判成 idle 并取消掉。
+			this.historyCacheSync = initialRow;
 			this.historySyncStripRows = [
 				...this.historySyncStripRows,
 				initialRow,
@@ -487,6 +493,45 @@ const useMatchStore = defineStore("useMatchStore", {
 			await this.syncCurrentUserHistory(puuid, requestId, name, {
 				forceRefresh: true,
 			});
+		},
+		/**
+		 * 窗口重新获得焦点时由 useWindowFocusRefresh 触发。
+		 * 命中任一前置守卫时直接返回原因字符串，便于调用方做日志分流；
+		 * 仅在通过所有守卫时才会写入 lastAutoRefreshedAt 并跑一次 init()。
+		 * 复用现有 queryRequestId 自增与 matchLoading 状态，UI 那边会自动
+		 * 走 <loading-anime /> 反馈，不需要额外 toast。
+		 */
+		async maybeAutoRefreshOnFocus(): Promise<
+			| "no-summoner"
+			| "loading"
+			| "syncing"
+			| "cross-window-nav"
+			| "throttled"
+			| "refreshed"
+		> {
+			if (this.sumInfo === null) return "no-summoner";
+			if (this.matchLoading) return "loading";
+			if (this.historyCacheSync.kind === "syncing") return "syncing";
+			if (localStorage.getItem("queSumMatch") !== null) {
+				return "cross-window-nav";
+			}
+			const AUTO_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000;
+			const now = Date.now();
+			if (now - this.lastAutoRefreshedAt < AUTO_REFRESH_MIN_INTERVAL_MS) {
+				return "throttled";
+			}
+			// init() 不带参数代表“查询当前登录用户”。当前页面看的是本人
+			// 时保留这个语义，便于登录账号变化后重新读取正确的本人信息；
+			// 查看其他玩家时则必须带上原目标，否则自动刷新会悄悄切回本人。
+			const isViewingLocalSummoner =
+				this.summonerId === this.localSumId;
+			this.lastAutoRefreshedAt = now;
+			if (isViewingLocalSummoner) {
+				await this.init();
+			} else {
+				await this.init(this.summonerId, this.localSumId);
+			}
+			return "refreshed";
 		},
 		async getMatchFromPage(
 			page: number,

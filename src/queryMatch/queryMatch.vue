@@ -37,8 +37,12 @@ import {
     RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
 import { listen } from "@tauri-apps/api/event";
+import { useWindowFocusRefresh } from "@/queryMatch/composables/useWindowFocusRefresh";
 
 const matchStore = useMatchStore();
+// 监听 mainWindow 焦点，重新获得焦点且超过 5 分钟节流窗口时自动
+// 触发一次完整 init()，避免长时间失焦后看到旧战绩。
+useWindowFocusRefresh();
 // 历史分析包含图表、数据库统计和较大的分析依赖，仅在用户打开该页签
 // 时加载，避免影响主战绩列表的首屏体积和启动时间。
 const HistoryAnalyticsPanel = defineAsyncComponent(
