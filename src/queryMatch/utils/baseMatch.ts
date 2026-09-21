@@ -549,24 +549,21 @@ export default class BaseMatch {
             const pageAlreadyCached =
                 pageGames.every((game) => cachedCompleteGameIds.has(game.gameId));
             if (pageAlreadyCached) {
-                // 提前结束的正确条件是「本地缓存总数已经覆盖同步窗口
-                // (maxPages × pageSize)」，而不是「当前页命中」：
-                // - 当前页命中只能说明最近 20 场已同步；缓存可能只有最近
-                //   一页，或中间存在缺口（旧冷启动同步按 LIMIT 写入过）。
-                // - 一旦本地缓存覆盖了同步窗口，再往后走的页都在本项目
-                //   主动同步上限之外，继续扫描只是浪费 API quota 且不会
-                //   写库。对 25 页 / 500 场 满缓存的账号，如果不优化每次
-                //   启动都要把整个窗口再走一遍。
-                // 强制刷新绕过此优化，主动校验本地数据可能过期/损坏。
-                const syncWindowCovered =
-                    cachedCompleteGameIds.size >= maxPages * pageSize;
-                if (!options?.forceRefresh && syncWindowCovered) {
+                // 非强制同步是增量同步：接口按时间倒序返回，当前页全部命中
+                // 本地“完整”缓存，说明从这一页开始没有新增或不完整数据需要回填。
+                // 旧逻辑要求缓存数量先达到 500 场，导致只有 189 场历史的账号
+                // 每次启动都要重复扫描到末尾（通常约 10 页）。
+                //
+                // 强制刷新仍继续扫描整个窗口，用于用户主动修复可能过期/损坏的
+                // 本地数据；普通启动则在首个命中页及时结束。
+                if (!options?.forceRefresh) {
                     return emit(
                         "complete",
                         "当前历史战绩已全部缓存到数据库",
-                        `本地已覆盖同步窗口（${cachedCompleteGameIds.size} 场 ≥ ${maxPages * pageSize}），无需继续扫描。`,
+                        `第 ${currentPage} 页已全部命中完整缓存，共缓存 ${cachedGameIds.size} 场；无需继续请求更早历史。`,
                     );
                 }
+
                 if (
                     pageResult.games.length < pageSize ||
                     (totalPages !== null && currentPage >= totalPages)
