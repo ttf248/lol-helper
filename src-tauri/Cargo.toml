@@ -51,6 +51,10 @@ deadpool-postgres = "0.14.2"
 
 [profile.release]
 opt-level = "s"     # Optimize for size.
-lto = true          # Enable Link Time Optimization
-codegen-units = 1   # Reduce number of codegen units to increase optimizations.
+lto = "thin"       # Keep LTO optimizations without the full-LTO link cost.
+codegen-units = 16  # Parallelize release code generation.
 strip = true        # Automatically strip symbols from the binary.
+
+[profile.dev]
+debug = 1           # Keep line tables for native debugging without full debug info.
+incremental = true  # Reuse unchanged code between debug builds.

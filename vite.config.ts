@@ -5,6 +5,8 @@ import packageInfo from "./package.json";
 import * as path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
+const isDebugBuild = ["true", "1"].includes(process.env.TAURI_ENV_DEBUG ?? "");
+const emitSourceMap = ["true", "1"].includes(process.env.VITE_SOURCEMAP ?? "");
 const tauriPlatform =
 	process.env.TAURI_ENV_PLATFORM ??
 	(process.platform === "win32"
@@ -56,8 +58,10 @@ export default defineConfig(async () => ({
 		// Tauri uses Chromium on Windows and WebKit on macOS and Linux
 		target: tauriPlatform === "windows" ? "chrome105" : "safari13",
 		// don't minify for debug builds
-		minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
-		// produce sourcemaps for debug builds
-		sourcemap: !!process.env.TAURI_ENV_DEBUG,
+		minify: isDebugBuild ? false : "esbuild",
+		// Source maps are opt-in because they noticeably slow down debug builds.
+		sourcemap: emitSourceMap,
+		// Gzip size reporting is useful for analysis, but not for normal builds.
+		reportCompressedSize: false,
 	},
 }));

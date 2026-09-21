@@ -6,7 +6,8 @@
 	"packageManager": "pnpm@9.15.9",
 	"scripts": {
 		"dev": "vite",
-		"build": "vite build",
+		"build": "node scripts/build-frontend.mjs",
+		"build:force": "vite build",
 		"preview": "vite preview",
 		"tauri": "tauri"
 	},
