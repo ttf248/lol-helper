@@ -36,6 +36,9 @@ fn mask_puuid(puuid: &str) -> String {
 }
 
 const SCHEMA: &str = r#"
+-- ── 模糊搜索扩展（pg_trgm 提供 % / <%> / similarity 操作符） ─────────────
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS match_players (
     puuid TEXT PRIMARY KEY,
     summoner_id BIGINT,
@@ -279,6 +282,20 @@ WHERE game_creation_date IS NULL
 INSERT INTO schema_migrations(version)
 VALUES (2), (3)
 ON CONFLICT(version) DO NOTHING;
+
+-- ── v4：召唤师模糊搜索索引 ────────────────────────────────────────
+-- 搜索只读取 summoners 表；不再为了候选排序统计 match_participants。
+-- pg_trgm GIN 索引支持 % (相似度阈值) 操作符下的 WHERE 子句索引命中。
+CREATE INDEX IF NOT EXISTS idx_summoners_game_name_trgm
+    ON summoners USING GIN (game_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_summoners_tag_line_trgm
+    ON summoners USING GIN (tag_line gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_summoners_summoner_name_trgm
+    ON summoners USING GIN (summoner_name gin_trgm_ops);
+
+INSERT INTO schema_migrations(version)
+VALUES (4)
+ON CONFLICT(version) DO NOTHING;
 "#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -438,6 +455,32 @@ pub struct CachedSummonerRow {
     pub name_change_flag: Option<bool>,
     pub reroll_points: Option<serde_json::Value>,
     pub updated_at: i64,
+}
+
+/// 搜索框建议列表的入参。query 已在前端 trim + 小写归一化，
+/// limit 默认 20，封顶 50 防止 IPC 单次回包过大。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCachedSummonersQuery {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// 搜索框建议列表的单条结果。similarity 仅用于数据库内排序，避免把
+/// match_participants 的战绩统计带入每次搜索。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedSummonerSearchRow {
+    pub puuid: String,
+    pub summoner_id: i64,
+    pub game_name: Option<String>,
+    pub tag_line: Option<String>,
+    pub display_name: Option<String>,
+    pub summoner_name: Option<String>,
+    pub summoner_level: Option<i64>,
+    pub profile_icon_id: Option<i32>,
+    pub similarity: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1319,6 +1362,7 @@ impl DatabaseState {
             .map_err(|error| error.to_string())?;
 
         transaction.commit().await.map_err(|error| error.to_string())?;
+
         tracing::info!(
             target: "db.cache",
             op = "cache_history",
@@ -1614,6 +1658,109 @@ impl DatabaseState {
         Ok(result)
     }
 
+    /// 召唤师模糊搜索：只查询 summoners 表，通过 pg_trgm 的 similarity
+    /// 操作符匹配 game_name / tag_line / Riot ID 组合 / summoner_name /
+    /// display_name。搜索候选不读取 match_participants，也不计算战绩场数。
+    pub async fn search_cached_summoners(
+        &self,
+        request: SearchCachedSummonersQuery,
+    ) -> Result<Vec<CachedSummonerSearchRow>, String> {
+        let started = std::time::Instant::now();
+        let query = request.query.trim();
+        let limit = request.limit.unwrap_or(20).clamp(1, 50);
+
+        tracing::info!(
+            target: "db.cache",
+            op = "search_cached_summoners",
+            purpose = "召唤师模糊搜索",
+            query = %query,
+            limit,
+            "召唤师模糊搜索发起"
+        );
+
+        let client = self.require_client().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT summoner.puuid,
+                       summoner.summoner_id,
+                       summoner.game_name,
+                       summoner.tag_line,
+                       summoner.display_name,
+                       summoner.summoner_name,
+                       summoner.summoner_level,
+                       summoner.profile_icon_id,
+                       GREATEST(
+                           similarity(COALESCE(summoner.game_name, ''),     $1),
+                           similarity(COALESCE(summoner.tag_line, ''),      $1),
+                           similarity(
+                               COALESCE(summoner.game_name, '') ||
+                               CASE WHEN COALESCE(summoner.tag_line, '') = ''
+                                    THEN '' ELSE '#' || summoner.tag_line END,
+                               $1
+                           ),
+                           similarity(COALESCE(summoner.summoner_name, ''), $1),
+                           similarity(COALESCE(summoner.display_name, ''),  $1)
+                       )::REAL AS sim
+                  FROM summoners AS summoner
+                 WHERE (
+                       $1 = ''
+                    OR summoner.game_name         % $1
+                    OR summoner.tag_line          % $1
+                   OR (
+                       COALESCE(summoner.game_name, '') ||
+                       CASE WHEN COALESCE(summoner.tag_line, '') = ''
+                            THEN '' ELSE '#' || summoner.tag_line END
+                   ) % $1
+                   OR summoner.summoner_name     % $1
+                   OR summoner.display_name      % $1
+                   OR summoner.game_name         ILIKE '%' || $1 || '%'
+                   OR summoner.tag_line          ILIKE '%' || $1 || '%'
+                   OR (
+                       COALESCE(summoner.game_name, '') ||
+                       CASE WHEN COALESCE(summoner.tag_line, '') = ''
+                            THEN '' ELSE '#' || summoner.tag_line END
+                   ) ILIKE '%' || $1 || '%'
+                   OR summoner.summoner_name     ILIKE '%' || $1 || '%'
+                   OR summoner.display_name      ILIKE '%' || $1 || '%'
+                   )
+                 ORDER BY sim DESC,
+                          summoner.updated_at DESC NULLS LAST
+                 LIMIT $2
+                "#,
+                &[&query, &limit],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let result: Vec<CachedSummonerSearchRow> = rows
+            .into_iter()
+            .map(|row| CachedSummonerSearchRow {
+                puuid: row.get("puuid"),
+                summoner_id: row.get("summoner_id"),
+                game_name: row.try_get("game_name").ok().flatten(),
+                tag_line: row.try_get("tag_line").ok().flatten(),
+                display_name: row.try_get("display_name").ok().flatten(),
+                summoner_name: row.try_get("summoner_name").ok().flatten(),
+                summoner_level: row.try_get("summoner_level").ok().flatten(),
+                profile_icon_id: row.try_get("profile_icon_id").ok().flatten(),
+                similarity: row.get("sim"),
+            })
+            .collect();
+
+        tracing::info!(
+            target: "db.cache",
+            op = "search_cached_summoners",
+            purpose = "召唤师模糊搜索",
+            query = %query,
+            limit,
+            count = result.len(),
+            duration_ms = started.elapsed().as_millis() as u64,
+            "召唤师模糊搜索完成"
+        );
+        Ok(result)
+    }
+
     pub async fn cache_summoners(
         &self,
         request: CacheSummonerRequest,
@@ -1622,7 +1769,6 @@ impl DatabaseState {
         if request.summoners.is_empty() {
             return Ok(0);
         }
-
         tracing::info!(
             target: "db.cache",
             op = "cache_summoners",
@@ -2753,4 +2899,12 @@ pub async fn get_cached_champion_detail(
     champion_id: i32,
 ) -> Result<Option<CachedChampionDetail>, String> {
     state.get_cached_champion_detail(champion_id).await
+}
+
+#[tauri::command]
+pub async fn search_cached_summoners(
+    state: tauri::State<'_, DatabaseState>,
+    request: SearchCachedSummonersQuery,
+) -> Result<Vec<CachedSummonerSearchRow>, String> {
+    state.search_cached_summoners(request).await
 }

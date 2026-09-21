@@ -16,6 +16,7 @@ const SUMMONER_TTL_MS = 30_000;
 const GAME_DETAIL_TTL_MS = 60_000;
 const GAME_SESSION_TTL_MS = 120_000;
 const CHAMPION_DETAIL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天 —— 英雄详情基本不变
+const SEARCH_TTL_MS = 5_000; // 搜索建议：同一 query 短时间内的重复输入复用结果
 
 interface CachedEntry<T> {
   value: T;
@@ -86,6 +87,22 @@ const championDetailCache = createTtlCache<number, CachedChampionDetail>({
         }),
 });
 
+// 搜索框建议：key 用 lowercase(query)|limit 形式，大小写不同但字面相同的输入
+// 共享同一缓存，避免用户切大小写时出现 5s 内两次 invoke。
+const summonerSearchCache = createTtlCache<string, CachedSummonerSearchRow[]>({
+    ttlMs: SEARCH_TTL_MS,
+    op: "search_cached_summoners",
+    context: (key) => ({ query: key }),
+    invoke: async (key) => {
+        const sepIdx = key.lastIndexOf("|");
+        const query = sepIdx >= 0 ? key.slice(0, sepIdx) : key;
+        const limit = sepIdx >= 0 ? Number(key.slice(sepIdx + 1)) || 20 : 20;
+        return invoke<CachedSummonerSearchRow[] | null>("search_cached_summoners", {
+            request: { query, limit },
+        });
+    },
+});
+
 const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
     summonerByIdCache.delete(row.summonerId);
     summonerByPuuidCache.delete(row.puuid);
@@ -114,6 +131,7 @@ export const resetDatabaseCache = (reason?: string) => {
     game_detail: gameDetailCache.size(),
     game_session: gameSessionCache.size(),
     champion_detail: championDetailCache.size(),
+    summoner_search: summonerSearchCache.size(),
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
@@ -123,6 +141,7 @@ export const resetDatabaseCache = (reason?: string) => {
   gameDetailCache.clear();
   gameSessionCache.clear();
   championDetailCache.clear();
+  summonerSearchCache.clear();
   logger.info({
     tag: "db.cache",
     message: "TTL 缓存已重置",
@@ -414,6 +433,36 @@ export interface CachedSummonerRow {
   rerollPoints?: unknown;
   updatedAt: number;
 }
+
+/**
+ * 搜索框召唤师建议的单条结果。后端只在 summoners 表内做 pg_trgm 模糊匹配，
+ * `similarity` 数值（0-1）仅供数据库排序。
+ */
+export interface CachedSummonerSearchRow {
+  puuid: string;
+  summonerId: number;
+  gameName?: string | null;
+  tagLine?: string | null;
+  displayName?: string | null;
+  summonerName?: string | null;
+  summonerLevel?: number | null;
+  profileIconId?: number | null;
+  similarity: number;
+}
+
+/**
+ * 召唤师模糊搜索：query 经 trim + lowercase 后走 summoners 表的 pg_trgm
+ * GIN 索引；5s TTL 合并同一 query 的多次输入。
+ */
+export const searchCachedSummoners = async (
+  query: string,
+  limit = 20,
+): Promise<CachedSummonerSearchRow[]> => {
+  const trimmed = query.trim();
+  const cacheKey = `${trimmed.toLowerCase()}|${limit}`;
+  const cached = await summonerSearchCache.fetch(cacheKey);
+  return cached ?? [];
+};
 
 export const getDatabaseSummary = async (): Promise<DatabaseSummary> => {
   if (isFresh(summaryCache.current ?? undefined, SUMMARY_TTL_MS)) {

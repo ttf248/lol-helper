@@ -9,7 +9,7 @@ use database::{
     get_cached_champion_detail, get_cached_game_detail,
     get_cached_match_history, get_cached_player_summary,
     get_cached_session_for_lcu_game_id, get_cached_summoner_by_id,
-    get_cached_summoner_by_puuid, DatabaseState,
+    get_cached_summoner_by_puuid, search_cached_summoners, DatabaseState,
 };
 use observability::log::write_frontend_log;
 use lcu::{
@@ -80,6 +80,7 @@ pub async fn run() {
             get_cached_session_for_lcu_game_id,
             cache_champion_detail,
             get_cached_champion_detail,
+            search_cached_summoners,
             write_frontend_log,
         ])
         .plugin(tauri_plugin_http::init())

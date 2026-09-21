@@ -1,13 +1,33 @@
 <script setup lang="ts">
-import {NButton, NInput, NSelect, NPagination, NTag,
+import {NButton, NAutoComplete, NSelect, NPagination, NTag,
   useMessage, NIcon, NSpace, MessageReactive, NDrawer} from "naive-ui"
-import {computed, ref, watch} from "vue";
+import {computed, h, ref, watch} from "vue";
+import type {SelectOption} from "naive-ui";
 import {CircleMinus, CircleX, Refresh, Settings} from "@vicons/tabler";
 import {querySummonerInfo} from "@/lcu/aboutSummoner";
 import useMatchStore from "@/queryMatch/store";
+import {searchCachedSummoners} from "@/recentMatch/utils/databaseCache";
+import type {CachedSummonerSearchRow} from "@/recentMatch/utils/databaseCache";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import BrandLockup from "@/components/BrandLockup.vue";
 import Setting from "@/main/common/setting.vue";
+
+// 与 lodash.debounce 同语义：N 毫秒内的多次调用合并为最后一次。
+// 项目里没有其他文件用 lodash sub-import，引入一个工具包会带来类型依赖；
+// 搜索框只在一个地方使用，手写 10 行更轻。
+const debounce = <Args extends unknown[]>(
+  fn: (...args: Args) => void,
+  ms: number,
+): ((...args: Args) => void) => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (...args: Args) => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, ms);
+  };
+};
 
 const matchStore = useMatchStore()
 const inputVal = ref('')
@@ -121,18 +141,22 @@ const changeMatchMode = async (queueId: number) => {
   pageVal.value = 1
 }
 
-const searchSum = async () => {
-  const query = inputVal.value.trim()
-  if (query === '') {
-    message.warning('请输入 Riot ID 或召唤师名')
-    return
-  }
+const isCompleteRiotId = (value: string) => {
+  const normalized = value.trim()
+  const separator = normalized.lastIndexOf("#")
+  return separator > 0 && separator < normalized.length - 1
+}
 
+const searchOfficial = async (query: string) => {
   const loading = message.loading('查询召唤师中...', {duration: 0})
   try {
     const sumInfo = await querySummonerInfo(undefined, query)
     if (sumInfo === null) {
-      message.error('当前召唤师不存在，请输入同大区的 Riot ID（例如 name#tag）或召唤师名')
+      message.error(
+        isCompleteRiotId(query)
+          ? `官方接口未找到「${query}」，请确认 Riot ID 和大区是否正确`
+          : '没有找到该玩家；请先从本地候选中选择，或输入完整 Riot ID（name#tag）再查询',
+      )
       return
     }
 
@@ -141,14 +165,237 @@ const searchSum = async () => {
     // 当前用户 LCU 或他人 SGP 数据源，不在这里提前拦截查询。
     await matchStore.init(sumInfo.currentId)
     clearVal()
+  } catch (error) {
+    message.error(`官方接口查询失败：${String(error).slice(0, 120)}`)
   } finally {
     loading.destroy()
   }
 }
+
+const searchSum = async () => {
+  // AutoComplete 在 keydown 阶段已经选中高亮候选；同一次按键随后触发的
+  // keyup 不能再按文本走一次 LCU 查询，否则会并发初始化两次。
+  if (candidateSelectionInFlight) return
+  const query = inputVal.value.trim()
+  if (query === '') {
+    message.warning('请输入 Riot ID 或召唤师名')
+    return
+  }
+  await searchOfficial(query)
+}
 const clearVal = () => {
+  // 使已排队或进行中的搜索结果失效，防止清空后旧结果重新出现。
+  ++candidateSearchVersion
   inputVal.value = ''
   selectVal.value = 0
   pageVal.value = 1
+  candidates.value = []
+  candidateSearchLoading.value = false
+}
+
+// ── 本地缓存玩家模糊搜索建议 ────────────────────────────────────────
+// candidates 持有最近一次后端返回；inputVal 触发 onInputChange 防抖刷新。
+// 选中候选走 onCandidateSelect → matchStore.init，与原 searchSum 等价。
+const candidates = ref<CachedSummonerSearchRow[]>([])
+let candidateSearchVersion = 0
+let candidateSelectionInFlight = false
+
+interface CachedSummonerSearchOption {
+  [key: string]: unknown;
+  label: string;
+  value: string;
+  kind: "cached" | "feedback" | "official";
+  displayLabel?: string;
+  query?: string;
+  disabled?: boolean;
+  puuid: string;
+  summonerId: number;
+  summonerLevel: number | null | undefined;
+  subLabel: string;
+}
+
+const candidateSearchLoading = ref(false)
+
+const renderOptions = computed<CachedSummonerSearchOption[]>(() => {
+  const localOptions = candidates.value.map((c) => {
+    const baseName = c.gameName ?? c.displayName ?? c.summonerName ?? c.puuid
+    const tag = c.tagLine ?? ""
+    const label = tag ? `${baseName}#${tag}` : baseName
+    // 与 searchSum 兼容：summonerName 在 Riot ID 迁移前的“旧召唤师名”，与
+    // gameName 不一致时单独展示一行副标题。
+    const subLabel =
+      c.summonerName && c.summonerName !== c.gameName
+        ? `旧召唤师名：${c.summonerName}`
+        : c.displayName ?? ""
+    return {
+      label,
+      value: c.puuid,
+      kind: "cached" as const,
+      puuid: c.puuid,
+      summonerId: c.summonerId,
+      summonerLevel: c.summonerLevel,
+      subLabel,
+    }
+  })
+
+  const query = inputVal.value.trim()
+  if (!query || localOptions.length > 0) {
+    return localOptions
+  }
+
+  if (candidateSearchLoading.value) {
+    return [{
+      label: "正在搜索本地玩家…",
+      value: "__local-search-loading__",
+      kind: "feedback",
+      disabled: true,
+      displayLabel: "正在搜索本地玩家…",
+      puuid: "",
+      summonerId: 0,
+      summonerLevel: null,
+      subLabel: "请稍候",
+    }]
+  }
+
+  const emptyOption: CachedSummonerSearchOption = {
+    label: `未找到“${query}”`,
+    value: "__local-search-empty__",
+    kind: "feedback",
+    disabled: true,
+    displayLabel: `未找到“${query}”`,
+      puuid: "",
+      summonerId: 0,
+      summonerLevel: null,
+      subLabel: isCompleteRiotId(query)
+      ? "本地缓存暂无匹配，可使用官方接口继续搜索"
+      : "本地缓存暂无匹配，请输入完整 Riot ID（name#tag）后再搜索",
+  }
+
+  if (!isCompleteRiotId(query)) {
+    return [emptyOption]
+  }
+
+  return [
+    emptyOption,
+    {
+      // AutoComplete 选中后会把 option.label 写回输入框，所以 label 保留
+      // 原始查询；displayLabel 才是下拉项里给用户看的操作提示。
+      label: query,
+      value: query,
+      kind: "official" as const,
+      displayLabel: "使用官方接口搜索",
+      query,
+      puuid: "",
+      summonerId: 0,
+      summonerLevel: null,
+      subLabel: "本地没有结果，按 Enter 或点击此项继续",
+    },
+  ]
+})
+
+const refreshCandidates = debounce(async (value: string, version: number) => {
+  const trimmed = value.trim()
+  if (trimmed.length < 1) {
+    if (version === candidateSearchVersion) {
+      candidateSearchLoading.value = false
+    }
+    return
+  }
+  try {
+    const result = await searchCachedSummoners(trimmed, 20)
+    // IPC 的完成顺序不保证与输入顺序一致。只允许当前输入对应的结果更新下拉项，
+    // 避免删字或选中候选后又显示旧查询的结果。
+    if (version === candidateSearchVersion) {
+      candidates.value = result
+    }
+  } finally {
+    if (version === candidateSearchVersion) {
+      candidateSearchLoading.value = false
+    }
+  }
+}, 200)
+
+const onInputChange = (value: string) => {
+  const version = ++candidateSearchVersion
+  if (!value.trim()) {
+    candidates.value = []
+    candidateSearchLoading.value = false
+    return
+  }
+  candidates.value = []
+  candidateSearchLoading.value = true
+  refreshCandidates(value, version)
+}
+
+const preloadCandidates = async () => {
+  const version = ++candidateSearchVersion
+  candidateSearchLoading.value = true
+  try {
+    const result = await searchCachedSummoners("", 20)
+    if (version === candidateSearchVersion && !inputVal.value.trim()) {
+      candidates.value = result
+    }
+  } finally {
+    if (version === candidateSearchVersion) {
+      candidateSearchLoading.value = false
+    }
+  }
+}
+
+const renderCandidateLabel = (option: SelectOption) => {
+  const candidate = option as SelectOption & CachedSummonerSearchOption
+  if (candidate.kind === "feedback") {
+    return h("div", {class: "candidate-feedback"}, [
+      h("div", {class: "candidate-feedback-title"}, candidate.displayLabel ?? candidate.label),
+      h("div", {class: "candidate-sub"}, candidate.subLabel),
+    ])
+  }
+  if (candidate.kind === "official") {
+    return h("div", {class: "candidate-official"}, [
+      h("div", {class: "candidate-official-title"}, candidate.displayLabel),
+      h("div", {class: "candidate-sub"}, candidate.subLabel),
+    ])
+  }
+  return h("div", {class: "candidate-row"}, [
+    h("div", {class: "candidate-main"}, [
+      h("span", {class: "candidate-name"}, candidate.label),
+      h("span", {class: "candidate-meta"}, `Lv ${candidate.summonerLevel ?? "?"}`),
+    ]),
+    candidate.subLabel
+      ? h("div", {class: "candidate-sub"}, candidate.subLabel)
+      : null,
+  ])
+}
+
+const shouldShowCandidates = (_value: string) => renderOptions.value.length > 0
+
+const onCandidateSelect = (puuid: string | number) => {
+  if (typeof puuid !== "string") return
+  const option = renderOptions.value.find((item) => item.value === puuid)
+  if (!option) return
+  if (option.kind === "official") {
+    candidateSelectionInFlight = true
+    void searchOfficial(option.query ?? inputVal.value.trim()).finally(() => {
+      candidateSelectionInFlight = false
+    })
+    return
+  }
+  if (option.kind !== "cached") return
+  const row = candidates.value.find((c) => c.puuid === option.puuid)
+  if (!row) return
+  // @select 同步触发，Promise 返回值 vue-tsc 不接受；fire-and-forget。
+  const loading = message.loading("查询召唤师中...", { duration: 0 })
+  candidateSelectionInFlight = true
+  matchStore
+    .init(row.summonerId)
+    .then(() => clearVal())
+    .catch((err: unknown) => {
+      message.error(`查询失败：${String(err).slice(0, 120)}`)
+    })
+    .finally(() => {
+      candidateSelectionInFlight = false
+      loading.destroy()
+    })
 }
 const handleMin = async () => {
   await getCurrentWindow().minimize()
@@ -215,10 +462,22 @@ const pageChange = (page: number) => {
       </n-button>
     </div>
     <div class="header-controls">
-      <n-input v-model:value="inputVal" type="text" spellcheck="false"
-               class="search-input" size="small"
-               placeholder="输入 Riot ID 或召唤师名"
-               @keyup.enter="searchSum" />
+      <n-auto-complete
+        v-model:value="inputVal"
+        :options="renderOptions"
+        placeholder="输入 Riot ID 或召唤师名"
+        size="small"
+        class="search-input"
+        spellcheck="false"
+        :loading="candidateSearchLoading"
+        :clear-after-select="false"
+        :get-show="shouldShowCandidates"
+        :render-label="renderCandidateLabel"
+        @focus="preloadCandidates"
+        @update:value="onInputChange"
+        @select="onCandidateSelect"
+        @keyup.enter="searchSum"
+      />
       <n-button size="small" :bordered="false" @click="searchSum"
                 type="success" class="search-button">
         查询
@@ -327,6 +586,48 @@ const pageChange = (page: number) => {
 .header-actions {
   flex: 0 0 auto;
   padding-top: 0;
+}
+
+/* ── 搜索建议下拉项样式 ─────────────────────────────────── */
+.candidate-row {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.candidate-row:hover {
+  background: rgba(99, 224, 123, 0.08);
+}
+.candidate-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.candidate-name {
+  font-weight: 500;
+}
+.candidate-meta {
+  color: #888;
+  font-size: 12px;
+}
+.candidate-sub {
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
+.candidate-feedback,
+.candidate-official {
+  padding: 4px 8px;
+}
+.candidate-feedback-title {
+  color: #888;
+}
+.candidate-official {
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+}
+.candidate-official-title {
+  color: #2080f0;
+  font-weight: 500;
 }
 
 @media (max-width: 900px) {
