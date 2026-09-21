@@ -549,9 +549,24 @@ export default class BaseMatch {
             const pageAlreadyCached =
                 pageGames.every((game) => cachedCompleteGameIds.has(game.gameId));
             if (pageAlreadyCached) {
-                // 当前页命中并不能证明更早的页也已经缓存：缓存可能只包含
-                // 最近一页，或中间存在缺口。因此仍需继续扫描到服务器末尾
-                // （或达到同步窗口），否则历史分析会永久缺少旧对局。
+                // 提前结束的正确条件是「本地缓存总数已经覆盖同步窗口
+                // (maxPages × pageSize)」，而不是「当前页命中」：
+                // - 当前页命中只能说明最近 20 场已同步；缓存可能只有最近
+                //   一页，或中间存在缺口（旧冷启动同步按 LIMIT 写入过）。
+                // - 一旦本地缓存覆盖了同步窗口，再往后走的页都在本项目
+                //   主动同步上限之外，继续扫描只是浪费 API quota 且不会
+                //   写库。对 25 页 / 500 场 满缓存的账号，如果不优化每次
+                //   启动都要把整个窗口再走一遍。
+                // 强制刷新绕过此优化，主动校验本地数据可能过期/损坏。
+                const syncWindowCovered =
+                    cachedCompleteGameIds.size >= maxPages * pageSize;
+                if (!options?.forceRefresh && syncWindowCovered) {
+                    return emit(
+                        "complete",
+                        "当前历史战绩已全部缓存到数据库",
+                        `本地已覆盖同步窗口（${cachedCompleteGameIds.size} 场 ≥ ${maxPages * pageSize}），无需继续扫描。`,
+                    );
+                }
                 if (
                     pageResult.games.length < pageSize ||
                     (totalPages !== null && currentPage >= totalPages)
