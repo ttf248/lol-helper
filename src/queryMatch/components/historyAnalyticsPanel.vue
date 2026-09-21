@@ -146,80 +146,94 @@ const synergyPositionSummary = (item: TeammateSynergyStats) => {
 
 // 同一个 (puuid, mode) 触发的 loadAnalysis / loadDatabaseInfo 复用同一个 Promise，
 // 避免 onMounted + watch(puuid) + watch(mode) 几乎同时触发造成的 PG 重复请求。
-const analysisInFlight = new Map<string, Promise<void>>();
-const databaseInFlight = new Map<string, Promise<void>>();
+const analysisInFlight = new Map<string, Promise<PlayerRecentAnalysis>>();
+const databaseInFlight = new Map<
+  string,
+  Promise<{
+    status: typeof databaseStatus.value;
+    playerSummary: CachedPlayerSummary;
+  }>
+>();
 const analysisKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}::${modeKey}`;
 const databaseKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}::${modeKey}`;
 
 const loadAnalysis = () => {
-  const key = analysisKey(props.player.puuid, selectedMode.value);
-  const cached = analysisInFlight.get(key);
-  if (cached) return cached;
-  // 用 IIFE + .finally() 链避免在 finally 闭包内反向引用 promise 变量。
-  const promise = (async () => {
-    const currentRequest = ++requestId;
-    loading.value = true;
-    analysis.value = null;
-    analysisProgress.value = {
-      stage: "cache",
-      completed: 0,
-      total: 1,
-      percentage: 0,
-      message: "准备读取本地缓存",
+  const player = props.player;
+  const modeKey = selectedMode.value;
+  const key = analysisKey(player.puuid, modeKey);
+  const currentRequest = ++requestId;
+  loading.value = true;
+  analysis.value = null;
+  analysisProgress.value = {
+    stage: "cache",
+    completed: 0,
+    total: 1,
+    percentage: 0,
+    message: "准备读取本地缓存",
+  };
+  errorMessage.value = "";
+
+  let request = analysisInFlight.get(key);
+  if (!request) {
+    request = loadPlayerCacheAnalysis(player, modeKey, (progress) => {
+      if (currentRequest !== requestId) return;
+      analysisProgress.value = progress;
+      if (progress.analysis) {
+        analysis.value = progress.analysis;
+      }
+    });
+    analysisInFlight.set(key, request);
+    const cleanup = () => {
+      if (analysisInFlight.get(key) === request) {
+        analysisInFlight.delete(key);
+      }
     };
-    errorMessage.value = "";
-    try {
-      const result = await loadPlayerCacheAnalysis(
-        props.player,
-        selectedMode.value,
-        (progress) => {
-          if (currentRequest !== requestId) return;
-          analysisProgress.value = progress;
-          if (progress.analysis) {
-            analysis.value = progress.analysis;
-          }
-        },
-      );
+    // 用双分支 then 清理，避免对 rejected promise 产生额外未处理拒绝。
+    void request.then(cleanup, cleanup);
+  }
+
+  return request
+    .then((result) => {
       if (currentRequest === requestId) analysis.value = result;
-    } catch (error) {
+    })
+    .catch((error) => {
       if (currentRequest !== requestId) return;
       analysis.value = null;
       analysisProgress.value = null;
       errorMessage.value = `历史战绩分析失败：${String(error)}`;
-    } finally {
+    })
+    .finally(() => {
       if (currentRequest === requestId) loading.value = false;
-    }
-  })().finally(() => {
-    if (analysisInFlight.get(key) === promise) {
-      analysisInFlight.delete(key);
-    }
-  });
-  analysisInFlight.set(key, promise);
-  return promise;
+    });
 };
 
 const loadDatabaseInfo = () => {
-  const key = databaseKey(props.player.puuid, selectedMode.value);
-  const cached = databaseInFlight.get(key);
-  if (cached) return cached;
-  const promise = (async () => {
-    const currentRequest = ++databaseRequestId;
-    const [status, playerSummary] = await Promise.all([
+  const puuid = props.player.puuid;
+  const modeKey = selectedMode.value;
+  const key = databaseKey(puuid, modeKey);
+  const currentRequest = ++databaseRequestId;
+  let request = databaseInFlight.get(key);
+  if (!request) {
+    request = Promise.all([
       getDatabaseStatus(),
-      getCachedPlayerSummary(props.player.puuid, selectedMode.value),
-    ]);
+      getCachedPlayerSummary(puuid, modeKey),
+    ]).then(([status, playerSummary]) => ({ status, playerSummary }));
+    databaseInFlight.set(key, request);
+    const cleanup = () => {
+      if (databaseInFlight.get(key) === request) {
+        databaseInFlight.delete(key);
+      }
+    };
+    void request.then(cleanup, cleanup);
+  }
+
+  return request.then(({ status, playerSummary }) => {
     if (currentRequest !== databaseRequestId) return;
     databaseStatus.value = status;
     cachedPlayerSummary.value = playerSummary;
-  })().finally(() => {
-    if (databaseInFlight.get(key) === promise) {
-      databaseInFlight.delete(key);
-    }
   });
-  databaseInFlight.set(key, promise);
-  return promise;
 };
 
 const refresh = async () => {
@@ -399,7 +413,7 @@ onMounted(() => {
           <div v-if="analysis.teammateSynergy?.length" class="synergy-list">
             <div
               v-for="item in analysis.teammateSynergy.slice(0, 8)"
-              v-memo="[item.games, item.winRate, item.champions[0]?.championId, item.positions[0]?.position, item.teammate.summonerName, item.teammate.moderation?.marked, item.teammate.moderation?.reportCount]"
+              v-memo="[item.games, item.winRate, item.champions[0]?.games, item.champions[0]?.winRate, item.champions[0]?.championId, item.positions[0]?.winRate, item.positions[0]?.position, item.teammate.summonerName, item.teammate.moderation?.marked, item.teammate.moderation?.reportCount]"
               :key="item.teammate.puuid"
               class="synergy-row"
             >
@@ -465,7 +479,7 @@ onMounted(() => {
               <div v-if="section.items.length" class="party-ranking-list">
                 <div
                   v-for="(group, index) in section.items"
-                  v-memo="[group.games, group.winRate, group.stabilityScore, partyRankingMode]"
+                  v-memo="[group.games, group.winRate, group.stabilityScore, group.recentGames, group.lastActiveDays, group.highWinRateAlert, group.confidence.level, group.confidence.score, group.blacklistedMembers.length, group.reportedMembers.length, group.members.map((member) => `${member.puuid}:${member.summonerName}:${member.moderation?.marked}:${member.moderation?.reportCount}`).join('|'), partyRankingMode]"
                   :key="group.members.map((item) => item.puuid).join('-')"
                   class="party-ranking-row"
                 >
