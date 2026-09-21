@@ -74,7 +74,8 @@ const getChampionName = (championId: number) =>
 const heroSummary = (champion: ChampionRecentStats) =>
   `${champion.games}场 · ${formatRate(champion.winRate)}`;
 
-const positionLabel = (position: string) => positionLabelShared(position);
+const positionLabel = (position: string) =>
+  position === "UNKNOWN" ? "未知位置" : positionLabelShared(position);
 
 const opponentSummary = (opponent: OpponentMatchupStats) =>
   `${opponent.games}场 · 我${opponent.wins}胜 / 对手${opponent.opponentWins}胜 · ${formatRate(opponent.winRate)}`;
