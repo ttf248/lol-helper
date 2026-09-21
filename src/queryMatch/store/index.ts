@@ -4,7 +4,7 @@ import { summonerInfo } from "@/lcu/types/SummonerTypes";
 import BaseMatch from "@/queryMatch/utils/baseMatch";
 import { SimpleMatchDetailsTypes } from "@/lcu/types/queryMatchLcuTypes";
 import MatchDetails from "@/queryMatch/utils/matchDetails";
-import { RencentDataAnalysisTypes } from "@/queryMatch/utils/analysisTypes";
+import { RecentDataAnalysisTypes } from "@/queryMatch/utils/analysisTypes";
 import { findTopChamp } from "@/queryMatch/utils/analysisSummary";
 import { MatchHistoryEndpoint, MatchHistorySource } from "@/lcu/aboutMatch";
 import { invoke } from "@tauri-apps/api/core";
@@ -98,7 +98,7 @@ const useMatchStore = defineStore("useMatchStore", {
 			// 当前召唤师的本地缓存是否已覆盖 500 场完整窗口；用于显示
 			// "强制同步" 按钮。
 			historyCacheFull: false,
-			analysisData: null as RencentDataAnalysisTypes | null,
+			analysisData: null as RecentDataAnalysisTypes | null,
 			// 页面首次加载和搜索可以同时触发，只有最后一次查询允许提交结果。
 			queryRequestId: 0,
 			detailRequestId: 0,

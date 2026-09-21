@@ -61,8 +61,21 @@ const handleMin = async () => {
 	await getCurrentWindow().hide();
 };
 
-const handleKeyDown = (event: any) => {
+// Shift+Tab 全局监听是为了"对局内任意位置 Shift+Tab 收起面板"。但用户在
+// 输入框里按 Shift+Tab 时同样会被劫持，导致无法把焦点移出输入框。
+// 当焦点在 <input>/<textarea>/contentEditable 内时早返回，避免吞用户的
+// 真实焦点操作。
+const isEditableTarget = (target: EventTarget | null): boolean => {
+	if (!(target instanceof HTMLElement)) return false;
+	if (target.isContentEditable) return true;
+	const tag = target.tagName;
+	return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+};
+
+const handleKeyDown = (event: KeyboardEvent) => {
+	if (isEditableTarget(event.target)) return;
 	if (event.key === "Tab" && event.shiftKey) {
+		event.preventDefault();
 		handleMin();
 	}
 };
@@ -70,9 +83,11 @@ const handleClose = async () => {
 	await getCurrentWindow().close();
 };
 
-const closeModalOutside = (event: any) => {
+const closeModalOutside = (event: MouseEvent) => {
 	// Check if the clicked element is outside the modal
-	if (!event.target.closest(".tips-modal-card")) {
+	const target = event.target;
+	if (!(target instanceof HTMLElement)) return;
+	if (!target.closest(".tips-modal-card")) {
 		isModalOpen.value = false;
 	}
 };
@@ -167,6 +182,7 @@ const changeConfig = () => {
 			<n-button-group size="large">
 				<n-button
 					:focusable="false"
+					aria-label="查看使用提示"
 					@click="isModalOpen = true"
 					class="dashboard-action-button"
 					type="default"
@@ -177,6 +193,7 @@ const changeConfig = () => {
 				</n-button>
 				<n-button
 					:focusable="false"
+					aria-label="打开关系图"
 					@click="emits('openNetwork')"
 					class="dashboard-action-button"
 					type="default"
@@ -185,6 +202,7 @@ const changeConfig = () => {
 				</n-button>
 				<n-button
 					:focusable="false"
+					aria-label="刷新面板"
 					@click="refresh"
 					class="dashboard-action-button"
 					type="default"
@@ -195,6 +213,7 @@ const changeConfig = () => {
 				</n-button>
 
 				<n-button
+					aria-label="隐藏面板（Shift+Tab）"
 					@click="handleMin"
 					class="dashboard-action-button"
 					type="default"
@@ -205,7 +224,11 @@ const changeConfig = () => {
 				</n-button>
 				<n-popconfirm @positive-click="handleClose" :show-icon="false">
 					<template #trigger>
-						<n-button class="dashboard-action-button" type="default">
+						<n-button
+							aria-label="关闭面板"
+							class="dashboard-action-button"
+							type="default"
+						>
 							<template #icon>
 								<N-icon :size="20" :component="CircleX" />
 							</template>

@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import MatchList from "./matchList.vue";
-import MatchContent from "../common/matchContent.vue";
 import useMatchStore from "@/queryMatch/store";
-import {computed} from "vue";
+import {computed, defineAsyncComponent} from "vue";
 import {NResult, NTag} from "naive-ui";
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
+// 对局详情抽屉组件链路上挂着 matchDetails / matchDrawer / matchDetailsFighter
+// / matchConHeader + 30KB 的 matchDetails.ts。仅在用户打开抽屉时再按需加载。
+const MatchContent = defineAsyncComponent(
+  () => import("../common/matchContent.vue"),
+);
 import {
   MATCH_HISTORY_ENDPOINT_LABELS,
   MATCH_HISTORY_ENDPOINT_PATHS,

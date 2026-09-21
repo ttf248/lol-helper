@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, Ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, reactive, ref, Ref } from "vue";
 import QuerySummoner from "@/recentMatch/utils/querySummoner";
 import Dashboard from "@/recentMatch/components/dashboard.vue";
 import RecentMatchList from "@/recentMatch/components/recentMatchList.vue";
@@ -15,7 +15,12 @@ import {
 } from "@/recentMatch/utils/queryTypes";
 import { logger } from "@/utils/logger";
 import QueryMatch from "@/recentMatch/utils/queryMatch";
-import MatchContent from "@/queryMatch/common/matchContent.vue";
+// 对局详情抽屉组件链路上挂着 matchDetails / matchDrawer / matchDetailsFighter
+// / matchConHeader + 30KB 的 matchDetails.ts。仅在用户打开抽屉时按需拉取，
+// 对局内面板首屏只需要渲染 dashboard + recentMatchList。
+const MatchContent = defineAsyncComponent(
+    () => import("@/queryMatch/common/matchContent.vue"),
+);
 import MatchDetails from "@/queryMatch/utils/matchDetails";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
 import { NDrawer, NResult } from "naive-ui";

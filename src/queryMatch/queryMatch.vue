@@ -24,7 +24,12 @@ import {
     ref,
 } from "vue";
 import { ParticipantsInfo } from "@/queryMatch/utils/MatchDetail";
-import MatchContent from "@/queryMatch/common/matchContent.vue";
+// 对局详情抽屉组件链路上挂着 matchDetails / matchDrawer / matchDetailsFighter
+// / matchConHeader + 30KB 的 matchDetails.ts。仅在用户实际打开抽屉时按需拉取，
+// 避免把首屏主战绩列表的 JS 体积拖累几个数量级。
+const MatchContent = defineAsyncComponent(
+    () => import("@/queryMatch/common/matchContent.vue"),
+);
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
 import {
     MatchItemTypes,

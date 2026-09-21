@@ -1,13 +1,13 @@
 import { champDict } from "@/resources/champList";
 import {
-  RencentDataAnalysisTypes,
+  RecentDataAnalysisTypes,
   RoleCountMapTypes,
 } from "./analysisTypes";
 import { SimpleMatchTypes } from "@/lcu/types/queryMatchLcuTypes";
 
 export const findTopChamp = (
   matches: SimpleMatchTypes[] | undefined | null,
-): RencentDataAnalysisTypes | null => {
+): RecentDataAnalysisTypes | null => {
   if (!matches || matches.length === 0) return null;
 
   const roleCountMap: RoleCountMapTypes = {

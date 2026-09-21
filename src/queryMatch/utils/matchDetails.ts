@@ -36,7 +36,7 @@ export default class MatchDetails {
     private team200Kills = 0;
     private team100GoldEarned = 0;
     private team200GoldEarned = 0;
-    private markeUsed = {
+    private markUsed = {
         kills: true,
         assists: true,
         turretKills: true,
@@ -386,7 +386,7 @@ export default class MatchDetails {
             this.team100GoldEarned,
             this.team200GoldEarned,
         ] = [0, 0, 0, 0];
-        this.markeUsed = {
+        this.markUsed = {
             kills: true,
             assists: true,
             turretKills: true,
@@ -727,10 +727,10 @@ export default class MatchDetails {
                 continue;
             }
             // @ts-ignore
-            if (stats[key] === maxMatchData[key] && this.markeUsed[key]) {
+            if (stats[key] === maxMatchData[key] && this.markUsed[key]) {
                 iconList.push(key);
                 // @ts-ignore
-                this.markeUsed[key] = false;
+                this.markUsed[key] = false;
             }
         }
         return iconList;

@@ -7,7 +7,7 @@ export interface RoleCountMapTypes {
   tank: number;
 }
 
-export interface RencentDataAnalysisTypes {
+export interface RecentDataAnalysisTypes {
   top3Champions: { champId: number; count: number }[];
   totalChampions: number;
   roleCountMap: RoleCountMapTypes;

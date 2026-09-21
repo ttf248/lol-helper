@@ -98,7 +98,14 @@ const changeMatchMode = async (queueId: number) => {
     const mes: MessageReactive = message.loading(`${curMod} 加载中...`,
       {duration:10000})
 
-    matchStore.getSpecialMatchList(queueId,sumInfo.info.puuid).then(() => mes.destroy())
+    // 不论 resolve 还是 reject 都要销毁 loading toast，否则失败时 toast
+    // 会停留到 duration 过期，期间用户再次切模式看不到新 toast。
+    matchStore.getSpecialMatchList(queueId, sumInfo.info.puuid)
+      .then(() => mes.destroy())
+      .catch((error) => {
+        mes.destroy()
+        message.error(`${curMod} 加载失败：${String(error).slice(0, 120)}`)
+      })
 
   } else {
     matchStore.getSpecialMatchList(queueId)
@@ -221,17 +228,17 @@ const pageChange = (page: number) => {
 
     </div>
     <n-space class="header-actions" :size="[4, 0]">
-      <n-button @click="handleMin" text>
+      <n-button aria-label="最小化窗口" @click="handleMin" text>
         <n-icon size="20">
           <circle-minus/>
         </n-icon>
       </n-button>
-      <n-button text circle @click="handleSet">
+      <n-button aria-label="打开设置" text circle @click="handleSet">
         <n-icon size="20">
           <settings/>
         </n-icon>
       </n-button>
-      <n-button text circle @click="handleClose">
+      <n-button aria-label="关闭窗口" text circle @click="handleClose">
         <n-icon size="20">
           <circle-x/>
         </n-icon>

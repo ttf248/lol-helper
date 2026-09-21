@@ -15,9 +15,19 @@ import {
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "@tauri-apps/api/core";
 
-const config: Ref<ConfigSettingTypes> = ref(
-	JSON.parse(localStorage.getItem("configSetting") as string),
-);
+// localStorage.getItem 直接返回 string | null；corrupt JSON 也会让 JSON.parse
+// 抛错。先用安全 parse 包一层，避免设置面板直接白屏。
+const readConfig = (): ConfigSettingTypes => {
+	const raw = localStorage.getItem("configSetting");
+	if (raw === null) return {} as ConfigSettingTypes;
+	try {
+		return JSON.parse(raw) as ConfigSettingTypes;
+	} catch (error) {
+		console.warn("configSetting 解析失败，使用空对象", error);
+		return {} as ConfigSettingTypes;
+	}
+};
+const config: Ref<ConfigSettingTypes> = ref(readConfig());
 const theme = localStorage.getItem("theme") || "light";
 const dialog = useDialog();
 declare const __APP_VERSION__: string;
@@ -39,6 +49,7 @@ const handleThemeChange = () => {
 		autoFocus: false,
 		style: "margin:8px;max-width:334px",
 		onPositiveClick: async () => {
+			// 兜底写一份，确保即使 theme 变量初始为空时也能正确切换。
 			if (theme !== "dark") {
 				localStorage.setItem("theme", "dark");
 			} else {

@@ -62,16 +62,20 @@ export const queryGameType = (queueId: number) => {
     return gameTypeMap[queueId as QueueId] ?? "其它模式";
 };
 // 判断localStorage是否存在某个值
-export const isStoreageHas = (key: string, value: string) => {
-    const storeageJson = JSON.parse(String(localStorage.getItem(key)));
-    if (storeageJson === null) {
+export const isStorageHas = (key: string, value: string) => {
+    const storageJson = JSON.parse(String(localStorage.getItem(key)));
+    if (storageJson === null) {
         return false;
     }
-    if (value !== "null" && storeageJson[value] === undefined) {
+    if (value !== "null" && storageJson[value] === undefined) {
         return false;
     }
     return true;
 };
+
+// 保留拼写错误的旧名以维持对外导出签名。已 deprecated，调用方请改用 isStorageHas。
+/** @deprecated spelling error, use {@link isStorageHas} */
+export const isStoreageHas = isStorageHas;
 
 // 通过召唤师id获取召唤师图片地址
 export const getspellImgUrl = (spellId: number) => {
