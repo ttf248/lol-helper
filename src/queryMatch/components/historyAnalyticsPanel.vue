@@ -251,7 +251,12 @@ watch(selectedMode, () => {
 });
 
 watch(
-  () => [props.player.puuid, props.player.matchList.length],
+  // 最近窗口通常始终是 20 场，仅监听 length 会漏掉“旧局被新局
+  // 替换”的刷新；对局 ID 序列变化才代表分析输入真的变了。
+  () => [
+    props.player.puuid,
+    props.player.matchList.map((match) => match.gameId).join(","),
+  ],
   () => {
     analysis.value = null;
     void loadAnalysis();

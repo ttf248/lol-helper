@@ -65,6 +65,14 @@ watch(() => matchStore.summonerId, () => {
   clearVal()
 })
 
+// 完整 init 会把列表切回“全部模式”。即使目标召唤师没有变化（例如
+// 窗口聚焦自动刷新），也要同步清掉旧的模式和页码，避免下拉框、列表
+// 与分页继续引用上一轮 specialMatchList。强制同步不修改 matchLoading，
+// 因此不会被这里误清空。
+watch(() => matchStore.matchLoading, (loading) => {
+  if (loading) clearVal()
+})
+
 const options = [
   {
     label: "全部模式",
