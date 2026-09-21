@@ -336,7 +336,12 @@ const openDetailDrawer = async (
     isDetailModal.value = true;
 };
 
-const applyChampPayload = (payload: any) => {
+interface ChampPayload {
+    hero: { name: string; title: string; alias: string; roles: string[] };
+    spells: ChampInfoTypes[];
+}
+
+const applyChampPayload = (payload: ChampPayload) => {
     if (!payload?.spells) return false;
     const info: ChampTinyTypes = {
         name: payload.hero.name + " " + payload.hero.title,
@@ -346,10 +351,13 @@ const applyChampPayload = (payload: any) => {
     champInfo.value.info = info;
     // 定义排序顺序
     const order = ["q", "w", "e", "r", "passive"];
-    // 对数组进行排序
-    champInfo.value.list = payload.spells.sort((a: any, b: any) => {
-        return order.indexOf(a.spellKey) - order.indexOf(b.spellKey);
-    });
+    // 对数组进行排序（slice() 防止 sort 原地修改 payload）
+    champInfo.value.list = payload.spells
+        .slice()
+        .sort(
+            (a: ChampInfoTypes, b: ChampInfoTypes) =>
+                order.indexOf(a.spellKey) - order.indexOf(b.spellKey),
+        );
     return true;
 };
 
@@ -357,13 +365,13 @@ const getChampInfoList = async (champId: number) => {
     try {
         // PG 优先：点过的英雄不再走 gtimg.com 跨域 HTTPS。
         const cached = await getCachedChampionDetail(champId);
-        if (cached && applyChampPayload(cached.payload)) {
+        if (cached && applyChampPayload(cached.payload as ChampPayload)) {
             return;
         }
         const url = `https://game.gtimg.cn/images/lol/act/img/js/hero/${champId}.js?ts=2893692`;
-        const res = await requestFetch<any>(url, "GET");
-        if (res !== null && res?.spells) {
-            applyChampPayload(res);
+        const res = await requestFetch<unknown>(url, "GET");
+        if (res !== null && (res as { spells?: unknown })?.spells) {
+            applyChampPayload(res as ChampPayload);
             await cacheChampionDetail(champId, res);
         }
     } catch (error) {

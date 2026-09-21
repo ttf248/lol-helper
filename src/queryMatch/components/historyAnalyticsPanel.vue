@@ -42,6 +42,24 @@ import type { PartyMember, RecentNetworkNode } from "@/recentMatch/utils/queryTy
 
 type PartyRankingMode = "frequency" | "winRate";
 
+const POSITION_LABEL_CACHE = new Map<string, string>();
+const positionName = (position: string) => {
+    const cached = POSITION_LABEL_CACHE.get(position);
+    if (cached !== undefined) return cached;
+    const label = positionLabel(position);
+    POSITION_LABEL_CACHE.set(position, label);
+    return label;
+};
+
+const CHAMPION_IMAGE_CACHE = new Map<number, string>();
+const championImage = (championId: number) => {
+    const cached = CHAMPION_IMAGE_CACHE.get(championId);
+    if (cached !== undefined) return cached;
+    const url = getChampionImageUrl(championId);
+    CHAMPION_IMAGE_CACHE.set(championId, url);
+    return url;
+};
+
 const props = defineProps<{ player: RecentSumInfo }>();
 const selectedMode = ref<MatchModeKey>("match");
 const partyRankingMode = ref<PartyRankingMode>("frequency");
@@ -81,39 +99,36 @@ const coverageRate = computed(() => {
   return Math.round((coverage.completeGames / coverage.mergedGames) * 1000) / 10;
 });
 
+// 把排序 + 切片缩到 top 5，再交给模板用 v-memo 守住子节点重渲染。
 const partyRankingSections = computed(() => {
   const groups = analysis.value?.partyGroups || [];
+  const byFrequency = partyRankingMode.value === "frequency";
   return [2, 3, 4, 5].map((size) => {
-    const allGroups = groups
-      .filter(
-        (group) =>
-          group.members.length === size &&
-          (partyRankingMode.value === "frequency" || group.games >= 5),
-      )
-      .sort(
-        (left, right) =>
-          partyRankingMode.value === "frequency"
-            ? right.games - left.games ||
-              right.stabilityScore - left.stabilityScore ||
-              right.winRate - left.winRate
-            : right.winRate - left.winRate ||
-              right.games - left.games ||
-              right.stabilityScore - left.stabilityScore,
-      );
+    const matched = groups.filter(
+      (group) =>
+        group.members.length === size &&
+        (byFrequency || group.games >= 5),
+    );
+    matched.sort(
+      (left, right) =>
+        byFrequency
+          ? right.games - left.games ||
+            right.stabilityScore - left.stabilityScore ||
+            right.winRate - left.winRate
+          : right.winRate - left.winRate ||
+            right.games - left.games ||
+            right.stabilityScore - left.stabilityScore,
+    );
     return {
       size,
       label: `${size}人组合`,
-      total: allGroups.length,
-      items: allGroups.slice(0, 5) as PartyGroupAnalysis[],
+      total: matched.length,
+      items: matched.slice(0, 5) as PartyGroupAnalysis[],
     };
   });
 });
 
-const positionName = (position: string) => positionLabel(position);
-
 const championName = (championId: number) => championNameShared(championId);
-
-const championImage = (championId: number) => getChampionImageUrl(championId);
 
 const synergyChampionSummary = (item: TeammateSynergyStats) => {
   const champion = item.champions[0];
@@ -129,50 +144,82 @@ const synergyPositionSummary = (item: TeammateSynergyStats) => {
     : "暂无位置数据";
 };
 
-const loadAnalysis = async () => {
-  const currentRequest = ++requestId;
-  loading.value = true;
-  analysis.value = null;
-  analysisProgress.value = {
-    stage: "cache",
-    completed: 0,
-    total: 1,
-    percentage: 0,
-    message: "准备读取本地缓存",
-  };
-  errorMessage.value = "";
-  try {
-    const result = await loadPlayerCacheAnalysis(
-      props.player,
-      selectedMode.value,
-      (progress) => {
-        if (currentRequest !== requestId) return;
-        analysisProgress.value = progress;
-        if (progress.analysis) {
-          analysis.value = progress.analysis;
-        }
-      },
-    );
-    if (currentRequest === requestId) analysis.value = result;
-  } catch (error) {
-    if (currentRequest !== requestId) return;
+// 同一个 (puuid, mode) 触发的 loadAnalysis / loadDatabaseInfo 复用同一个 Promise，
+// 避免 onMounted + watch(puuid) + watch(mode) 几乎同时触发造成的 PG 重复请求。
+const analysisInFlight = new Map<string, Promise<void>>();
+const databaseInFlight = new Map<string, Promise<void>>();
+const analysisKey = (puuid: string, modeKey: MatchModeKey) =>
+  `${puuid}::${modeKey}`;
+const databaseKey = (puuid: string, modeKey: MatchModeKey) =>
+  `${puuid}::${modeKey}`;
+
+const loadAnalysis = () => {
+  const key = analysisKey(props.player.puuid, selectedMode.value);
+  const cached = analysisInFlight.get(key);
+  if (cached) return cached;
+  // 用 IIFE + .finally() 链避免在 finally 闭包内反向引用 promise 变量。
+  const promise = (async () => {
+    const currentRequest = ++requestId;
+    loading.value = true;
     analysis.value = null;
-    analysisProgress.value = null;
-    errorMessage.value = `历史战绩分析失败：${String(error)}`;
-  } finally {
-    if (currentRequest === requestId) loading.value = false;
-  }
+    analysisProgress.value = {
+      stage: "cache",
+      completed: 0,
+      total: 1,
+      percentage: 0,
+      message: "准备读取本地缓存",
+    };
+    errorMessage.value = "";
+    try {
+      const result = await loadPlayerCacheAnalysis(
+        props.player,
+        selectedMode.value,
+        (progress) => {
+          if (currentRequest !== requestId) return;
+          analysisProgress.value = progress;
+          if (progress.analysis) {
+            analysis.value = progress.analysis;
+          }
+        },
+      );
+      if (currentRequest === requestId) analysis.value = result;
+    } catch (error) {
+      if (currentRequest !== requestId) return;
+      analysis.value = null;
+      analysisProgress.value = null;
+      errorMessage.value = `历史战绩分析失败：${String(error)}`;
+    } finally {
+      if (currentRequest === requestId) loading.value = false;
+    }
+  })().finally(() => {
+    if (analysisInFlight.get(key) === promise) {
+      analysisInFlight.delete(key);
+    }
+  });
+  analysisInFlight.set(key, promise);
+  return promise;
 };
 
-const loadDatabaseInfo = async () => {
-  const currentRequest = ++databaseRequestId;
-  const [status, playerSummary] = await Promise.all([
-    getDatabaseStatus(),
-    getCachedPlayerSummary(props.player.puuid, selectedMode.value),
-  ]);
-  if (currentRequest !== databaseRequestId) return;
-  databaseStatus.value = status;
-  cachedPlayerSummary.value = playerSummary;
+const loadDatabaseInfo = () => {
+  const key = databaseKey(props.player.puuid, selectedMode.value);
+  const cached = databaseInFlight.get(key);
+  if (cached) return cached;
+  const promise = (async () => {
+    const currentRequest = ++databaseRequestId;
+    const [status, playerSummary] = await Promise.all([
+      getDatabaseStatus(),
+      getCachedPlayerSummary(props.player.puuid, selectedMode.value),
+    ]);
+    if (currentRequest !== databaseRequestId) return;
+    databaseStatus.value = status;
+    cachedPlayerSummary.value = playerSummary;
+  })().finally(() => {
+    if (databaseInFlight.get(key) === promise) {
+      databaseInFlight.delete(key);
+    }
+  });
+  databaseInFlight.set(key, promise);
+  return promise;
 };
 
 const refresh = async () => {
@@ -352,6 +399,7 @@ onMounted(() => {
           <div v-if="analysis.teammateSynergy?.length" class="synergy-list">
             <div
               v-for="item in analysis.teammateSynergy.slice(0, 8)"
+              v-memo="[item.games, item.winRate, item.champions[0]?.championId, item.positions[0]?.position, item.teammate.summonerName, item.teammate.moderation?.marked, item.teammate.moderation?.reportCount]"
               :key="item.teammate.puuid"
               class="synergy-row"
             >
@@ -417,6 +465,7 @@ onMounted(() => {
               <div v-if="section.items.length" class="party-ranking-list">
                 <div
                   v-for="(group, index) in section.items"
+                  v-memo="[group.games, group.winRate, group.stabilityScore, partyRankingMode]"
                   :key="group.members.map((item) => item.puuid).join('-')"
                   class="party-ranking-row"
                 >
@@ -441,6 +490,7 @@ onMounted(() => {
             <div class="relation-subtitle">历史交手</div>
             <div
               v-for="item in analysis.opponents.slice(0, 8)"
+              v-memo="[item.games, item.winRate, item.opponent.summonerName, item.opponent.moderation?.marked, item.opponent.moderation?.reportCount]"
               :key="item.opponent.puuid"
               class="opponent-row"
             >

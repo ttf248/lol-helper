@@ -69,6 +69,50 @@ export interface NormalizedHistoryParticipant {
   win: boolean;
 }
 
+// LCU / SGP / 内联 participantIdentities 三种来源的并集形状。
+// 只列出归一化链路会读取的字段，其余一概忽略。
+interface RawParticipantStats {
+  kills?: unknown;
+  deaths?: unknown;
+  assists?: unknown;
+  win?: unknown;
+}
+
+interface RawIdentityPlayer {
+  puuid?: unknown;
+  summonerId?: unknown;
+  summonerName?: unknown;
+  gameName?: unknown;
+  tagLine?: unknown;
+}
+
+interface RawParticipant {
+  puuid?: unknown;
+  summonerId?: unknown;
+  summonerName?: unknown;
+  gameName?: unknown;
+  tagLine?: unknown;
+  riotIdGameName?: unknown;
+  riotIdTagline?: unknown;
+  teamId?: unknown;
+  championId?: unknown;
+  participantId?: unknown;
+  individualPosition?: unknown;
+  teamPosition?: unknown;
+  role?: unknown;
+  lane?: unknown;
+  timeline?: {
+    role?: unknown;
+    lane?: unknown;
+  };
+  stats?: RawParticipantStats;
+}
+
+interface RawParticipantIdentity {
+  participantId: number;
+  player: RawIdentityPlayer;
+}
+
 export interface NormalizedHistoryGame {
   gameId: number;
   gameCreation: number;
@@ -134,7 +178,7 @@ const normalizePosition = (rawPosition: unknown): string => {
   }
 };
 
-const getPosition = (participant: any): string => {
+const getPosition = (participant: RawParticipant): string => {
   const lcuTimeline = participant?.timeline;
   const candidates = [
     participant?.individualPosition,
@@ -170,21 +214,21 @@ const normalizedText = (value: unknown): string | undefined => {
  * 绝不把 PUUID 当成用户名称写入分析结果。
  */
 const getParticipantDisplayName = (
-  participant: any,
-  identity?: any,
+  participant: RawParticipant,
+  identityPlayer?: RawIdentityPlayer,
 ): { gameName?: string; tagLine?: string; summonerName?: string } => {
   const gameName = normalizedText(
     participant?.gameName ??
       participant?.riotIdGameName ??
-      identity?.player?.gameName,
+      identityPlayer?.gameName,
   );
   const tagLine = normalizedText(
     participant?.tagLine ??
       participant?.riotIdTagline ??
-      identity?.player?.tagLine,
+      identityPlayer?.tagLine,
   );
   const legacyName = normalizedText(
-    participant?.summonerName ?? identity?.player?.summonerName,
+    participant?.summonerName ?? identityPlayer?.summonerName,
   );
   if (gameName) {
     const hasTagLine = tagLine &&
@@ -213,17 +257,18 @@ const getIdentityKey = (
 };
 
 const participantStats = (
-  participant: any,
-  stats: any,
-  identity?: any,
+  participant: RawParticipant,
+  stats: RawParticipantStats | RawParticipant | undefined,
+  identity?: RawParticipantIdentity,
 ): NormalizedHistoryParticipant | null => {
+  const identityPlayer = identity?.player;
   const summonerId = asOptionalNumber(
-    participant?.summonerId ?? identity?.player?.summonerId,
+    participant?.summonerId ?? identityPlayer?.summonerId,
   );
-  const display = getParticipantDisplayName(participant, identity);
+  const display = getParticipantDisplayName(participant, identityPlayer);
   const summonerName = display.summonerName;
   const puuid = getIdentityKey(
-    participant?.puuid || identity?.player?.puuid,
+    participant?.puuid || identityPlayer?.puuid,
     summonerId,
     summonerName,
   );
@@ -231,7 +276,11 @@ const participantStats = (
     return null;
   }
 
-  const source = stats || participant;
+  // LCU 的 stats 嵌在 participant.stats，SGP / 纯 participants 模式下
+  // 直接挂在 participant 上。两种情况分别取后再走统一归一化。
+  const source = (stats && typeof stats === "object" && "kills" in stats
+    ? stats
+    : participant) as RawParticipantStats;
   return {
     puuid,
     summonerId,
@@ -276,10 +325,11 @@ export const normalizeHistoryGame = (
   }
 
   const participants = (game as GamesBySgp).participants
-    .map((participant: any) => {
+    .map((participant: RawParticipant) => {
       if ("participantIdentities" in game) {
         const identity = (game as Games).participantIdentities?.find(
-          (item: any) => item.participantId === participant.participantId,
+          (item: RawParticipantIdentity) =>
+            item.participantId === participant.participantId,
         );
         return participantStats(participant, participant.stats, identity);
       }
@@ -666,7 +716,24 @@ const emptyModeration = (): PlayerModerationInfo => ({
   records: [],
 });
 
-const toModerationRecord = (record: any): ModerationRecord => ({
+interface RawModerationRecord {
+    gameId?: unknown;
+    punisherId?: unknown;
+    punisherName?: unknown;
+    offenderId?: unknown;
+    offenderName?: unknown;
+    offense?: unknown;
+    createdAt?: unknown;
+    source?: unknown;
+    tag?: unknown;
+    content?: unknown;
+    isShow?: unknown;
+    UpdatedAt?: unknown;
+    updatedAt?: unknown;
+    playerSumName?: unknown;
+}
+
+const toModerationRecord = (record: RawModerationRecord): ModerationRecord => ({
   tag: String(record?.tag || "未分类"),
   content: String(record?.content || ""),
   isShow: Boolean(record?.isShow),

@@ -346,7 +346,7 @@ const hasParticipantRoster = (games: MatchHistoryGame[]): boolean =>
 				const identities = new Set(
 					(game.participantIdentities || [])
 						.filter((item) => {
-							const player = item.player as any;
+							const player = item.player;
 							return Boolean(
 								player?.puuid ||
 								player?.summonerId ||
@@ -357,7 +357,7 @@ const hasParticipantRoster = (games: MatchHistoryGame[]): boolean =>
 				);
 				return identities.size >= 5;
 			}
-			return game.participants.filter((participant: any) =>
+			return game.participants.filter((participant) =>
 				Boolean(
 					participant?.puuid ||
 					participant?.summonerId ||

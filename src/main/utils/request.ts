@@ -2,6 +2,16 @@ import {BlacklistListTypes, Hater, UserInfos} from "@/main/views/record/blackLis
 import {fetch} from "@tauri-apps/plugin-http";
 import { logger } from "@/utils/logger";
 
+export interface BlacklistConfig {
+  url: string;
+  method: string;
+  data?: unknown;
+}
+
+export interface BlacklistResponse<T> {
+  code: number;
+  data: T;
+}
 
 export const requestFetch = async <T>(url: string, method: string, body?: string,timeout?:number): Promise<T | null> => {
   const controller = new AbortController();
@@ -108,64 +118,77 @@ export const requestFetch = async <T>(url: string, method: string, body?: string
 
 const BLACKLIST_TIMEOUT_MS = 2500;
 
-const blacklistServe = (config: any): Promise<any | null> => {
-  return  requestFetch<any>('http://121.40.58.64:8412' + config.url,
-    config.method, JSON.stringify(config?.data), BLACKLIST_TIMEOUT_MS
-  ).then((res) => {
-    if (res === null) {return null}
-    return res
-  }).catch(() => null)
-}
+const blacklistServe = <T>(
+  config: BlacklistConfig,
+): Promise<BlacklistResponse<T> | null> =>
+  requestFetch<BlacklistResponse<T>>(
+    "http://121.40.58.64:8412" + config.url,
+    config.method,
+    JSON.stringify(config?.data),
+    BLACKLIST_TIMEOUT_MS,
+  ).catch(() => null);
 
 
-export const findPlayerByPlayerId = async (config: any): Promise<null | UserInfos> => {
-  const res = await blacklistServe(config)
-
+export const findPlayerByPlayerId = async (
+  config: BlacklistConfig,
+): Promise<null | UserInfos> => {
+  const res = await blacklistServe<UserInfos>(config);
   if (res === null || res.code !== 0) {
-    return null
+    return null;
   }
-  return res.data
-}
+  return res.data;
+};
 
-export const findHaterByHaterId = async (config: any): Promise<null | Hater[]> => {
-  const res = await blacklistServe(config)
+export const findHaterByHaterId = async (
+  config: BlacklistConfig,
+): Promise<null | Hater[]> => {
+  const res = await blacklistServe<Hater[]>(config);
   if (res === null || res.code !== 0) {
-    return null
+    return null;
   }
-  return res.data
-}
-export const findBlacklistByHId = async (config: any): Promise<null | BlacklistListTypes> => {
-  const res = await blacklistServe(config)
-  if (res === null || res.code !== 0) {
-    return null
-  }
-  return res.data
-}
+  return res.data;
+};
 
-const handleRequest = (res:any)  => {
+export const findBlacklistByHId = async (
+  config: BlacklistConfig,
+): Promise<null | BlacklistListTypes> => {
+  const res = await blacklistServe<BlacklistListTypes>(config);
   if (res === null || res.code !== 0) {
-    return false
+    return null;
   }
-  return true
-}
+  return res.data;
+};
 
-export const reviseHaterContent = async (config: any): Promise<boolean> => {
-  const res = await blacklistServe(config)
-  return handleRequest(res)
-}
-export const deleteBlacklist = async (config: any): Promise<boolean> => {
-  const res = await blacklistServe(config)
-  return handleRequest(res)
-}
-export const deleteHater = async (config: any): Promise<boolean> => {
-  const res = await blacklistServe(config)
-  return handleRequest(res)
-}
-export const createHaterContent = async (config: any): Promise<boolean> => {
-  const res = await blacklistServe(config)
-  return handleRequest(res)
-}
-export const updatePlayerRecord = async (config: any): Promise<boolean> => {
-  const res = await blacklistServe(config)
-  return handleRequest(res)
-}
+const handleRequest = <T>(res: BlacklistResponse<T> | null): boolean =>
+  res !== null && res.code === 0;
+
+export const reviseHaterContent = async (
+  config: BlacklistConfig,
+): Promise<boolean> => {
+  const res = await blacklistServe<null>(config);
+  return handleRequest(res);
+};
+export const deleteBlacklist = async (
+  config: BlacklistConfig,
+): Promise<boolean> => {
+  const res = await blacklistServe<null>(config);
+  return handleRequest(res);
+};
+export const deleteHater = async (
+  config: BlacklistConfig,
+): Promise<boolean> => {
+  const res = await blacklistServe<null>(config);
+  return handleRequest(res);
+};
+export const createHaterContent = async (
+  config: BlacklistConfig,
+): Promise<boolean> => {
+  const res = await blacklistServe<null>(config);
+  return handleRequest(res);
+};
+export const updatePlayerRecord = async (
+  config: BlacklistConfig,
+): Promise<boolean> => {
+  const res = await blacklistServe<null>(config);
+  return handleRequest(res);
+};

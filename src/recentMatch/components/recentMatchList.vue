@@ -21,7 +21,6 @@ import {
 import {
   championName as championNameShared,
   historyStatusLabel as initialStatusLabel,
-  sourceEndpointLabel as sharedSourceEndpointLabel,
   sourceEndpointSummary,
   sourceEndpointTitle,
   historySourceLabel as sharedHistorySourceLabel,
@@ -100,33 +99,32 @@ const historyStatusLabel = (status?: RecentHistoryStatus) => {
   return initialStatusLabel(status.kind, status.title);
 };
 
-const sourceEndpointLabel = (endpoint: string) =>
-  sharedSourceEndpointLabel(endpoint);
-
 const historySourceLabel = (source: string) =>
   sharedHistorySourceLabel(source);
 
-const teamInsight = computed(() => {
-  const analyzedPlayers = sumList.filter(
-    (player) => (player.recentAnalysis?.actualGames || 0) > 0,
-  );
-  const totalGames = analyzedPlayers.reduce(
-    (total, player) => total + (player.recentAnalysis?.actualGames || 0),
-    0,
-  );
-  const totalWins = analyzedPlayers.reduce(
-    (total, player) => total + (player.recentAnalysis?.wins || 0),
-    0,
-  );
-  const rankedPlayers = analyzedPlayers
+// 把原先一个 60 行 computed 拆成 3 个互相独立的 computed：
+// analyzedPlayers 只依赖 sumList 的 recentAnalysis；rankedPlayers 在
+// analyzedPlayers 上做">=3 场"过滤 + 排序；teamGroups 做"全员命中同队"的
+// 去重。三者缓存相互独立，partial 更新（例如只刷新 1 个玩家的 analysis）
+// 不会触发全量重排。
+const analyzedPlayers = computed(() =>
+  sumList.filter((player) => (player.recentAnalysis?.actualGames || 0) > 0),
+);
+
+const rankedPlayers = computed(() =>
+  analyzedPlayers.value
     .filter((player) => (player.recentAnalysis?.actualGames || 0) >= 3)
+    .slice()
     .sort(
       (left, right) =>
         (right.recentAnalysis?.winRate || 0) -
           (left.recentAnalysis?.winRate || 0) ||
         (right.recentAnalysis?.actualGames || 0) -
           (left.recentAnalysis?.actualGames || 0),
-    );
+    ),
+);
+
+const teamGroups = computed(() => {
   const groupMap = new Map<string, PartyGroupAnalysis>();
   const currentTeam = new Set(sumList.map((player) => player.puuid));
   for (const player of sumList) {
@@ -137,23 +135,36 @@ const teamInsight = computed(() => {
       if (!previous || group.games > previous.games) groupMap.set(key, group);
     }
   }
+  return Array.from(groupMap.values())
+    .sort(
+      (left, right) =>
+        Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
+        right.games - left.games ||
+        right.winRate - left.winRate,
+    )
+    .slice(0, 2);
+});
 
+const teamInsight = computed(() => {
+  const analyzed = analyzedPlayers.value;
+  const totalGames = analyzed.reduce(
+    (total, player) => total + (player.recentAnalysis?.actualGames || 0),
+    0,
+  );
+  const totalWins = analyzed.reduce(
+    (total, player) => total + (player.recentAnalysis?.wins || 0),
+    0,
+  );
+  const ranked = rankedPlayers.value;
   return {
-    analyzed: analyzedPlayers.length,
+    analyzed: analyzed.length,
     total: sumList.length,
     totalGames,
     totalWins,
     winRate: totalGames > 0 ? (totalWins / totalGames) * 100 : null,
-    best: rankedPlayers[0] || null,
-    risk: rankedPlayers[rankedPlayers.length - 1] || null,
-    groups: Array.from(groupMap.values())
-      .sort(
-        (left, right) =>
-          Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
-          right.games - left.games ||
-          right.winRate - left.winRate,
-      )
-      .slice(0, 2),
+    best: ranked[0] || null,
+    risk: ranked[ranked.length - 1] || null,
+    groups: teamGroups.value,
   };
 });
 
