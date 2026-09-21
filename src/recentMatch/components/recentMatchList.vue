@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NAvatar, NButton, NCard, NResult, NTag } from "naive-ui";
-import { champDict } from "@/resources/champList";
 import {
   ChampionRecentStats,
   OpponentMatchupStats,
@@ -11,11 +10,6 @@ import {
   RecentMatchLoadingState,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
-import {
-  MATCH_HISTORY_ENDPOINT_LABELS,
-  MATCH_HISTORY_ENDPOINT_PATHS,
-  MATCH_HISTORY_SOURCE_LABELS,
-} from "@/lcu/aboutMatch";
 import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
 import {
   confidenceLabel,
@@ -24,6 +18,15 @@ import {
   partyEvidenceTime,
   partyGroupNames,
 } from "@/recentMatch/utils/partyDisplay";
+import {
+  championName as championNameShared,
+  historyStatusLabel as initialStatusLabel,
+  sourceEndpointLabel as sharedSourceEndpointLabel,
+  sourceEndpointSummary,
+  sourceEndpointTitle,
+  historySourceLabel as sharedHistorySourceLabel,
+} from "@/recentMatch/utils/display";
+import { positionLabel as positionLabelShared } from "@/lcu/utils";
 
 const {
   sumList,
@@ -67,22 +70,12 @@ const toggleAnalysis = (puuid: string) => {
 };
 
 const getChampionName = (championId: number) =>
-  champDict[String(championId)]?.label || `英雄 ${championId}`;
+  championNameShared(championId);
 
 const heroSummary = (champion: ChampionRecentStats) =>
   `${champion.games}场 · ${formatRate(champion.winRate)}`;
 
-const positionLabel = (position: string) => {
-  const labels: Record<string, string> = {
-    TOP: "上路",
-    JUNGLE: "打野",
-    MIDDLE: "中路",
-    BOTTOM: "下路",
-    SUPPORT: "辅助",
-    UNKNOWN: "未知位置",
-  };
-  return labels[position] || position;
-};
+const positionLabel = (position: string) => positionLabelShared(position);
 
 const opponentSummary = (opponent: OpponentMatchupStats) =>
   `${opponent.games}场 · 我${opponent.wins}胜 / 对手${opponent.opponentWins}胜 · ${formatRate(opponent.winRate)}`;
@@ -104,39 +97,14 @@ const shouldShowHistoryStatus = (status?: RecentHistoryStatus) =>
 
 const historyStatusLabel = (status?: RecentHistoryStatus) => {
   if (!status) return "";
-  const labels: Record<string, string> = {
-    loading: "历史读取中",
-    "cache-fallback": "本地缓存",
-    "no-data": "暂无历史",
-    "mode-empty": "本模式暂无历史",
-    "identity-mismatch": "身份待确认",
-    error: "历史读取失败",
-  };
-  return labels[status.kind] || status.title;
+  return initialStatusLabel(status.kind, status.title);
 };
 
 const sourceEndpointLabel = (endpoint: string) =>
-  MATCH_HISTORY_ENDPOINT_LABELS[
-    endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_LABELS
-  ] || endpoint;
+  sharedSourceEndpointLabel(endpoint);
 
 const historySourceLabel = (source: string) =>
-  MATCH_HISTORY_SOURCE_LABELS[
-    source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
-  ] || source;
-
-const sourceEndpointSummary = (endpoints?: string[]) =>
-  (endpoints || []).map(sourceEndpointLabel).join("、");
-
-const sourceEndpointTitle = (endpoints?: string[]) =>
-  (endpoints || [])
-    .map(
-      (endpoint) =>
-        MATCH_HISTORY_ENDPOINT_PATHS[
-          endpoint as keyof typeof MATCH_HISTORY_ENDPOINT_PATHS
-        ] || endpoint,
-    )
-    .join("\n");
+  sharedHistorySourceLabel(source);
 
 const teamInsight = computed(() => {
   const analyzedPlayers = sumList.filter(

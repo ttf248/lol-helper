@@ -41,6 +41,10 @@ import {
   HISTORY_PLAYER_MAX_GAMES,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
+import {
+    findPlayerParticipant,
+    participantMatchesPlayer,
+} from "@/recentMatch/utils/participantLookup";
 
 export const RECENT_DEFAULT_GAME_COUNT = HISTORY_PANEL_PREVIEW_COUNT;
 
@@ -243,34 +247,6 @@ const participantStats = (
     win: Boolean(source?.win),
   };
 };
-
-const participantMatchesPlayer = (
-  participant: NormalizedHistoryParticipant,
-  player: RecentSumInfo,
-): boolean => {
-  if (participant.puuid === player.puuid) return true;
-  if (
-    participant.summonerId !== undefined &&
-    participant.summonerId === player.summonerId
-  ) {
-    return true;
-  }
-  return (
-    normalizeIdentityName(participant.summonerName) !== "" &&
-    (normalizeIdentityName(participant.summonerName) ===
-      normalizeIdentityName(player.summonerName) ||
-      normalizeIdentityName(participant.summonerName).split("#", 1)[0] ===
-        normalizeIdentityName(player.summonerName).split("#", 1)[0])
-  );
-};
-
-const findPlayerParticipant = (
-  game: NormalizedHistoryGame,
-  player: RecentSumInfo,
-): NormalizedHistoryParticipant | undefined =>
-  game.participants.find((participant) =>
-    participantMatchesPlayer(participant, player),
-  );
 
 const combinations = <T>(items: T[], size: number): T[][] => {
   if (size === 0) return [[]];

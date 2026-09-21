@@ -12,7 +12,6 @@ import {
 } from "./MatchDetail";
 import type { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { queryGameType } from "@/lcu/utils";
-import { champDict } from "@/resources/champList";
 import { invokeLcu } from "@/lcu";
 import type { MatchHistoryEndpoint } from "@/lcu/aboutMatch";
 import { getCachedGameDetail, cacheGameDetail } from "@/recentMatch/utils/databaseCache";
@@ -21,6 +20,7 @@ import {
     Participant as SgpParticipant,
 } from "@/lcu/types/queryMatchSgpGameTypes";
 import { logger } from "@/utils/logger";
+import { getChampionImageUrl } from "@/utils/championImage";
 
 export default class MatchDetails {
     // 同 gameId 详情请求的实例级缓存。MatchDetails 是 mainWindow
@@ -555,11 +555,8 @@ export default class MatchDetails {
             },
         );
 
-        const champAlias = champDict[String(participant.championId)]?.alias;
         // 字典缺英雄时回退到 CommunityDragon 图标
-        const champImgUrl = champAlias
-            ? `https://game.gtimg.cn/images/lol/act/img/champion/${champAlias}.png`
-            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${participant.championId}.png`;
+        const champImgUrl = getChampionImageUrl(participant.championId);
 
         return {
             name: nameList.name,
@@ -645,7 +642,10 @@ export default class MatchDetails {
         return dataList;
     };
 
-    private timestampToDate = (timestamp: number): [string, string] => {
+    // 注意：本方法的输出故意保留月份/日期补零（与 utils/dateFormat.ts 的
+// formatGameTimestamp 不同），因为 getDetailsTitle 渲染的对局标题已经
+// 在 PG 缓存的 participant 字段上稳定下来；改成不补零会让外部断言失败。
+private timestampToDate = (timestamp: number): [string, string] => {
         const date = new Date(timestamp);
         // 获取时间
         const hours = date.getHours().toString().padStart(2, "0");

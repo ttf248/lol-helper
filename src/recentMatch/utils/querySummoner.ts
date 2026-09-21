@@ -15,6 +15,8 @@ import {
   getCachedSessionByLcuGameId,
   getCachedSummonerByPuuid,
 } from "@/recentMatch/utils/databaseCache";
+import { getChampionImageUrl } from "@/utils/championImage";
+import { readLocalSumInfo } from "@/utils/localSumInfo";
 
 export interface CurrentMatchProgress {
   loaded: number;
@@ -553,8 +555,7 @@ class QuerySummoner {
 
     this.matchSession = latestSession;
     this.queueId = latestSession.gameData.queue.id;
-    const localSumInfo = JSON.parse(localStorage.getItem('sumInfo') || 'null');
-    this.currentId = Number(localSumInfo?.summonerId || 0);
+    this.currentId = Number(readLocalSumInfo().summonerId || 0);
   }
   // 通过Lcu接口查询数据
   public fromLcuQuery = async (onProgress?: CurrentMatchProgressCallback) => {
@@ -562,7 +563,7 @@ class QuerySummoner {
     if (this.matchSession === null){
       return null
     }
-    const localPuuid = JSON.parse(localStorage.getItem('sumInfo') || 'null')?.puuid;
+    const localPuuid = readLocalSumInfo().puuid;
     const isTeamOne = this.matchSession.gameData.teamOne.some((i: TeamData) =>
       i.summonerId === this.currentId || (localPuuid && i.puuid === localPuuid),
     );
@@ -589,7 +590,6 @@ class QuerySummoner {
   public simplifySummonerInfo = async (summonerList: TeamData[]) => {
     try {
       const promisesList:Promise<RecentSumInfo>[] =  summonerList.map(async (summoner:TeamData) => {
-        const iconAlias = this.getIconAlias(summoner)
         return <RecentSumInfo> {
           matchList:[],
           historyStatus: <RecentHistoryStatus> {
@@ -606,7 +606,7 @@ class QuerySummoner {
           summonerName: summoner.summonerName,
           teamParticipantId:summoner.teamParticipantId,
           champId:summoner.championId,
-          championUrl: `https://game.gtimg.cn/images/lol/act/img/champion/${iconAlias}.png`
+          championUrl: getChampionImageUrl(summoner.championId || 0),
         }
       })
 

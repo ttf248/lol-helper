@@ -13,8 +13,8 @@ import {
 import { ref } from "vue";
 import { Crown } from "@vicons/tabler";
 import { RecentDataAnalysisTypes, RoleCountMapTypes } from "../utils/analysisTypes";
-import { champDict } from "@/resources/champList";
 import { posRate } from "@/resources/otherList";
+import { getChampionImageUrl } from "@/utils/championImage";
 
 const { analysisData, pageType } = defineProps<{
   analysisData: RecentDataAnalysisTypes;
@@ -33,12 +33,7 @@ const colorGreen = { color: "#18A058", bgColor: "rgba(24,160,88,0.2)" };
 const colorBlue = { color: "#f0a020", bgColor: "rgba(240,160,32,0.2)" };
 const expandedNames = ref<string[]>([]);
 
-const getImg = (champId: number) => {
-  const alias = champDict[String(champId)]?.alias;
-  return alias
-    ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
-    : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${champId}.png`;
-};
+const getImg = (champId: number) => getChampionImageUrl(champId);
 
 const getPercent = (value: number, total: number) =>
   total > 0 ? Math.round((value / total) * 100) : 0;

@@ -7,7 +7,6 @@ import {
     queryMatchHistoryWithSource,
 } from "@/lcu/aboutMatch";
 import { queryGameType } from "@/lcu/utils";
-import { champDict } from "@/resources/champList";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import { sumInfoTypes } from "@/lcu/types/SummonerTypes";
 import {
@@ -36,6 +35,9 @@ import type {
     HistoryCacheSyncKind,
 } from "@/recentMatch/utils/queryTypes";
 import { logger } from "@/utils/logger";
+import { getChampionImageUrl } from "@/utils/championImage";
+import { readLocalSumInfo } from "@/utils/localSumInfo";
+import { formatGameTimestamp } from "@/utils/dateFormat";
 
 export interface ProcessedMatchHistory {
     matches: SimpleMatchDetailsTypes[];
@@ -231,14 +233,7 @@ export default class BaseMatch {
         serverLimit: number = HISTORY_SERVER_PAGE_SIZE,
     ): Promise<ProcessedMatchHistory | null> => {
         // 写入玩家id
-        let localSumInfo: Partial<sumInfoTypes> = {};
-        try {
-            localSumInfo = JSON.parse(
-                localStorage.getItem("sumInfo") || "{}",
-            ) as Partial<sumInfoTypes>;
-        } catch {
-            localSumInfo = {};
-        }
+        const localSumInfo: Partial<sumInfoTypes> = readLocalSumInfo();
         if (this.summonerId === 0) {
             this.summonerId = localSumInfo.summonerId || 0;
         }
@@ -554,8 +549,21 @@ export default class BaseMatch {
             const pageAlreadyCached =
                 pageGames.every((game) => cachedCompleteGameIds.has(game.gameId));
             if (pageAlreadyCached) {
-                // 缓存目标是配置的最大窗口，而不是“遇到第一页已缓存
-                // 就停止”。只有接口明确到末尾或已达到报告的总页数才结束。
+                // 非强制同步是增量同步：接口按时间倒序返回，当前页全部命中
+                // 本地“完整”缓存，说明从这一页开始没有新增或不完整数据需要回填。
+                // 旧逻辑要求缓存数量先达到 500 场，导致只有 189 场历史的账号
+                // 每次启动都要重复扫描到末尾（通常约 10 页）。
+                //
+                // 强制刷新仍继续扫描整个窗口，用于用户主动修复可能过期/损坏的
+                // 本地数据；普通启动则在首个命中页及时结束。
+                if (!options?.forceRefresh) {
+                    return emit(
+                        "complete",
+                        "当前历史战绩已全部缓存到数据库",
+                        `第 ${currentPage} 页已全部命中完整缓存，共缓存 ${cachedGameIds.size} 场；无需继续请求更早历史。`,
+                    );
+                }
+
                 if (
                     pageResult.games.length < pageSize ||
                     (totalPages !== null && currentPage >= totalPages)
@@ -724,16 +732,8 @@ export default class BaseMatch {
         };
     };
 
-    private getLocalSummonerName = (): string => {
-        try {
-            const localSumInfo = JSON.parse(
-                localStorage.getItem("sumInfo") || "{}",
-            ) as Partial<sumInfoTypes>;
-            return localSumInfo.name || "";
-        } catch {
-            return "";
-        }
-    };
+    private getLocalSummonerName = (): string =>
+        readLocalSumInfo().name || "";
 
     private getSimpleCachedMatch = (
         match: NormalizedHistoryGame,
@@ -751,11 +751,10 @@ export default class BaseMatch {
             deaths === 0
                 ? kills + assists
                 : Math.round(((kills + assists) / deaths) * 3);
-        const [startTime, matchTime] = this.timestampToDate(match.gameCreation);
-        const champAlias = champDict[String(participant.championId)]?.alias;
-        const champImgUrl = champAlias
-            ? `https://game.gtimg.cn/images/lol/act/img/champion/${champAlias}.png`
-            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${participant.championId}.png`;
+        const [startTime, matchTime] = formatGameTimestamp(
+            match.gameCreation,
+        );
+        const champImgUrl = getChampionImageUrl(participant.championId);
 
         return {
             gameId: match.gameId,
@@ -817,14 +816,10 @@ export default class BaseMatch {
         };
     };
 
-    public timestampToDate = (timestamp: number): [string, string] => {
-        const date = new Date(timestamp);
-        // 获取时间
-        const hours = date.getHours().toString().padStart(2, "0");
-        const minutes = date.getMinutes().toString().padStart(2, "0");
-        return [
-            `${hours} : ${minutes}`,
-            date.getMonth() + 1 + "-" + date.getDate(),
-        ];
-    };
+    /**
+     * 将对局时间戳格式化为首页列表使用的两段字符串。
+     * 旧 API 仍保留为同名方法，但实现统一到 utils/dateFormat。
+     * @deprecated 请直接 import {@link formatGameTimestamp}
+     */
+    public timestampToDate = formatGameTimestamp;
 }

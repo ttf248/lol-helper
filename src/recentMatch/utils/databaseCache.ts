@@ -3,6 +3,7 @@ import type { NormalizedHistoryGame } from "./recentAnalytics";
 import { MatchModeKey } from "./matchMode";
 import { logger } from "@/utils/logger";
 import type { lcuSummonerInfo } from "@/lcu/types/SummonerTypes";
+import { createTtlCache } from "@/recentMatch/utils/createTtlCache";
 
 // 客户端 TTL 缓存：避免切模式 tab / 翻页 / 切换玩家时反复打 LCU → Rust → PG
 // 这条链路。日志里 db.summary / db.player_summary / db.cached_history 在单次
@@ -26,15 +27,68 @@ const summaryCache: { current: CachedEntry<DatabaseSummary> | null } = {
 };
 const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
 const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
-const summonerByIdCache = new Map<number, CachedEntry<CachedSummonerRow>>();
-const summonerByPuuidCache = new Map<string, CachedEntry<CachedSummonerRow>>();
-const gameDetailCache = new Map<number, CachedEntry<CachedGameDetail>>();
-const gameSessionCache = new Map<number, CachedEntry<CachedGameSession>>();
-const championDetailCache = new Map<number, CachedEntry<CachedChampionDetail>>();
+
+// 下面 5 个 TTL 缓存已改用 createTtlCache 工厂：summoner / game detail /
+// session / champion detail 的"查表 → invoke → 写入"逻辑完全同构。summoner
+// 维度多了一个 summonerId ↔ puuid 互写，使用主 cache 的 set 副作用即可。
+const summonerByIdCache = createTtlCache<number, CachedSummonerRow>({
+    ttlMs: SUMMONER_TTL_MS,
+    op: "get_cached_summoner_by_id",
+    context: (summonerId) => ({ summoner_id: summonerId }),
+    invoke: async (summonerId) => {
+        const value = await invoke<CachedSummonerRow | null>(
+            "get_cached_summoner_by_id",
+            { summonerId },
+        );
+        if (value) summonerByPuuidCache.set(value.puuid, value);
+        return value;
+    },
+});
+const summonerByPuuidCache = createTtlCache<string, CachedSummonerRow>({
+    ttlMs: SUMMONER_TTL_MS,
+    op: "get_cached_summoner_by_puuid",
+    context: (puuid) => ({ puuid }),
+    invoke: async (puuid) => {
+        const value = await invoke<CachedSummonerRow | null>(
+            "get_cached_summoner_by_puuid",
+            { puuid },
+        );
+        if (value) summonerByIdCache.set(value.summonerId, value);
+        return value;
+    },
+});
+const gameDetailCache = createTtlCache<number, CachedGameDetail>({
+    ttlMs: GAME_DETAIL_TTL_MS,
+    op: "get_cached_game_detail",
+    context: (gameId) => ({ game_id: gameId }),
+    invoke: (gameId) =>
+        invoke<CachedGameDetail | null>("get_cached_game_detail", {
+            gameId,
+        }),
+});
+const gameSessionCache = createTtlCache<number, CachedGameSession>({
+    ttlMs: GAME_SESSION_TTL_MS,
+    op: "get_cached_game_session_by_lcu_game_id",
+    context: (lcuGameId) => ({ lcu_game_id: lcuGameId }),
+    invoke: (lcuGameId) =>
+        invoke<CachedGameSession | null>(
+            "get_cached_game_session_by_lcu_game_id",
+            { lcuGameId },
+        ),
+});
+const championDetailCache = createTtlCache<number, CachedChampionDetail>({
+    ttlMs: CHAMPION_DETAIL_TTL_MS,
+    op: "get_cached_champion_detail",
+    context: (championId) => ({ champion_id: championId }),
+    invoke: (championId) =>
+        invoke<CachedChampionDetail | null>("get_cached_champion_detail", {
+            championId,
+        }),
+});
 
 const dropSummonerCacheEntry = (row: CachedSummonerRow) => {
-  summonerByIdCache.delete(row.summonerId);
-  summonerByPuuidCache.delete(row.puuid);
+    summonerByIdCache.delete(row.summonerId);
+    summonerByPuuidCache.delete(row.puuid);
 };
 
 const isFresh = <T>(entry: CachedEntry<T> | undefined, ttl: number) =>
@@ -55,11 +109,11 @@ export const resetDatabaseCache = (reason?: string) => {
     summary: summaryCache.current !== null ? 1 : 0,
     player_summary: playerSummaryCache.size,
     history: historyCache.size,
-    summoner_by_id: summonerByIdCache.size,
-    summoner_by_puuid: summonerByPuuidCache.size,
-    game_detail: gameDetailCache.size,
-    game_session: gameSessionCache.size,
-    champion_detail: championDetailCache.size,
+    summoner_by_id: summonerByIdCache.size(),
+    summoner_by_puuid: summonerByPuuidCache.size(),
+    game_detail: gameDetailCache.size(),
+    game_session: gameSessionCache.size(),
+    champion_detail: championDetailCache.size(),
   };
   summaryCache.current = null;
   playerSummaryCache.clear();
@@ -555,49 +609,7 @@ export const getCachedSummonerById = async (
   if (!Number.isFinite(summonerId) || summonerId <= 0) {
     return null;
   }
-  const cached = summonerByIdCache.get(summonerId);
-  if (isFresh(cached, SUMMONER_TTL_MS)) {
-    logger.debug({
-      tag: "db.cache",
-      message: "TTL 命中，跳过 invoke",
-      context: { op: "get_cached_summoner_by_id", summoner_id: summonerId },
-    });
-    return cached!.value;
-  }
-  const startedAt = Date.now();
-  try {
-    const value = await invoke<CachedSummonerRow | null>(
-      "get_cached_summoner_by_id",
-      { summonerId },
-    );
-    if (value) {
-      summonerByIdCache.set(summonerId, { value, fetchedAt: Date.now() });
-      summonerByPuuidCache.set(value.puuid, { value, fetchedAt: Date.now() });
-      logger.debug({
-        tag: "db.cache",
-        message: "PG 召唤师缓存命中",
-        context: {
-          op: "get_cached_summoner_by_id",
-          summoner_id: summonerId,
-          puuid: value.puuid,
-          duration_ms: Date.now() - startedAt,
-        },
-      });
-    }
-    return value;
-  } catch (error) {
-    logger.warn({
-      tag: "db.cache",
-      message: "读取召唤师缓存失败",
-      context: {
-        op: "get_cached_summoner_by_id",
-        summoner_id: summonerId,
-        duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 500),
-      },
-    });
-    return null;
-  }
+  return summonerByIdCache.fetch(summonerId);
 };
 
 export const getCachedSummonerByPuuid = async (
@@ -606,49 +618,7 @@ export const getCachedSummonerByPuuid = async (
   if (!puuid || puuid.trim() === "") {
     return null;
   }
-  const cached = summonerByPuuidCache.get(puuid);
-  if (isFresh(cached, SUMMONER_TTL_MS)) {
-    logger.debug({
-      tag: "db.cache",
-      message: "TTL 命中，跳过 invoke",
-      context: { op: "get_cached_summoner_by_puuid", puuid },
-    });
-    return cached!.value;
-  }
-  const startedAt = Date.now();
-  try {
-    const value = await invoke<CachedSummonerRow | null>(
-      "get_cached_summoner_by_puuid",
-      { puuid },
-    );
-    if (value) {
-      summonerByPuuidCache.set(puuid, { value, fetchedAt: Date.now() });
-      summonerByIdCache.set(value.summonerId, { value, fetchedAt: Date.now() });
-      logger.debug({
-        tag: "db.cache",
-        message: "PG 召唤师缓存命中",
-        context: {
-          op: "get_cached_summoner_by_puuid",
-          puuid,
-          summoner_id: value.summonerId,
-          duration_ms: Date.now() - startedAt,
-        },
-      });
-    }
-    return value;
-  } catch (error) {
-    logger.warn({
-      tag: "db.cache",
-      message: "读取召唤师缓存失败",
-      context: {
-        op: "get_cached_summoner_by_puuid",
-        puuid,
-        duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 500),
-      },
-    });
-    return null;
-  }
+  return summonerByPuuidCache.fetch(puuid);
 };
 
 /**
@@ -783,49 +753,7 @@ export const getCachedGameDetail = async (
   if (!Number.isFinite(gameId) || gameId <= 0) {
     return null;
   }
-  const cached = gameDetailCache.get(gameId);
-  if (isFresh(cached, GAME_DETAIL_TTL_MS)) {
-    logger.debug({
-      tag: "db.cache",
-      message: "TTL 命中，跳过 invoke",
-      context: { op: "get_cached_game_detail", game_id: gameId },
-    });
-    return cached!.value;
-  }
-  const startedAt = Date.now();
-  try {
-    const value = await invoke<CachedGameDetail | null>(
-      "get_cached_game_detail",
-      { gameId },
-    );
-    if (value) {
-      gameDetailCache.set(gameId, { value, fetchedAt: Date.now() });
-      logger.debug({
-        tag: "db.cache",
-        message: "PG 对局详情缓存命中",
-        context: {
-          op: "get_cached_game_detail",
-          game_id: gameId,
-          source: value.source,
-          has_sgp: value.rawPayloadSgp !== undefined && value.rawPayloadSgp !== null,
-          duration_ms: Date.now() - startedAt,
-        },
-      });
-    }
-    return value;
-  } catch (error) {
-    logger.warn({
-      tag: "db.cache",
-      message: "读取对局详情缓存失败",
-      context: {
-        op: "get_cached_game_detail",
-        game_id: gameId,
-        duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 500),
-      },
-    });
-    return null;
-  }
+  return gameDetailCache.fetch(gameId);
 };
 
 /**
@@ -944,49 +872,7 @@ export const getCachedSessionByLcuGameId = async (
   if (!Number.isFinite(gameId) || gameId <= 0) {
     return null;
   }
-  const cached = gameSessionCache.get(gameId);
-  if (isFresh(cached, GAME_SESSION_TTL_MS)) {
-    logger.debug({
-      tag: "db.cache",
-      message: "TTL 命中，跳过 invoke",
-      context: { op: "get_cached_session_for_lcu_game_id", game_id: gameId },
-    });
-    return cached!.value;
-  }
-  const startedAt = Date.now();
-  try {
-    const value = await invoke<CachedGameSession | null>(
-      "get_cached_session_for_lcu_game_id",
-      { gameId },
-    );
-    if (value) {
-      gameSessionCache.set(gameId, { value, fetchedAt: Date.now() });
-      logger.debug({
-        tag: "db.cache",
-        message: "PG 对局内阵容缓存命中",
-        context: {
-          op: "get_cached_session_for_lcu_game_id",
-          game_id: gameId,
-          picks: value.picks.length,
-          phase: value.phase,
-          duration_ms: Date.now() - startedAt,
-        },
-      });
-    }
-    return value;
-  } catch (error) {
-    logger.warn({
-      tag: "db.cache",
-      message: "读取对局内阵容缓存失败",
-      context: {
-        op: "get_cached_session_for_lcu_game_id",
-        game_id: gameId,
-        duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 500),
-      },
-    });
-    return null;
-  }
+  return gameSessionCache.fetch(gameId);
 };
 
 /**
@@ -1057,45 +943,5 @@ export const getCachedChampionDetail = async (
   if (!Number.isFinite(championId) || championId <= 0) {
     return null;
   }
-  const cached = championDetailCache.get(championId);
-  if (isFresh(cached, CHAMPION_DETAIL_TTL_MS)) {
-    logger.debug({
-      tag: "db.cache",
-      message: "TTL 命中，跳过 invoke",
-      context: { op: "get_cached_champion_detail", champion_id: championId },
-    });
-    return cached!.value;
-  }
-  const startedAt = Date.now();
-  try {
-    const value = await invoke<CachedChampionDetail | null>(
-      "get_cached_champion_detail",
-      { championId },
-    );
-    if (value) {
-      championDetailCache.set(championId, { value, fetchedAt: Date.now() });
-      logger.debug({
-        tag: "db.cache",
-        message: "PG 英雄详情缓存命中",
-        context: {
-          op: "get_cached_champion_detail",
-          champion_id: championId,
-          duration_ms: Date.now() - startedAt,
-        },
-      });
-    }
-    return value;
-  } catch (error) {
-    logger.warn({
-      tag: "db.cache",
-      message: "读取英雄详情缓存失败",
-      context: {
-        op: "get_cached_champion_detail",
-        champion_id: championId,
-        duration_ms: Date.now() - startedAt,
-        error: String(error).slice(0, 500),
-      },
-    });
-    return null;
-  }
+  return championDetailCache.fetch(championId);
 };

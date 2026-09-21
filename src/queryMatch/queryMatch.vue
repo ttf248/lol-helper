@@ -31,6 +31,7 @@ const MatchContent = defineAsyncComponent(
     () => import("@/queryMatch/common/matchContent.vue"),
 );
 import LoadingAnime from "@/queryMatch/components/loadingAnime.vue";
+import { readLocalSumInfo } from "@/utils/localSumInfo";
 import {
     MatchItemTypes,
     RecentSumInfo,
@@ -99,11 +100,9 @@ onMounted(async () => {
     // 兜底：用户从未切到首页 / 客户端已登录但没进入战绩 tab 时，
     // 也由主窗口挂载触发一次 init()，启动后台历史缓存同步。
     // init() 内部用 queryRequestId 防重入，多触发一次只会浪费一次首屏拉取。
-    const localSum = JSON.parse(
-        localStorage.getItem("sumInfo") || "null",
-    ) as { puuid?: string } | null;
+    const localSum = readLocalSumInfo();
     if (
-        localSum?.puuid &&
+        localSum.puuid &&
         matchStore.sumInfo === null &&
         !matchStore.matchLoading
     ) {
@@ -122,10 +121,8 @@ onBeforeUnmount(() => {
 });
 
 const handleBlackListMatch = async (isQueryRecord: string) => {
-    const localSumInfo = JSON.parse(
-        localStorage.getItem("sumInfo") || "null",
-    ) as { summonerId?: number } | null;
-    const locSumId = Number(localSumInfo?.summonerId || 0);
+    const localSumInfo = readLocalSumInfo();
+    const locSumId = Number(localSumInfo.summonerId || 0);
     const queSumMatchInfo = isQueryRecord.split("-");
     if (queSumMatchInfo[1] !== "") {
         const participantsInfo = await matchStore.queryMatchDetail(

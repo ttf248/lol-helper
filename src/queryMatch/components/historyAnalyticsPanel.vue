@@ -10,13 +10,10 @@ import {
   NSpin,
   NTag,
 } from "naive-ui";
-import { champDict } from "@/resources/champList";
 import {
   CachedPlayerSummary,
-  DatabaseSummary,
   getCachedPlayerSummary,
   getDatabaseStatus,
-  getDatabaseSummary,
 } from "@/recentMatch/utils/databaseCache";
 import {
   MATCH_MODES,
@@ -31,13 +28,15 @@ import {
   RecentSumInfo,
   TeammateSynergyStats,
 } from "@/recentMatch/utils/queryTypes";
-import { MATCH_HISTORY_SOURCE_LABELS } from "@/lcu/aboutMatch";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
 import {
   confidenceLabel,
   formatRate,
 } from "@/recentMatch/utils/partyDisplay";
+import { championName as championNameShared } from "@/recentMatch/utils/display";
+import { positionLabel } from "@/lcu/utils";
+import { getChampionImageUrl } from "@/utils/championImage";
 import { useSummonerNavigation } from "@/queryMatch/composables/useSummonerNavigation";
 import type { PartyMember, RecentNetworkNode } from "@/recentMatch/utils/queryTypes";
 
@@ -56,12 +55,6 @@ const databaseStatus = ref({
   message: "正在检查 PostgreSQL",
   checkedAt: 0,
 });
-const databaseSummary = ref<DatabaseSummary>({
-  totalMatches: 0,
-  totalParticipants: 0,
-  totalPlayers: 0,
-  modes: [],
-});
 const cachedPlayerSummary = ref<CachedPlayerSummary>({
   puuid: "",
   modeKey: selectedMode.value,
@@ -71,7 +64,6 @@ const cachedPlayerSummary = ref<CachedPlayerSummary>({
   latestGameCreation: null,
   sources: [],
 });
-const databasePlayerLoading = ref(false);
 let databaseRequestId = 0;
 
 const { navigate } = useSummonerNavigation();
@@ -117,25 +109,11 @@ const partyRankingSections = computed(() => {
   });
 });
 
-const positionName = (position: string) =>
-  ({
-    TOP: "上路",
-    JUNGLE: "打野",
-    MIDDLE: "中路",
-    BOTTOM: "下路",
-    SUPPORT: "辅助",
-    UNKNOWN: "未知",
-  } as Record<string, string>)[position] || position;
+const positionName = (position: string) => positionLabel(position);
 
-const championName = (championId: number) =>
-  champDict[String(championId)]?.label || `英雄 ${championId}`;
+const championName = (championId: number) => championNameShared(championId);
 
-const championImage = (championId: number) => {
-  const alias = champDict[String(championId)]?.alias;
-  return alias
-    ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
-    : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`;
-};
+const championImage = (championId: number) => getChampionImageUrl(championId);
 
 const synergyChampionSummary = (item: TeammateSynergyStats) => {
   const champion = item.champions[0];
@@ -188,61 +166,17 @@ const loadAnalysis = async () => {
 
 const loadDatabaseInfo = async () => {
   const currentRequest = ++databaseRequestId;
-  databasePlayerLoading.value = true;
-  const [status, summary, playerSummary] = await Promise.all([
+  const [status, playerSummary] = await Promise.all([
     getDatabaseStatus(),
-    getDatabaseSummary(),
     getCachedPlayerSummary(props.player.puuid, selectedMode.value),
   ]);
   if (currentRequest !== databaseRequestId) return;
   databaseStatus.value = status;
-  databaseSummary.value = summary;
   cachedPlayerSummary.value = playerSummary;
-  databasePlayerLoading.value = false;
 };
 
 const refresh = async () => {
   await Promise.all([loadDatabaseInfo(), loadAnalysis()]);
-};
-
-const formatNumber = (value: number) => value.toLocaleString("zh-CN");
-
-const formatCacheTime = (timestamp: number | null | undefined) => {
-  if (!timestamp) return "暂无";
-  const normalized = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return "时间未知";
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const cachedPlayerWinRate = computed(() =>
-  cachedPlayerSummary.value.matches > 0
-    ? (cachedPlayerSummary.value.wins / cachedPlayerSummary.value.matches) * 100
-    : null,
-);
-
-const cachedPlayerSources = computed(() =>
-  cachedPlayerSummary.value.sources
-    .map((item) => {
-      const source =
-        MATCH_HISTORY_SOURCE_LABELS[
-          item.source as keyof typeof MATCH_HISTORY_SOURCE_LABELS
-        ] || item.source;
-      return `${source} ${item.matches}场`;
-    })
-    .join("、"),
-);
-
-const cacheModeSummary = (modeKey: string) => {
-  const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
-  return mode
-    ? `${formatNumber(mode.matches)} 场 · ${formatNumber(mode.participants)} 人次`
-    : "暂无缓存";
 };
 
 const historyQueryPlan =
@@ -539,41 +473,6 @@ onMounted(() => {
           />
         </n-card>
 
-        <n-card size="small" title="本玩家缓存派生汇总" :bordered="false">
-          <div class="cache-overview">
-            <span>本模式 {{ formatNumber(cachedPlayerSummary.matches) }} 场</span>
-            <span>完整 {{ formatNumber(cachedPlayerSummary.completeMatches) }} 场</span>
-            <span>缓存胜率 {{ formatRate(cachedPlayerWinRate) }}</span>
-          </div>
-          <div class="text-xs text-gray-500 mt-2">
-            最新缓存：{{ formatCacheTime(cachedPlayerSummary.latestGameCreation) }} ·
-            {{ databasePlayerLoading ? "正在查询数据库" : "按 gameId 去重后的本地派生结果" }}
-          </div>
-          <div v-if="cachedPlayerSources" class="text-xs text-gray-500 mt-1">
-            数据来源：{{ cachedPlayerSources }}
-          </div>
-        </n-card>
-
-        <n-card size="small" title="本地缓存总览" :bordered="false">
-          <div class="cache-overview">
-            <span>对局 {{ formatNumber(databaseSummary.totalMatches) }}</span>
-            <span>参赛记录 {{ formatNumber(databaseSummary.totalParticipants) }}</span>
-            <span>玩家 {{ formatNumber(databaseSummary.totalPlayers) }}</span>
-          </div>
-          <div class="cache-mode-list">
-            <div v-for="mode in MATCH_MODES" :key="mode.key" class="cache-mode-row">
-              <span>{{ mode.label }}</span>
-              <span>{{ cacheModeSummary(mode.key) }}</span>
-            </div>
-          </div>
-          <div class="text-xs text-gray-500 mt-2">{{ databaseStatus.message }}</div>
-          <div
-            v-if="analysis.dataCoverage?.sources?.length"
-            class="text-xs text-gray-500 mt-1"
-          >
-            本次分析来源：{{ analysis.dataCoverage.sources.join("、") }}
-          </div>
-        </n-card>
       </div>
 
       <n-empty v-else-if="!loading" description="暂无可用历史战绩" />

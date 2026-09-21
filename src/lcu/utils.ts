@@ -124,6 +124,29 @@ export const querySummonerPosition = (lane: string): string => {
             return "未知";
     }
 };
+
+// 不同数据源给出的位置字符串有差异：LCU `lane` 通常大写（如 MIDDLE / JUNGLE），
+// 但历史接口（SGP / PG 缓存）有时会带 SUPPORT/UTILITY。统一在这里做映射，
+// 所有需要展示位置的入口（首页历史分析 / 对局面板 / 关系图）走同一个函数。
+const POSITION_LABELS: Record<string, string> = {
+    TOP: "上路",
+    JUNGLE: "打野",
+    MIDDLE: "中路",
+    BOTTOM: "下路",
+    SUPPORT: "辅助",
+    UTILITY: "辅助",
+    UNKNOWN: "未知",
+    NONE: "未知",
+};
+
+export const positionLabel = (position: string | null | undefined): string => {
+    if (!position) return "未知";
+    return POSITION_LABELS[position] || position;
+};
+
+// 旧名只对外保留语义，对内统一用 positionLabel。
+/** @deprecated spelling variant of {@link positionLabel}; 旧名。 */
+export const laneLabel = positionLabel;
 // 获取位置序号, 方便排序
 export const getPosition = (selectedPosition: string) => {
     switch (selectedPosition) {

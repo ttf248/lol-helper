@@ -2,7 +2,6 @@ import {
     MatchItemTypes,
     RecentHistoryStatus,
 } from "@/recentMatch/utils/queryTypes";
-import { champDict } from "@/resources/champList";
 import {
     MatchHistoryEndpoint,
     queryMatchHistoryWithSource,
@@ -27,6 +26,8 @@ import {
     HISTORY_FRIEND_FALLBACK_LIMIT,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
+import { getChampionImageUrl } from "@/utils/championImage";
+import { findParticipant } from "@/recentMatch/utils/participantLookup";
 
 interface MatchSearchResult {
     matches: MatchItemTypes[];
@@ -35,6 +36,16 @@ interface MatchSearchResult {
     matchedGames: number;
     requestFailed: boolean;
     sourceEndpoints: MatchHistoryEndpoint[];
+}
+
+// parseMatch 用：participant 根节点同时承载 championId 和 stats
+// (LCU 是 stats 子对象，SGP 直接挂 stats)。泛型推导出具体形状后才能安全取值。
+interface MatchItemStatsSource {
+    puuid?: string;
+    summonerId?: number;
+    participantId?: number;
+    championId: number;
+    stats: { win: boolean; kills: number; deaths: number; assists: number };
 }
 
 class QueryMatch {
@@ -157,46 +168,8 @@ class QueryMatch {
         };
     };
 
-    private findParticipant = (
-        match: Games | GamesBySgp,
-        targetPuuid?: string,
-        targetSummonerId?: number,
-    ) => {
-        const participants = match.participants ?? [];
-        const directParticipant = participants.find((participant: any) =>
-            (targetPuuid !== undefined && participant.puuid === targetPuuid) ||
-            (targetSummonerId !== undefined &&
-                participant.summonerId === targetSummonerId),
-        );
-        if (directParticipant !== undefined) {
-            return directParticipant;
-        }
-
-        if ("participantIdentities" in match) {
-            const identity = match.participantIdentities?.find((item) => {
-                const player = item.player as any;
-                return (
-                    (targetPuuid !== undefined && player.puuid === targetPuuid) ||
-                    (targetSummonerId !== undefined &&
-                        player.summonerId === targetSummonerId)
-                );
-            });
-            if (identity !== undefined) {
-                const identityParticipant = participants.find(
-                    (participant: any) =>
-                        participant.participantId === identity.participantId,
-                );
-                if (identityParticipant !== undefined) {
-                    return identityParticipant;
-                }
-            }
-        }
-
-        // 找不到目标身份时不能回退到 participants[0]。不同玩家的
-        // participants 顺序并不代表当前查询对象，回退会把队友的 KDA
-        // 伪装成目标玩家的历史，正是缓存/API 混用时最难发现的错位来源。
-        return undefined;
-    };
+    // 顶层 findParticipant 由 utils 抽出，类内仅保留 alias 形式以维持调用面稳定。
+    private findParticipant = findParticipant;
 
     private cachedGameToMatch = (
         game: NormalizedHistoryGame,
@@ -212,11 +185,8 @@ class QueryMatch {
         if (!participant) return null;
 
         const championId = participant.championId || 0;
-        const alias = champDict[String(championId)]?.alias;
         return {
-            champImg: alias
-                ? `https://game.gtimg.cn/images/lol/act/img/champion/${alias}.png`
-                : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`,
+            champImg: getChampionImageUrl(championId),
             championId,
             kills: participant.kills || 0,
             deaths: participant.deaths || 0,
@@ -469,7 +439,11 @@ class QueryMatch {
         targetPuuid?: string,
         targetSummonerId?: number,
     ): MatchItemTypes | null => {
-        const p0 = this.findParticipant(games, targetPuuid, targetSummonerId);
+        const p0 = this.findParticipant<MatchItemStatsSource>(
+            games,
+            targetPuuid,
+            targetSummonerId,
+        );
         if (p0 === undefined) {
             return null;
         }
@@ -481,16 +455,8 @@ class QueryMatch {
         const { win, kills, deaths, assists } = statsSource;
         const { championId } = p0; // championId 始终在参与者根节点
 
-        // 4. 获取英雄别名
-
-        const champAlias = champDict[String(championId)]?.alias;
-        // 字典缺英雄时回退到 CommunityDragon 图标
-        const champImgUrl = champAlias
-            ? `https://game.gtimg.cn/images/lol/act/img/champion/${champAlias}.png`
-            : `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${championId}.png`;
-
         return {
-            champImg: champImgUrl,
+            champImg: getChampionImageUrl(championId),
             championId,
             kills,
             deaths,

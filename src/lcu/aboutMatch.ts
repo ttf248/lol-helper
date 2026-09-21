@@ -9,6 +9,7 @@ import {
 import { GamesBySgp } from "./types/queryMatchSgpGameTypes";
 import { logger } from "@/utils/logger";
 import { cacheGameDetail } from "@/recentMatch/utils/databaseCache";
+import { isCurrentSummoner } from "@/utils/localSumInfo";
 
 export type MatchHistorySource =
 	| "lcu-current"
@@ -125,57 +126,66 @@ const tokenFetcher = async (): Promise<string | null> => {
 
 const sgpService = new SgpMatchHistoryService(tokenFetcher);
 
-const isCurrentSummoner = (puuid: string): boolean => {
-	try {
-		const localSumInfo = JSON.parse(
-			localStorage.getItem("sumInfo") || "null",
-		) as { puuid?: string } | null;
-		return localSumInfo?.puuid === puuid;
-	} catch {
-		return false;
-	}
-};
-
-/**
- * 当前玩家的历史记录使用 LCU 专用 endpoint。新客户端对该 endpoint
- * 的可用性与返回范围都优于按 PUUID 反查的历史接口。
- */
-const fetchCurrentSummonerMatchHistory = async (
-	begIndex: number,
-	count: number,
-): Promise<MatchHistoryPageResult | null> => {
+// 共享历史接口调用模板：current-summoner 与 PUUID endpoint 的查询、
+// 校验、分页检测逻辑几乎完全相同，差异仅在 URL / 标签名 / 是否带
+// puuid 上下文，这里抽出以避免后续修改时漏改一边。
+const executeLcuHistoryFetch = async (params: {
+	pathLabel: string;
+	logTag: string;
+	purpose: string;
+	url: string;
+	begIndex: number;
+	count: number;
+	puuid?: string;
+	emptyResponseMessage: string;
+	missingGamesMessage: string;
+	paginationSkippedMessage: string;
+	responseSuccessMessage: string;
+	responseErrorMessage: string;
+}): Promise<MatchHistoryPageResult | null> => {
+	const {
+		pathLabel,
+		logTag,
+		purpose,
+		url,
+		begIndex,
+		count,
+		puuid,
+		emptyResponseMessage,
+		missingGamesMessage,
+		paginationSkippedMessage,
+		responseSuccessMessage,
+		responseErrorMessage,
+	} = params;
 	const startedAt = Date.now();
-	const url = `/lol-match-history/v1/products/lol/current-summoner/matches`;
 	const query = new URLSearchParams({
 		begIndex: String(begIndex),
 		endIndex: String(begIndex + count),
 	});
 	const fullUrl = `${url}?${query.toString()}`;
+	const baseContext = {
+		purpose,
+		url: fullUrl,
+		beg_index: begIndex,
+		count,
+		...(puuid !== undefined ? { puuid } : {}),
+	};
 	logger.info({
-		tag: "lcu.history",
-		message: "LCU current-summoner 历史接口发起",
+		tag: logTag,
+		message: `${pathLabel} 历史接口发起`,
 		context: {
-			purpose: "查询当前召唤师最近 N 场历史战绩",
-			url: fullUrl,
+			...baseContext,
 			method: "GET",
-			beg_index: begIndex,
-			count,
 		},
 	});
 	try {
-		const matchList = await invokeLcu<LcuMatchList>(
-			"get",
-			fullUrl,
-		);
+		const matchList = await invokeLcu<LcuMatchList>("get", fullUrl);
 		if (matchList === null) {
 			logger.warn({
-				tag: "lcu.history",
-				message: "LCU current-summoner 历史接口无响应",
+				tag: logTag,
+				message: `${pathLabel} ${emptyResponseMessage}`,
 				context: {
-					purpose: "查询当前召唤师最近 N 场历史战绩",
-					url: fullUrl,
-					beg_index: begIndex,
-					count,
+					...baseContext,
 					duration_ms: Date.now() - startedAt,
 				},
 			});
@@ -185,13 +195,10 @@ const fetchCurrentSummonerMatchHistory = async (
 		const games = history?.games;
 		if (!Array.isArray(games)) {
 			logger.warn({
-				tag: "lcu.history",
-				message: "LCU current-summoner 历史接口响应缺少 games 数组",
+				tag: logTag,
+				message: `${pathLabel} ${missingGamesMessage}`,
 				context: {
-					purpose: "查询当前召唤师最近 N 场历史战绩",
-					url: fullUrl,
-					beg_index: begIndex,
-					count,
+					...baseContext,
 					duration_ms: Date.now() - startedAt,
 				},
 			}, JSON.stringify(matchList));
@@ -204,7 +211,7 @@ const fetchCurrentSummonerMatchHistory = async (
 		const responseEnd = Number(history?.gameIndexEnd);
 		// 新版 LCU 会按 query 参数返回分页结果，部分客户端/大区则会
 		// 忽略 begIndex/endIndex，永远返回最近 21 场。非首页不能把这种
-		// 响应 slice 一下就当成了目标页，否则会把“最近第 21 场”误当成
+		// 响应 slice 一下就当成了目标页，否则会把"最近第 21 场"误当成
 		// 历史末尾。返回 null 让调用方继续尝试 PUUID/SGP 接口。
 		const paginationHonored =
 			begIndex === 0 && !Number.isFinite(responseStart)
@@ -212,15 +219,16 @@ const fetchCurrentSummonerMatchHistory = async (
 				: responseStart === begIndex;
 		if (begIndex > 0 && !paginationHonored) {
 			logger.warn({
-				tag: "lcu.history",
-				message: "LCU current-summoner 未按偏移分页，交给下一级接口",
+				tag: logTag,
+				message: `${pathLabel} ${paginationSkippedMessage}`,
 				context: {
-					purpose: "查询当前召唤师更早历史战绩",
-					url: fullUrl,
-					beg_index: begIndex,
-					count,
-					response_start: Number.isFinite(responseStart) ? responseStart : null,
-					response_end: Number.isFinite(responseEnd) ? responseEnd : null,
+					...baseContext,
+					response_start: Number.isFinite(responseStart)
+						? responseStart
+						: null,
+					response_end: Number.isFinite(responseEnd)
+						? responseEnd
+						: null,
 					games_count: games.length,
 					duration_ms: Date.now() - startedAt,
 				},
@@ -243,16 +251,17 @@ const fetchCurrentSummonerMatchHistory = async (
 				? advertisedCount
 				: null;
 		logger.info({
-			tag: "lcu.history",
-			message: "LCU current-summoner 历史接口响应成功",
+			tag: logTag,
+			message: `${pathLabel} ${responseSuccessMessage}`,
 			context: {
-				purpose: "查询当前召唤师最近 N 场历史战绩",
-				url: fullUrl,
-				beg_index: begIndex,
-				count,
+				...baseContext,
 				games_count: games.length,
-				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
-				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
+				game_index_begin: Number.isFinite(responseStart)
+					? responseStart
+					: null,
+				game_index_end: Number.isFinite(responseEnd)
+					? responseEnd
+					: null,
 				game_count: totalCount,
 				pagination_honored: paginationHonored,
 				duration_ms: Date.now() - startedAt,
@@ -265,13 +274,10 @@ const fetchCurrentSummonerMatchHistory = async (
 		};
 	} catch (error) {
 		logger.warn({
-			tag: "lcu.history",
-			message: "LCU current-summoner 历史接口异常",
+			tag: logTag,
+			message: `${pathLabel} ${responseErrorMessage}`,
 			context: {
-				purpose: "查询当前召唤师最近 N 场历史战绩",
-				url: fullUrl,
-				beg_index: begIndex,
-				count,
+				...baseContext,
 				duration_ms: Date.now() - startedAt,
 				error: String(error).slice(0, 500),
 			},
@@ -281,149 +287,51 @@ const fetchCurrentSummonerMatchHistory = async (
 };
 
 /**
+ * 当前玩家的历史记录使用 LCU 专用 endpoint。新客户端对该 endpoint
+ * 的可用性与返回范围都优于按 PUUID 反查的历史接口。
+ */
+const fetchCurrentSummonerMatchHistory = (
+	begIndex: number,
+	count: number,
+): Promise<MatchHistoryPageResult | null> =>
+	executeLcuHistoryFetch({
+		pathLabel: "LCU current-summoner",
+		logTag: "lcu.history",
+		purpose: "查询当前召唤师最近 N 场历史战绩",
+		url: "/lol-match-history/v1/products/lol/current-summoner/matches",
+		begIndex,
+		count,
+		emptyResponseMessage: "历史接口无响应",
+		missingGamesMessage: "历史接口响应缺少 games 数组",
+		paginationSkippedMessage: "未按偏移分页，交给下一级接口",
+		responseSuccessMessage: "历史接口响应成功",
+		responseErrorMessage: "历史接口异常",
+	});
+
+/**
  * LCU 仍然提供按 PUUID 查询历史记录的接口。它不应和
  * current-summoner endpoint 混用：前者可查询同区其它召唤师，后者只代表
  * 当前登录用户。腾讯服客户端对这个接口的兼容性通常比 SGP 更好，优先尝试。
  */
-const fetchSummonerMatchHistoryFromLcu = async (
+const fetchSummonerMatchHistoryFromLcu = (
 	puuid: string,
 	begIndex: number,
 	count: number,
-): Promise<MatchHistoryPageResult | null> => {
-	const startedAt = Date.now();
-	const url = `/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches`;
-	const query = new URLSearchParams({
-		begIndex: String(begIndex),
-		endIndex: String(begIndex + count),
+): Promise<MatchHistoryPageResult | null> =>
+	executeLcuHistoryFetch({
+		pathLabel: "LCU PUUID",
+		logTag: "lcu.history",
+		purpose: "按 PUUID 查询最近 N 场历史战绩",
+		url: `/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches`,
+		begIndex,
+		count,
+		puuid,
+		emptyResponseMessage: "历史接口无响应",
+		missingGamesMessage: "历史接口响应缺少 games 数组",
+		paginationSkippedMessage: "未按偏移分页，交给 SGP 接口",
+		responseSuccessMessage: "历史接口响应成功",
+		responseErrorMessage: "历史接口异常",
 	});
-	const fullUrl = `${url}?${query.toString()}`;
-	logger.info({
-		tag: "lcu.history",
-		message: "LCU PUUID 历史接口发起",
-		context: {
-			purpose: "按 PUUID 查询最近 N 场历史战绩",
-			url: fullUrl,
-			method: "GET",
-			puuid,
-			beg_index: begIndex,
-			count,
-		},
-	});
-	try {
-		const matchList = await invokeLcu<LcuMatchList>(
-			"get",
-			fullUrl,
-		);
-		if (matchList === null) {
-			logger.warn({
-				tag: "lcu.history",
-				message: "LCU PUUID 历史接口无响应",
-				context: {
-					purpose: "按 PUUID 查询最近 N 场历史战绩",
-					url: fullUrl,
-					puuid,
-					beg_index: begIndex,
-					count,
-					duration_ms: Date.now() - startedAt,
-				},
-			});
-			return null;
-		}
-		const games = matchList?.games?.games;
-		if (!Array.isArray(games)) {
-			logger.warn({
-				tag: "lcu.history",
-				message: "LCU PUUID 历史接口响应缺少 games 数组",
-				context: {
-					purpose: "按 PUUID 查询最近 N 场历史战绩",
-					url: fullUrl,
-					puuid,
-					beg_index: begIndex,
-					count,
-					duration_ms: Date.now() - startedAt,
-				},
-			}, JSON.stringify(matchList));
-			return null;
-		}
-		// 此前会把单局响应塞进一个无界的 Map，重启后还得重打服务器。
-		// Phase 5 后由 PostgreSQL `game_details` 接管（cacheGameDetail），
-		// 这里不再缓存整包响应。
-		const history = matchList?.games;
-		const responseStart = Number(history?.gameIndexBegin);
-		const responseEnd = Number(history?.gameIndexEnd);
-		const paginationHonored =
-			begIndex === 0 && !Number.isFinite(responseStart)
-				? true
-				: responseStart === begIndex;
-		if (begIndex > 0 && !paginationHonored) {
-			logger.warn({
-				tag: "lcu.history",
-				message: "LCU PUUID 历史接口未按偏移分页，交给 SGP 接口",
-				context: {
-					purpose: "按 PUUID 查询更早历史战绩",
-					url: fullUrl,
-					puuid,
-					beg_index: begIndex,
-					count,
-					response_start: Number.isFinite(responseStart) ? responseStart : null,
-					response_end: Number.isFinite(responseEnd) ? responseEnd : null,
-					games_count: games.length,
-					duration_ms: Date.now() - startedAt,
-				},
-			});
-			return null;
-		}
-		const advertisedCount = Number(history?.gameCount);
-		const responseEndExclusive = Math.max(
-			Number.isFinite(responseStart)
-				? responseStart + games.length
-				: begIndex + games.length,
-			Number.isFinite(responseEnd) ? responseEnd + 1 : 0,
-		);
-		const totalCount =
-			Number.isFinite(advertisedCount) &&
-			advertisedCount > responseEndExclusive
-				? advertisedCount
-				: null;
-		logger.info({
-			tag: "lcu.history",
-			message: "LCU PUUID 历史接口响应成功",
-			context: {
-				purpose: "按 PUUID 查询最近 N 场历史战绩",
-				url: fullUrl,
-				puuid,
-				beg_index: begIndex,
-				count,
-				games_count: games.length,
-				game_index_begin: Number.isFinite(responseStart) ? responseStart : null,
-				game_index_end: Number.isFinite(responseEnd) ? responseEnd : null,
-				game_count: totalCount,
-				pagination_honored: paginationHonored,
-				duration_ms: Date.now() - startedAt,
-			},
-			durationMs: Date.now() - startedAt,
-		}, JSON.stringify(matchList));
-		return {
-			games: paginationHonored ? games : games.slice(begIndex, begIndex + count),
-			totalCount,
-		};
-	} catch (error) {
-		logger.warn({
-			tag: "lcu.history",
-			message: "LCU PUUID 历史接口异常",
-			context: {
-				purpose: "按 PUUID 查询最近 N 场历史战绩",
-				url: fullUrl,
-				puuid,
-				beg_index: begIndex,
-				count,
-				duration_ms: Date.now() - startedAt,
-				error: String(error).slice(0, 500),
-			},
-		});
-		return null;
-	}
-};
 
 // 关系分析必须拿到同一局的多名参与者。LCU 的部分历史接口虽然返回
 // 了对局数量，但 participants 里可能只有目标玩家，不能当作完整历史。

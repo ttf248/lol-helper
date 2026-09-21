@@ -10,17 +10,94 @@ import {
   NIcon,
   NSteps,
   NSkeleton
+  ,NCollapse
+  ,NCollapseItem
 } from "naive-ui"
+import { computed, ref, watch } from "vue";
 import {summonerInfo} from "@/lcu/types/SummonerTypes";
 import MatchAnalysis from "@/queryMatch/components/matchAnalysisSummary.vue";
 import useMatchStore from "@/queryMatch/store";
 import {Crown, Planet} from "@vicons/tabler";
+import {
+  getCachedPlayerSummary,
+  getDatabaseStatus,
+  getDatabaseSummary,
+  type CachedPlayerSummary,
+  type DatabaseSummary,
+} from "@/recentMatch/utils/databaseCache";
+import { MATCH_MODES, modeForQueue, modeLabel } from "@/recentMatch/utils/matchMode";
 
 const {sumInfo} = defineProps<{
   sumInfo:{ info:summonerInfo }
 }>()
 
 const matchStore = useMatchStore()
+
+const databaseStatus = ref({ available: false, message: "正在检查 PostgreSQL" });
+const databaseSummary = ref<DatabaseSummary>({
+  totalMatches: 0,
+  totalParticipants: 0,
+  totalPlayers: 0,
+  modes: [],
+});
+const cachedPlayerSummary = ref<CachedPlayerSummary>({
+  puuid: "",
+  modeKey: "match",
+  matches: 0,
+  completeMatches: 0,
+  wins: 0,
+  latestGameCreation: null,
+  sources: [],
+});
+const cacheLoading = ref(false);
+const expandedCacheNames = ref<string[]>(["player-cache", "database-cache"]);
+const cacheModeKey = computed(() =>
+  modeForQueue(Number(matchStore.matchList?.[0]?.queueId || 0)),
+);
+const formatNumber = (value: number) => value.toLocaleString("zh-CN");
+const formatRate = (value: number | null) =>
+  value === null ? "--" : `${Math.round(value * 10) / 10}%`;
+const formatCacheTime = (timestamp: number | null | undefined) => {
+  if (!timestamp) return "暂无";
+  const normalized = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime())
+    ? "时间未知"
+    : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+};
+const cachedPlayerWinRate = computed(() =>
+  cachedPlayerSummary.value.matches > 0
+    ? (cachedPlayerSummary.value.wins / cachedPlayerSummary.value.matches) * 100
+    : null,
+);
+const cacheModeSummary = (modeKey: string) => {
+  const mode = databaseSummary.value.modes.find((item) => item.modeKey === modeKey);
+  return mode ? `${formatNumber(mode.matches)} 场 · ${formatNumber(mode.participants)} 人次` : "暂无缓存";
+};
+
+const loadCacheOverview = async () => {
+  const puuid = sumInfo.info.puuid;
+  if (!puuid) return;
+  cacheLoading.value = true;
+  try {
+    const [status, summary, playerSummary] = await Promise.all([
+      getDatabaseStatus(),
+      getDatabaseSummary(),
+      getCachedPlayerSummary(puuid, cacheModeKey.value),
+    ]);
+    databaseStatus.value = status;
+    databaseSummary.value = summary;
+    cachedPlayerSummary.value = playerSummary;
+  } finally {
+    cacheLoading.value = false;
+  }
+};
+
+watch(
+  () => [sumInfo.info.puuid, cacheModeKey.value],
+  () => void loadCacheOverview(),
+  { immediate: true },
+);
 
 </script>
 
@@ -119,6 +196,36 @@ const matchStore = useMatchStore()
         :analysis-data="matchStore.analysisData"
         :pageType="1"
       />
+      <div v-if="!matchStore.matchLoading" class="cache-overview-stack">
+        <n-collapse v-model:expanded-names="expandedCacheNames" arrow-placement="right">
+          <n-collapse-item name="player-cache">
+            <template #header>本玩家缓存派生总览</template>
+            <div class="cache-overview">
+              <span>{{ modeLabel(cacheModeKey) }} {{ formatNumber(cachedPlayerSummary.matches) }} 场</span>
+              <span>完整 {{ formatNumber(cachedPlayerSummary.completeMatches) }} 场</span>
+              <span>胜率 {{ formatRate(cachedPlayerWinRate) }}</span>
+            </div>
+            <div class="cache-note">
+              最新缓存：{{ formatCacheTime(cachedPlayerSummary.latestGameCreation) }} ·
+              {{ cacheLoading ? "正在查询数据库" : "按 gameId 去重后的本地派生结果" }}
+            </div>
+          </n-collapse-item>
+          <n-collapse-item name="database-cache">
+            <template #header>本地缓存总览</template>
+            <div class="cache-overview">
+              <span>对局 {{ formatNumber(databaseSummary.totalMatches) }}</span>
+              <span>参赛记录 {{ formatNumber(databaseSummary.totalParticipants) }}</span>
+              <span>玩家 {{ formatNumber(databaseSummary.totalPlayers) }}</span>
+            </div>
+            <div class="cache-mode-list">
+              <div v-for="mode in MATCH_MODES" :key="mode.key" class="cache-mode-row">
+                <span>{{ mode.label }}</span><span>{{ cacheModeSummary(mode.key) }}</span>
+              </div>
+            </div>
+            <div class="cache-note">{{ databaseStatus.message }}</div>
+          </n-collapse-item>
+        </n-collapse>
+      </div>
     </n-card>
   </div>
 </template>
@@ -148,7 +255,37 @@ const matchStore = useMatchStore()
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-y: auto;
+}
+
+.cache-overview-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
+
+.cache-overview,
+.cache-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+}
+
+.cache-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+
+.cache-note {
+  margin-top: 0.35rem;
+  color: #888;
+  font-size: 0.62rem;
+  line-height: 1.4;
 }
 </style>
 
