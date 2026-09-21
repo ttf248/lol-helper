@@ -549,21 +549,9 @@ export default class BaseMatch {
             const pageAlreadyCached =
                 pageGames.every((game) => cachedCompleteGameIds.has(game.gameId));
             if (pageAlreadyCached) {
-                // 非强制同步是增量同步：接口按时间倒序返回，当前页全部命中
-                // 本地“完整”缓存，说明从这一页开始没有新增或不完整数据需要回填。
-                // 旧逻辑要求缓存数量先达到 500 场，导致只有 189 场历史的账号
-                // 每次启动都要重复扫描到末尾（通常约 10 页）。
-                //
-                // 强制刷新仍继续扫描整个窗口，用于用户主动修复可能过期/损坏的
-                // 本地数据；普通启动则在首个命中页及时结束。
-                if (!options?.forceRefresh) {
-                    return emit(
-                        "complete",
-                        "当前历史战绩已全部缓存到数据库",
-                        `第 ${currentPage} 页已全部命中完整缓存，共缓存 ${cachedGameIds.size} 场；无需继续请求更早历史。`,
-                    );
-                }
-
+                // 当前页命中并不能证明更早的页也已经缓存：缓存可能只包含
+                // 最近一页，或中间存在缺口。因此仍需继续扫描到服务器末尾
+                // （或达到同步窗口），否则历史分析会永久缺少旧对局。
                 if (
                     pageResult.games.length < pageSize ||
                     (totalPages !== null && currentPage >= totalPages)
