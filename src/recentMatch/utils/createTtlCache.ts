@@ -43,6 +43,27 @@ export const createTtlCache = <K, V>({
 } => {
     const store = new Map<K, { value: V; fetchedAt: number }>();
     const inFlight = new Map<K, Promise<V | null>>();
+    const keyGeneration = new Map<K, number>();
+    let clearGeneration = 0;
+
+    const generationOf = (key: K) => ({
+        clear: clearGeneration,
+        key: keyGeneration.get(key) ?? 0,
+    });
+
+    const sameGeneration = (
+        left: { clear: number; key: number },
+        right: { clear: number; key: number },
+    ) => left.clear === right.clear && left.key === right.key;
+
+    const invalidateKey = (key: K) => {
+        if (!inFlight.has(key)) {
+            keyGeneration.delete(key);
+            return;
+        }
+        keyGeneration.set(key, (keyGeneration.get(key) ?? 0) + 1);
+        inFlight.delete(key);
+    };
 
     const fetch = async (key: K): Promise<V | null> => {
         const cached = store.get(key);
@@ -57,12 +78,17 @@ export const createTtlCache = <K, V>({
         const startedAt = Date.now();
         const existing = inFlight.get(key);
         if (existing) return existing;
-        // 把 cleanup 通过 .finally() 直接挂在 promise 上，
-        // 这样就不需要在 finally 闭包里反向引用 promise 本身。
+        // 记录查询开始时的代际；写入或清空缓存后，旧查询只能返回给原调用者，
+        // 不能再把旧值写回缓存。
+        const startedGeneration = generationOf(key);
         const promise = (async () => {
             try {
                 const value = await invoke(key);
-                if (value !== null && (cacheOnTruthy || value !== undefined)) {
+                if (
+                    value !== null &&
+                    (cacheOnTruthy || value !== undefined) &&
+                    sameGeneration(startedGeneration, generationOf(key))
+                ) {
                     store.set(key, { value, fetchedAt: Date.now() });
                     logger.debug({
                         tag: "db.cache",
@@ -89,7 +115,14 @@ export const createTtlCache = <K, V>({
                 return null;
             }
         })().finally(() => {
-            inFlight.delete(key);
+            if (inFlight.get(key) === promise) {
+                inFlight.delete(key);
+                keyGeneration.delete(key);
+            } else if (!inFlight.has(key)) {
+                // 该请求可能在完成前被 delete/set 失效；此时没有新请求
+                // 接管这个 key，可以回收它留下的代际标记。
+                keyGeneration.delete(key);
+            }
         });
         inFlight.set(key, promise);
         return promise;
@@ -98,12 +131,22 @@ export const createTtlCache = <K, V>({
     return {
         fetch,
         get: (key) => store.get(key)?.value ?? null,
-        set: (key, value) =>
-            store.set(key, { value, fetchedAt: Date.now() }),
+        set: (key, value) => {
+            // 外部 set（例如跨维度回填 summoner cache）应覆盖并发旧查询，
+            // 不能让旧 Promise 完成后再次覆盖这个新值。
+            invalidateKey(key);
+            store.set(key, { value, fetchedAt: Date.now() });
+        },
         delete: (key) => {
+            invalidateKey(key);
             store.delete(key);
         },
-        clear: () => store.clear(),
+        clear: () => {
+            clearGeneration += 1;
+            inFlight.clear();
+            keyGeneration.clear();
+            store.clear();
+        },
         size: () => store.size,
     };
 };
