@@ -8,6 +8,7 @@ use database::{
     cache_match_history, cache_summoners, database_status, database_summary,
     get_cached_champion_detail, get_cached_game_detail,
     get_cached_match_history, get_cached_player_summary,
+    get_history_analysis_snapshot,
     get_cached_session_for_lcu_game_id, get_cached_summoner_by_id,
     get_cached_summoner_by_puuid, search_cached_summoners, DatabaseState,
 };
@@ -71,6 +72,7 @@ pub async fn run() {
             get_cached_match_history,
             database_summary,
             get_cached_player_summary,
+            get_history_analysis_snapshot,
             cache_summoners,
             get_cached_summoner_by_puuid,
             get_cached_summoner_by_id,

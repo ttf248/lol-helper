@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { NormalizedHistoryGame } from "./recentAnalytics";
+import type {
+  HistoryAnalysisSnapshot,
+  HistoryResultFilter,
+} from "./queryTypes";
 import { MatchModeKey } from "./matchMode";
 import { logger } from "@/utils/logger";
 import type { lcuSummonerInfo } from "@/lcu/types/SummonerTypes";
@@ -15,6 +19,7 @@ const HISTORY_TTL_MS = 10_000;
 const SUMMONER_TTL_MS = 30_000;
 const GAME_DETAIL_TTL_MS = 60_000;
 const GAME_SESSION_TTL_MS = 120_000;
+const HISTORY_ANALYSIS_TTL_MS = 30_000;
 const CHAMPION_DETAIL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天 —— 英雄详情基本不变
 const SEARCH_TTL_MS = 5_000; // 搜索建议：同一 query 短时间内的重复输入复用结果
 
@@ -28,6 +33,10 @@ const summaryCache: { current: CachedEntry<DatabaseSummary> | null } = {
 };
 const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
 const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
+const historyAnalysisCache = new Map<
+  string,
+  CachedEntry<HistoryAnalysisSnapshot | null>
+>();
 
 // 下面 5 个 TTL 缓存已改用 createTtlCache 工厂：summoner / game detail /
 // session / champion detail 的"查表 → invoke → 写入"逻辑完全同构。summoner
@@ -126,6 +135,7 @@ export const resetDatabaseCache = (reason?: string) => {
     summary: summaryCache.current !== null ? 1 : 0,
     player_summary: playerSummaryCache.size,
     history: historyCache.size,
+    history_analysis: historyAnalysisCache.size,
     summoner_by_id: summonerByIdCache.size(),
     summoner_by_puuid: summonerByPuuidCache.size(),
     game_detail: gameDetailCache.size(),
@@ -136,6 +146,7 @@ export const resetDatabaseCache = (reason?: string) => {
   summaryCache.current = null;
   playerSummaryCache.clear();
   historyCache.clear();
+  historyAnalysisCache.clear();
   summonerByIdCache.clear();
   summonerByPuuidCache.clear();
   gameDetailCache.clear();
@@ -332,6 +343,11 @@ export const cacheHistory = async (request: {
       }
     }
     playerSummaryCache.delete(`${request.puuid}|${request.modeKey}`);
+    for (const key of Array.from(historyAnalysisCache.keys())) {
+      if (key.startsWith(`${request.puuid}|`)) {
+        historyAnalysisCache.delete(key);
+      }
+    }
     logger.info({
       tag: "db.cache",
       message: "写入缓存历史完成",
@@ -361,6 +377,74 @@ export const cacheHistory = async (request: {
       },
     });
     return false;
+  }
+};
+
+const historyAnalysisKey = (
+  puuid: string,
+  modeKey: MatchModeKey | undefined,
+  windowSize: number,
+  result: HistoryResultFilter,
+) => `${puuid}|${modeKey ?? ""}|${windowSize}|${result}`;
+
+/**
+ * 读取 Rust/PostgreSQL 生成的历史分析快照。快照失败时返回 null，调用方
+ * 可以继续使用 recentAnalytics 的基础分析，不让数据库详情缺失阻塞页面。
+ */
+export const getHistoryAnalysisSnapshot = async (
+  puuid: string,
+  modeKey: MatchModeKey | undefined,
+  windowSize: number,
+  result: HistoryResultFilter = "all",
+): Promise<HistoryAnalysisSnapshot | null> => {
+  const safeWindow = Math.min(500, Math.max(1, Math.round(windowSize)));
+  const key = historyAnalysisKey(puuid, modeKey, safeWindow, result);
+  const cached = historyAnalysisCache.get(key);
+  if (isFresh(cached, HISTORY_ANALYSIS_TTL_MS)) {
+    return cached!.value;
+  }
+  try {
+    const value = await invoke<HistoryAnalysisSnapshot>(
+      "get_history_analysis_snapshot",
+      {
+        request: {
+          puuid,
+          modeKey: modeKey ?? null,
+          windowSize: safeWindow,
+          result: result === "all" ? null : result,
+        },
+      },
+    );
+    historyAnalysisCache.set(key, { value, fetchedAt: Date.now() });
+    logger.info({
+      tag: "db.cache",
+      message: "历史分析快照读取完成",
+      context: {
+        op: "get_history_analysis_snapshot",
+        puuid,
+        mode_key: modeKey ?? null,
+        window_size: safeWindow,
+        result,
+        actual_games: value?.actualGames ?? 0,
+        detail_games: value?.quality?.detailGames ?? 0,
+      },
+    });
+    return value ?? null;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "历史分析快照读取失败，回退到基础分析",
+      context: {
+        op: "get_history_analysis_snapshot",
+        puuid,
+        mode_key: modeKey ?? null,
+        window_size: safeWindow,
+        result,
+        error: String(error).slice(0, 500),
+      },
+    });
+    historyAnalysisCache.set(key, { value: null, fetchedAt: Date.now() });
+    return null;
   }
 };
 

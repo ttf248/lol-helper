@@ -1,3 +1,5 @@
+import type { MatchModeKey } from "./matchMode";
+
 export interface PlayerChampionSelection {
   championId: number;
   selectedSkinIndex: number;
@@ -196,6 +198,108 @@ export interface HistoryCoverageInfo {
   sources: string[];
   latestGameCreation: number | null;
 }
+
+/** PostgreSQL 历史分析快照：基础统计和详情派生指标共用同一窗口。 */
+export interface HistoryMetricStat {
+  average: number | null;
+  winAverage: number | null;
+  lossAverage: number | null;
+  delta: number | null;
+  coverage: number;
+}
+
+export interface HistoryMetricSummary {
+  kda: HistoryMetricStat;
+  damagePerMinute: HistoryMetricStat;
+  goldPerMinute: HistoryMetricStat;
+  csPerMinute: HistoryMetricStat;
+  visionPerMinute: HistoryMetricStat;
+  teamDamageShare: HistoryMetricStat;
+  damageTakenPerMinute: HistoryMetricStat;
+  teamObjectiveScore: HistoryMetricStat;
+  firstBloodRate: HistoryMetricStat;
+  firstTowerRate: HistoryMetricStat;
+}
+
+export interface HistoryChampionStat {
+  championId: number;
+  games: number;
+  wins: number;
+  winRate: number | null;
+  averageKda: number | null;
+  damagePerMinute: number | null;
+  csPerMinute: number | null;
+  visionPerMinute: number | null;
+  detailGames: number;
+}
+
+export interface HistoryPositionStat {
+  position: string;
+  games: number;
+  wins: number;
+  winRate: number | null;
+  averageKda: number | null;
+  damagePerMinute: number | null;
+  csPerMinute: number | null;
+  visionPerMinute: number | null;
+  detailGames: number;
+}
+
+export interface HistoryTrendPoint {
+  gameId: number;
+  gameCreation: number;
+  championId: number;
+  position: string;
+  win: boolean;
+  kda: number;
+  damagePerMinute: number | null;
+  csPerMinute: number | null;
+  detailAvailable: boolean;
+}
+
+export interface HistoryAnalysisInsight {
+  kind: "difference" | "champion" | "position" | "quality";
+  title: string;
+  detail: string;
+  metric: string | null;
+  delta: number | null;
+}
+
+export interface HistoryAnalysisQuality {
+  totalGames: number;
+  detailGames: number;
+  completeGames: number;
+  baseCoverage: number;
+  detailCoverage: number;
+  metricCoverage: Record<string, number>;
+  sources: string[];
+  latestGameCreation: number | null;
+}
+
+export interface HistoryAnalysisSnapshot {
+  puuid: string;
+  modeKey: MatchModeKey | null;
+  windowSize: number;
+  actualGames: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  recentWins: number;
+  recentGames: number;
+  previousWins: number;
+  previousGames: number;
+  streakType: "win" | "loss" | "none" | string;
+  streakCount: number;
+  trend: HistoryTrendPoint[];
+  metrics: HistoryMetricSummary;
+  champions: HistoryChampionStat[];
+  positions: HistoryPositionStat[];
+  insights: HistoryAnalysisInsight[];
+  quality: HistoryAnalysisQuality;
+  source: string;
+}
+
+export type HistoryResultFilter = "all" | "win" | "loss";
 
 export type HistoryCacheSyncKind =
   | "idle"

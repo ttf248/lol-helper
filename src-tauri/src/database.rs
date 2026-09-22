@@ -2,12 +2,12 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
-use tokio_postgres::NoTls;
+use tokio_postgres::{NoTls, Row};
 
 pub const DATABASE_URL: &str =
     "postgres://lol:helper@127.0.0.1/lol?sslmode=disable";
@@ -395,6 +395,312 @@ pub struct CachedPlayerSummary {
     pub wins: i64,
     pub latest_game_creation: Option<i64>,
     pub sources: Vec<DatabaseSourceSummary>,
+}
+
+/// 历史分析快照请求。分析窗口只允许读取有限数量的最近对局，避免把
+/// PostgreSQL 中的长期缓存一次性搬到前端。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAnalysisQuery {
+    pub puuid: String,
+    #[serde(default)]
+    pub mode_key: Option<String>,
+    pub window_size: i64,
+    #[serde(default)]
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMetricStat {
+    pub average: Option<f64>,
+    pub win_average: Option<f64>,
+    pub loss_average: Option<f64>,
+    pub delta: Option<f64>,
+    pub coverage: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMetricSummary {
+    pub kda: HistoryMetricStat,
+    pub damage_per_minute: HistoryMetricStat,
+    pub gold_per_minute: HistoryMetricStat,
+    pub cs_per_minute: HistoryMetricStat,
+    pub vision_per_minute: HistoryMetricStat,
+    pub team_damage_share: HistoryMetricStat,
+    pub damage_taken_per_minute: HistoryMetricStat,
+    pub team_objective_score: HistoryMetricStat,
+    pub first_blood_rate: HistoryMetricStat,
+    pub first_tower_rate: HistoryMetricStat,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryChampionStat {
+    pub champion_id: i32,
+    pub games: i64,
+    pub wins: i64,
+    pub win_rate: Option<f64>,
+    pub average_kda: Option<f64>,
+    pub damage_per_minute: Option<f64>,
+    pub cs_per_minute: Option<f64>,
+    pub vision_per_minute: Option<f64>,
+    pub detail_games: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPositionStat {
+    pub position: String,
+    pub games: i64,
+    pub wins: i64,
+    pub win_rate: Option<f64>,
+    pub average_kda: Option<f64>,
+    pub damage_per_minute: Option<f64>,
+    pub cs_per_minute: Option<f64>,
+    pub vision_per_minute: Option<f64>,
+    pub detail_games: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTrendPoint {
+    pub game_id: i64,
+    pub game_creation: i64,
+    pub champion_id: i32,
+    pub position: String,
+    pub win: bool,
+    pub kda: f64,
+    pub damage_per_minute: Option<f64>,
+    pub cs_per_minute: Option<f64>,
+    pub detail_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAnalysisInsight {
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub metric: Option<String>,
+    pub delta: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAnalysisQuality {
+    pub total_games: i64,
+    pub detail_games: i64,
+    pub complete_games: i64,
+    pub base_coverage: f64,
+    pub detail_coverage: f64,
+    pub metric_coverage: HashMap<String, i64>,
+    pub sources: Vec<String>,
+    pub latest_game_creation: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAnalysisSnapshot {
+    pub puuid: String,
+    pub mode_key: Option<String>,
+    pub window_size: i64,
+    pub actual_games: i64,
+    pub wins: i64,
+    pub losses: i64,
+    pub win_rate: Option<f64>,
+    pub recent_wins: i64,
+    pub recent_games: i64,
+    pub previous_wins: i64,
+    pub previous_games: i64,
+    pub streak_type: String,
+    pub streak_count: i64,
+    pub trend: Vec<HistoryTrendPoint>,
+    pub metrics: HistoryMetricSummary,
+    pub champions: Vec<HistoryChampionStat>,
+    pub positions: Vec<HistoryPositionStat>,
+    pub insights: Vec<HistoryAnalysisInsight>,
+    pub quality: HistoryAnalysisQuality,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedHistoryGame {
+    game_id: i64,
+    game_creation: i64,
+    source: String,
+    game_duration: Option<i32>,
+    champion_id: i32,
+    position: String,
+    kills: i32,
+    deaths: i32,
+    assists: i32,
+    win: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DetailHistoryParticipant {
+    puuid: String,
+    team_id: i32,
+    champion_id: i32,
+    position: String,
+    kills: Option<i32>,
+    deaths: Option<i32>,
+    assists: Option<i32>,
+    win: bool,
+    gold_earned: Option<i32>,
+    total_damage_to_champions: Option<i32>,
+    total_damage_taken: Option<i32>,
+    total_minions: Option<i32>,
+    neutral_minions: Option<i32>,
+    vision_score: Option<i32>,
+    first_blood_kill: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct DetailHistoryTeam {
+    team_id: i32,
+    dragon_kills: Option<i32>,
+    baron_kills: Option<i32>,
+    tower_kills: Option<i32>,
+    rift_herald_kills: Option<i32>,
+    first_tower: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MetricAccumulator {
+    total: f64,
+    count: i64,
+    win_total: f64,
+    win_count: i64,
+    loss_total: f64,
+    loss_count: i64,
+}
+
+impl MetricAccumulator {
+    fn add(&mut self, value: Option<f64>, win: bool) {
+        let Some(value) = value.filter(|value| value.is_finite()) else {
+            return;
+        };
+        self.total += value;
+        self.count += 1;
+        if win {
+            self.win_total += value;
+            self.win_count += 1;
+        } else {
+            self.loss_total += value;
+            self.loss_count += 1;
+        }
+    }
+
+    fn average(total: f64, count: i64) -> Option<f64> {
+        (count > 0).then(|| total / count as f64)
+    }
+
+    fn finish(&self) -> HistoryMetricStat {
+        let average = Self::average(self.total, self.count);
+        let win_average = Self::average(self.win_total, self.win_count);
+        let loss_average = Self::average(self.loss_total, self.loss_count);
+        HistoryMetricStat {
+            average,
+            win_average,
+            loss_average,
+            delta: win_average.zip(loss_average).map(|(win, loss)| win - loss),
+            coverage: self.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HistoryDimensionAccumulator {
+    games: i64,
+    wins: i64,
+    kda: MetricAccumulator,
+    damage_per_minute: MetricAccumulator,
+    cs_per_minute: MetricAccumulator,
+    vision_per_minute: MetricAccumulator,
+    detail_games: i64,
+}
+
+impl HistoryDimensionAccumulator {
+    fn add(&mut self, win: bool, metrics: &HistoryGameMetrics) {
+        self.games += 1;
+        self.wins += i64::from(win);
+        self.kda.add(Some(metrics.kda), win);
+        self.damage_per_minute.add(metrics.damage_per_minute, win);
+        self.cs_per_minute.add(metrics.cs_per_minute, win);
+        self.vision_per_minute.add(metrics.vision_per_minute, win);
+        if metrics.detail_available {
+            self.detail_games += 1;
+        }
+    }
+
+    fn finish_champion(&self, champion_id: i32) -> HistoryChampionStat {
+        HistoryChampionStat {
+            champion_id,
+            games: self.games,
+            wins: self.wins,
+            win_rate: rate(self.wins, self.games),
+            average_kda: self.kda.finish().average,
+            damage_per_minute: self.damage_per_minute.finish().average,
+            cs_per_minute: self.cs_per_minute.finish().average,
+            vision_per_minute: self.vision_per_minute.finish().average,
+            detail_games: self.detail_games,
+        }
+    }
+
+    fn finish_position(&self, position: String) -> HistoryPositionStat {
+        HistoryPositionStat {
+            position,
+            games: self.games,
+            wins: self.wins,
+            win_rate: rate(self.wins, self.games),
+            average_kda: self.kda.finish().average,
+            damage_per_minute: self.damage_per_minute.finish().average,
+            cs_per_minute: self.cs_per_minute.finish().average,
+            vision_per_minute: self.vision_per_minute.finish().average,
+            detail_games: self.detail_games,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HistoryGameMetrics {
+    kda: f64,
+    damage_per_minute: Option<f64>,
+    gold_per_minute: Option<f64>,
+    cs_per_minute: Option<f64>,
+    vision_per_minute: Option<f64>,
+    team_damage_share: Option<f64>,
+    damage_taken_per_minute: Option<f64>,
+    team_objective_score: Option<f64>,
+    first_blood_rate: Option<f64>,
+    first_tower_rate: Option<f64>,
+    detail_available: bool,
+}
+
+fn rate(wins: i64, games: i64) -> Option<f64> {
+    (games > 0).then(|| (wins as f64 / games as f64) * 100.0)
+}
+
+fn row_opt_i32(row: &Row, column: &str) -> Option<i32> {
+    row.try_get::<_, Option<i32>>(column).ok().flatten()
+}
+
+fn row_opt_bool(row: &Row, column: &str) -> Option<bool> {
+    row.try_get::<_, Option<bool>>(column).ok().flatten()
+}
+
+fn parse_detail_win(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()).as_deref(),
+        Some("true") | Some("win") | Some("success")
+    )
+}
+
+fn round_metric(value: Option<f64>) -> Option<f64> {
+    value.map(|value| (value * 10.0).round() / 10.0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1405,7 +1711,15 @@ impl DatabaseState {
                      JOIN match_participants target
                        ON target.game_id = m.game_id
                       AND target.puuid = $1
-                     WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                     WHERE (
+                            $2::TEXT IS NULL
+                         OR m.mode_key = $2
+                         OR ($2 = 'match' AND m.queue_id IN (400, 430, 490))
+                         OR ($2 = 'ranked' AND m.queue_id IN (420, 440))
+                         OR ($2 = 'aram' AND m.queue_id IN (450))
+                         OR ($2 = 'hex-aram' AND m.queue_id IN (2400, 2401))
+                         OR ($2 = 'other' AND m.queue_id NOT IN (400, 430, 490, 420, 440, 450, 2400, 2401))
+                     )
                        AND ($3::INTEGER IS NULL OR m.queue_id = $3)
                      ORDER BY m.game_creation DESC
                      LIMIT $4 OFFSET $5
@@ -1592,7 +1906,15 @@ impl DatabaseState {
                      JOIN match_participants target
                        ON target.game_id = m.game_id
                       AND target.puuid = $1
-                     WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                     WHERE (
+                            $2::TEXT IS NULL
+                         OR m.mode_key = $2
+                         OR ($2 = 'match' AND m.queue_id IN (400, 430, 490))
+                         OR ($2 = 'ranked' AND m.queue_id IN (420, 440))
+                         OR ($2 = 'aram' AND m.queue_id IN (450))
+                         OR ($2 = 'hex-aram' AND m.queue_id IN (2400, 2401))
+                         OR ($2 = 'other' AND m.queue_id NOT IN (400, 430, 490, 420, 440, 450, 2400, 2401))
+                     )
                  ), roster_counts AS (
                      SELECT game_id, COUNT(*) AS participant_count
                      FROM match_participants
@@ -1618,7 +1940,15 @@ impl DatabaseState {
                  JOIN match_participants target
                    ON target.game_id = m.game_id
                   AND target.puuid = $1
-                 WHERE ($2::TEXT IS NULL OR m.mode_key = $2)
+                 WHERE (
+                        $2::TEXT IS NULL
+                     OR m.mode_key = $2
+                     OR ($2 = 'match' AND m.queue_id IN (400, 430, 490))
+                     OR ($2 = 'ranked' AND m.queue_id IN (420, 440))
+                     OR ($2 = 'aram' AND m.queue_id IN (450))
+                     OR ($2 = 'hex-aram' AND m.queue_id IN (2400, 2401))
+                     OR ($2 = 'other' AND m.queue_id NOT IN (400, 430, 490, 420, 440, 450, 2400, 2401))
+                 )
                  GROUP BY m.source
                  ORDER BY COUNT(DISTINCT m.game_id) DESC, m.source",
                 &[&request.puuid, &request.mode_key],
@@ -1654,6 +1984,556 @@ impl DatabaseState {
             duration_ms = started.elapsed().as_millis() as u64,
             raw_body = %serde_json::to_string(&result).unwrap_or_default(),
             "读取玩家汇总成功"
+        );
+        Ok(result)
+    }
+
+    /// 从基础历史缓存和字段化详情缓存生成一个可复现的历史分析快照。
+    ///
+    /// 基础表保证即使详情尚未缓存也能显示胜率、英雄、位置和 KDA；
+    /// 深度指标只使用 game_detail_participants / game_detail_teams 中真实存在
+    /// 的字段，绝不把缺失值当成 0。
+    pub async fn history_analysis_snapshot(
+        &self,
+        request: HistoryAnalysisQuery,
+    ) -> Result<HistoryAnalysisSnapshot, String> {
+        let started = std::time::Instant::now();
+        let puuid = request.puuid.trim().to_string();
+        if puuid.is_empty() {
+            return Err("历史分析请求缺少 puuid".to_string());
+        }
+        let window_size = request.window_size.clamp(1, 500);
+        let client = self.require_client().await?;
+
+        let selected_rows = client
+            .query(
+                r#"
+                SELECT m.game_id, m.game_creation, m.source,
+                       gd.game_duration,
+                       target.champion_id AS target_champion_id,
+                       target.position AS target_position,
+                       target.kills AS target_kills,
+                       target.deaths AS target_deaths,
+                       target.assists AS target_assists,
+                       target.win AS target_win
+                  FROM matches m
+                  JOIN match_participants target
+                    ON target.game_id = m.game_id
+                   AND target.puuid = $1
+             LEFT JOIN game_details gd
+                    ON gd.game_id = m.game_id
+                 WHERE (
+                        $2::TEXT IS NULL
+                     OR m.mode_key = $2
+                     OR ($2 = 'match' AND m.queue_id IN (400, 430, 490))
+                     OR ($2 = 'ranked' AND m.queue_id IN (420, 440))
+                     OR ($2 = 'aram' AND m.queue_id IN (450))
+                     OR ($2 = 'hex-aram' AND m.queue_id IN (2400, 2401))
+                     OR ($2 = 'other' AND m.queue_id NOT IN (400, 430, 490, 420, 440, 450, 2400, 2401))
+                 )
+                   AND (
+                        $3::TEXT IS NULL
+                     OR $3 = 'all'
+                     OR ($3 = 'win' AND target.win)
+                     OR ($3 = 'loss' AND NOT target.win)
+                   )
+              ORDER BY m.game_creation DESC, m.game_id DESC
+                 LIMIT $4
+                "#,
+                &[
+                    &puuid,
+                    &request.mode_key,
+                    &request.result,
+                    &window_size,
+                ],
+            )
+            .await
+            .map_err(|error| format!("读取历史分析基础数据失败: {error}"))?;
+
+        let selected: Vec<SelectedHistoryGame> = selected_rows
+            .into_iter()
+            .map(|row| SelectedHistoryGame {
+                game_id: row.get("game_id"),
+                game_creation: row.get("game_creation"),
+                source: row.get("source"),
+                game_duration: row.try_get("game_duration").ok(),
+                champion_id: row.get("target_champion_id"),
+                position: row.get("target_position"),
+                kills: row.get("target_kills"),
+                deaths: row.get("target_deaths"),
+                assists: row.get("target_assists"),
+                win: row.get("target_win"),
+            })
+            .collect();
+
+        let game_ids: Vec<i64> = selected.iter().map(|game| game.game_id).collect();
+        let mut detail_by_game: HashMap<i64, Vec<DetailHistoryParticipant>> = HashMap::new();
+        let mut team_by_game: HashMap<i64, Vec<DetailHistoryTeam>> = HashMap::new();
+
+        if !game_ids.is_empty() {
+            let detail_rows = client
+                .query(
+                    r#"
+                    SELECT dp.game_id, dp.puuid, dp.team_id, dp.champion_id,
+                           COALESCE(mp.position, 'UNKNOWN') AS position,
+                           dp.kills, dp.deaths, dp.assists, dp.win,
+                           dp.gold_earned, dp.total_damage_dealt_to_champions,
+                           dp.total_damage_taken, dp.total_minions_killed,
+                           dp.neutral_minions_killed, dp.vision_score,
+                           dp.first_blood_kill
+                      FROM game_detail_participants dp
+                 LEFT JOIN match_participants mp
+                        ON mp.game_id = dp.game_id
+                       AND mp.puuid = dp.puuid
+                     WHERE dp.game_id = ANY($1)
+                    "#,
+                    &[&game_ids],
+                )
+                .await
+                .map_err(|error| format!("读取历史分析详情参与者失败: {error}"))?;
+
+            for row in detail_rows {
+                let win_text: Option<String> = row.try_get("win").ok().flatten();
+                detail_by_game
+                    .entry(row.get("game_id"))
+                    .or_default()
+                    .push(DetailHistoryParticipant {
+                        puuid: row.get("puuid"),
+                        team_id: row.get("team_id"),
+                        champion_id: row.get("champion_id"),
+                        position: row.get("position"),
+                        kills: row_opt_i32(&row, "kills"),
+                        deaths: row_opt_i32(&row, "deaths"),
+                        assists: row_opt_i32(&row, "assists"),
+                        win: parse_detail_win(win_text.as_deref()),
+                        gold_earned: row_opt_i32(&row, "gold_earned"),
+                        total_damage_to_champions:
+                            row_opt_i32(&row, "total_damage_dealt_to_champions"),
+                        total_damage_taken: row_opt_i32(&row, "total_damage_taken"),
+                        total_minions: row_opt_i32(&row, "total_minions_killed"),
+                        neutral_minions: row_opt_i32(&row, "neutral_minions_killed"),
+                        vision_score: row_opt_i32(&row, "vision_score"),
+                        first_blood_kill: row_opt_bool(&row, "first_blood_kill"),
+                    });
+            }
+
+            let team_rows = client
+                .query(
+                    r#"
+                    SELECT game_id, team_id, dragon_kills, baron_kills,
+                           tower_kills, rift_herald_kills, first_tower
+                      FROM game_detail_teams
+                     WHERE game_id = ANY($1)
+                    "#,
+                    &[&game_ids],
+                )
+                .await
+                .map_err(|error| format!("读取历史分析队伍目标数据失败: {error}"))?;
+            for row in team_rows {
+                team_by_game
+                    .entry(row.get("game_id"))
+                    .or_default()
+                    .push(DetailHistoryTeam {
+                        team_id: row.get("team_id"),
+                        dragon_kills: row_opt_i32(&row, "dragon_kills"),
+                        baron_kills: row_opt_i32(&row, "baron_kills"),
+                        tower_kills: row_opt_i32(&row, "tower_kills"),
+                        rift_herald_kills: row_opt_i32(&row, "rift_herald_kills"),
+                        first_tower: row_opt_bool(&row, "first_tower"),
+                    });
+            }
+        }
+
+        let mut total_wins = 0_i64;
+        let mut recent_wins = 0_i64;
+        let mut previous_wins = 0_i64;
+        let mut detail_games = 0_i64;
+        let mut complete_games = 0_i64;
+        let mut sources = HashSet::new();
+        let mut metric_coverage = HashMap::new();
+        let mut trend = Vec::with_capacity(selected.len());
+        let mut by_champion: HashMap<i32, HistoryDimensionAccumulator> = HashMap::new();
+        let mut by_position: HashMap<String, HistoryDimensionAccumulator> = HashMap::new();
+        let mut kda = MetricAccumulator::default();
+        let mut damage_per_minute = MetricAccumulator::default();
+        let mut gold_per_minute = MetricAccumulator::default();
+        let mut cs_per_minute = MetricAccumulator::default();
+        let mut vision_per_minute = MetricAccumulator::default();
+        let mut team_damage_share = MetricAccumulator::default();
+        let mut damage_taken_per_minute = MetricAccumulator::default();
+        let mut team_objective_score = MetricAccumulator::default();
+        let mut first_blood_rate = MetricAccumulator::default();
+        let mut first_tower_rate = MetricAccumulator::default();
+        let mut streak_type = "none".to_string();
+        let mut streak_count = 0_i64;
+
+        for (index, game) in selected.iter().enumerate() {
+            sources.insert(game.source.clone());
+            let detail_rows = detail_by_game.get(&game.game_id);
+            let target_detail = detail_rows
+                .and_then(|rows| rows.iter().find(|participant| participant.puuid == puuid));
+            let target_win = target_detail.map(|participant| participant.win).unwrap_or(game.win);
+            let champion_id = target_detail
+                .map(|participant| participant.champion_id)
+                .unwrap_or(game.champion_id);
+            let position = target_detail
+                .map(|participant| participant.position.clone())
+                .unwrap_or_else(|| game.position.clone());
+            let kills = target_detail
+                .and_then(|participant| participant.kills)
+                .unwrap_or(game.kills);
+            let deaths = target_detail
+                .and_then(|participant| participant.deaths)
+                .unwrap_or(game.deaths);
+            let assists = target_detail
+                .and_then(|participant| participant.assists)
+                .unwrap_or(game.assists);
+            let kda_value = (kills.max(0) + assists.max(0)) as f64
+                / deaths.max(1) as f64;
+
+            if target_win {
+                total_wins += 1;
+            }
+            if index < 10 && target_win {
+                recent_wins += 1;
+            } else if (10..20).contains(&index) && target_win {
+                previous_wins += 1;
+            }
+            if index == 0 {
+                streak_type = if target_win { "win" } else { "loss" }.to_string();
+                streak_count = 1;
+            } else if (target_win && streak_type == "win") || (!target_win && streak_type == "loss") {
+                streak_count += 1;
+            }
+
+            let duration_minutes = game
+                .game_duration
+                .filter(|duration| *duration > 0)
+                .map(|duration| duration as f64 / 60.0);
+            let detail_available = target_detail.is_some();
+            if detail_available {
+                detail_games += 1;
+            }
+            if detail_rows.map(|rows| rows.len()).unwrap_or_default() >= 10 {
+                complete_games += 1;
+            }
+
+            let metrics = if let Some(target) = target_detail {
+                let team_damage: i64 = detail_rows
+                    .into_iter()
+                    .flat_map(|rows| rows.iter())
+                    .filter(|participant| participant.team_id == target.team_id)
+                    .filter_map(|participant| participant.total_damage_to_champions)
+                    .map(i64::from)
+                    .sum();
+                let target_damage = target.total_damage_to_champions.map(i64::from);
+                let team_summary = team_by_game.get(&game.game_id).map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.team_id == target.team_id)
+                        .fold(None, |summary: Option<(i64, Option<bool>)>, row| {
+                            let (score, first_tower) = summary.unwrap_or((0, None));
+                            Some((
+                                score
+                                    + i64::from(row.dragon_kills.unwrap_or_default())
+                                    + i64::from(row.baron_kills.unwrap_or_default())
+                                    + i64::from(row.tower_kills.unwrap_or_default())
+                                    + i64::from(row.rift_herald_kills.unwrap_or_default()),
+                                row.first_tower.or(first_tower),
+                            ))
+                        })
+                });
+                let objective_score = team_summary
+                    .as_ref()
+                    .and_then(|summary| summary.as_ref())
+                    .map(|(score, _)| *score as f64);
+                let first_tower = team_summary
+                    .and_then(|summary| summary.and_then(|(_, first_tower)| first_tower));
+                let duration = duration_minutes;
+                HistoryGameMetrics {
+                    kda: kda_value,
+                    damage_per_minute: duration.and_then(|minutes| {
+                        target_damage.map(|damage| damage as f64 / minutes)
+                    }),
+                    gold_per_minute: duration.and_then(|minutes| {
+                        target.gold_earned.map(|gold| gold as f64 / minutes)
+                    }),
+                    cs_per_minute: duration.and_then(|minutes| {
+                        target
+                            .total_minions
+                            .zip(target.neutral_minions)
+                            .map(|(minions, neutral)| (minions + neutral) as f64 / minutes)
+                    }),
+                    vision_per_minute: duration.and_then(|minutes| {
+                        target.vision_score.map(|vision| vision as f64 / minutes)
+                    }),
+                    team_damage_share: target_damage
+                        .filter(|_| team_damage > 0)
+                        .map(|damage| damage as f64 / team_damage as f64 * 100.0),
+                    damage_taken_per_minute: duration.and_then(|minutes| {
+                        target
+                            .total_damage_taken
+                            .map(|damage| damage as f64 / minutes)
+                    }),
+                    team_objective_score: objective_score,
+                    first_blood_rate: target
+                        .first_blood_kill
+                        .map(|first_blood| if first_blood { 100.0 } else { 0.0 }),
+                    first_tower_rate: first_tower
+                        .map(|first_tower| if first_tower { 100.0 } else { 0.0 }),
+                    detail_available: true,
+                }
+            } else {
+                HistoryGameMetrics {
+                    kda: kda_value,
+                    ..HistoryGameMetrics::default()
+                }
+            };
+
+            kda.add(Some(metrics.kda), target_win);
+            damage_per_minute.add(metrics.damage_per_minute, target_win);
+            gold_per_minute.add(metrics.gold_per_minute, target_win);
+            cs_per_minute.add(metrics.cs_per_minute, target_win);
+            vision_per_minute.add(metrics.vision_per_minute, target_win);
+            team_damage_share.add(metrics.team_damage_share, target_win);
+            damage_taken_per_minute.add(metrics.damage_taken_per_minute, target_win);
+            team_objective_score.add(metrics.team_objective_score, target_win);
+            first_blood_rate.add(metrics.first_blood_rate, target_win);
+            first_tower_rate.add(metrics.first_tower_rate, target_win);
+
+            by_champion
+                .entry(champion_id)
+                .or_default()
+                .add(target_win, &metrics);
+            by_position
+                .entry(position.clone())
+                .or_default()
+                .add(target_win, &metrics);
+
+            trend.push(HistoryTrendPoint {
+                game_id: game.game_id,
+                game_creation: game.game_creation,
+                champion_id,
+                position,
+                win: target_win,
+                kda: round_metric(Some(kda_value)).unwrap_or_default(),
+                damage_per_minute: round_metric(metrics.damage_per_minute),
+                cs_per_minute: round_metric(metrics.cs_per_minute),
+                detail_available,
+            });
+        }
+
+        let total_games = selected.len() as i64;
+        let losses = total_games.saturating_sub(total_wins);
+        let recent_games = total_games.min(10);
+        let previous_games = total_games.saturating_sub(10).min(10);
+        let metric_summary = HistoryMetricSummary {
+            kda: kda.finish(),
+            damage_per_minute: damage_per_minute.finish(),
+            gold_per_minute: gold_per_minute.finish(),
+            cs_per_minute: cs_per_minute.finish(),
+            vision_per_minute: vision_per_minute.finish(),
+            team_damage_share: team_damage_share.finish(),
+            damage_taken_per_minute: damage_taken_per_minute.finish(),
+            team_objective_score: team_objective_score.finish(),
+            first_blood_rate: first_blood_rate.finish(),
+            first_tower_rate: first_tower_rate.finish(),
+        };
+
+        metric_coverage.insert("kda".to_string(), metric_summary.kda.coverage);
+        metric_coverage.insert(
+            "damagePerMinute".to_string(),
+            metric_summary.damage_per_minute.coverage,
+        );
+        metric_coverage.insert(
+            "goldPerMinute".to_string(),
+            metric_summary.gold_per_minute.coverage,
+        );
+        metric_coverage.insert(
+            "csPerMinute".to_string(),
+            metric_summary.cs_per_minute.coverage,
+        );
+        metric_coverage.insert(
+            "visionPerMinute".to_string(),
+            metric_summary.vision_per_minute.coverage,
+        );
+        metric_coverage.insert(
+            "teamDamageShare".to_string(),
+            metric_summary.team_damage_share.coverage,
+        );
+        metric_coverage.insert(
+            "teamObjectiveScore".to_string(),
+            metric_summary.team_objective_score.coverage,
+        );
+
+        let mut champions: Vec<HistoryChampionStat> = by_champion
+            .into_iter()
+            .map(|(champion_id, accumulator)| accumulator.finish_champion(champion_id))
+            .collect();
+        champions.sort_by(|left, right| {
+            right
+                .games
+                .cmp(&left.games)
+                .then_with(|| right.win_rate.partial_cmp(&left.win_rate).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let mut positions: Vec<HistoryPositionStat> = by_position
+            .into_iter()
+            .map(|(position, accumulator)| accumulator.finish_position(position))
+            .collect();
+        positions.sort_by(|left, right| {
+            right
+                .games
+                .cmp(&left.games)
+                .then_with(|| right.win_rate.partial_cmp(&left.win_rate).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        let mut insights = Vec::new();
+        let insight_metrics = [
+            (
+                "damagePerMinute",
+                "输出",
+                &metric_summary.damage_per_minute,
+                100.0,
+            ),
+            (
+                "goldPerMinute",
+                "经济",
+                &metric_summary.gold_per_minute,
+                50.0,
+            ),
+            (
+                "csPerMinute",
+                "补刀",
+                &metric_summary.cs_per_minute,
+                0.5,
+            ),
+            (
+                "visionPerMinute",
+                "视野",
+                &metric_summary.vision_per_minute,
+                1.0,
+            ),
+            (
+                "teamDamageShare",
+                "团队输出占比",
+                &metric_summary.team_damage_share,
+                5.0,
+            ),
+        ];
+        for (metric, label, stat, threshold) in insight_metrics {
+            if let Some(delta) = stat.delta.filter(|delta| *delta >= threshold) {
+                insights.push(HistoryAnalysisInsight {
+                    kind: "difference".to_string(),
+                    title: format!("胜局{label}明显更高"),
+                    detail: format!(
+                        "胜局平均比败局高 {:.1}，建议优先复盘败局的前期资源和团战参与。",
+                        delta
+                    ),
+                    metric: Some(metric.to_string()),
+                    delta: Some(round_metric(Some(delta)).unwrap_or(delta)),
+                });
+            }
+        }
+        if let Some(champion) = champions
+            .iter()
+            .find(|champion| champion.games >= 3 && champion.win_rate.unwrap_or(0.0) < 50.0)
+        {
+            insights.push(HistoryAnalysisInsight {
+                kind: "champion".to_string(),
+                title: "存在低胜率英雄".to_string(),
+                detail: format!(
+                    "该英雄近 {} 场胜率 {:.1}%，建议结合具体败局确认是否是阵容或熟练度问题。",
+                    champion.games,
+                    champion.win_rate.unwrap_or_default()
+                ),
+                metric: None,
+                delta: None,
+            });
+        }
+        if let Some(position) = positions
+            .iter()
+            .find(|position| position.games >= 3 && position.win_rate.unwrap_or(0.0) < 50.0)
+        {
+            insights.push(HistoryAnalysisInsight {
+                kind: "position".to_string(),
+                title: "某个位置表现偏弱".to_string(),
+                detail: format!(
+                    "{} 近 {} 场胜率 {:.1}%，可对照该位置的败局指标。",
+                    position.position,
+                    position.games,
+                    position.win_rate.unwrap_or_default()
+                ),
+                metric: None,
+                delta: None,
+            });
+        }
+        if insights.is_empty() && total_games > 0 {
+            insights.push(HistoryAnalysisInsight {
+                kind: "quality".to_string(),
+                title: "暂未发现明显短板".to_string(),
+                detail: if detail_games < total_games {
+                    "当前详情覆盖不足，先展示基础胜率与 KDA；继续完成更多对局详情缓存后可获得更准确的复盘建议。".to_string()
+                } else {
+                    "胜负差异暂未达到明显阈值，可继续查看单局证据和最近趋势。".to_string()
+                },
+                metric: None,
+                delta: None,
+            });
+        }
+
+        let mut source_list: Vec<String> = sources.into_iter().collect();
+        source_list.sort();
+        let quality = HistoryAnalysisQuality {
+            total_games,
+            detail_games,
+            complete_games,
+            base_coverage: if total_games > 0 { 100.0 } else { 0.0 },
+            detail_coverage: if total_games > 0 {
+                detail_games as f64 / total_games as f64 * 100.0
+            } else {
+                0.0
+            },
+            metric_coverage,
+            sources: source_list,
+            latest_game_creation: selected.first().map(|game| game.game_creation),
+        };
+        let result = HistoryAnalysisSnapshot {
+            puuid,
+            mode_key: request.mode_key,
+            window_size,
+            actual_games: total_games,
+            wins: total_wins,
+            losses,
+            win_rate: rate(total_wins, total_games),
+            recent_wins,
+            recent_games,
+            previous_wins,
+            previous_games,
+            streak_type,
+            streak_count,
+            trend,
+            metrics: metric_summary,
+            champions,
+            positions,
+            insights,
+            quality,
+            source: if detail_games > 0 {
+                "PostgreSQL 基础缓存 + 对局详情".to_string()
+            } else {
+                "PostgreSQL 基础缓存".to_string()
+            },
+        };
+        tracing::info!(
+            target: "db.cache",
+            op = "history_analysis_snapshot",
+            purpose = "生成 PostgreSQL 历史分析快照",
+            puuid = %result.puuid,
+            mode_key = ?result.mode_key,
+            window_size = result.window_size,
+            actual_games = result.actual_games,
+            detail_games = result.quality.detail_games,
+            complete_games = result.quality.complete_games,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "历史分析快照生成完成"
         );
         Ok(result)
     }
@@ -2827,6 +3707,14 @@ pub async fn get_cached_player_summary(
     request: CachedPlayerSummaryQuery,
 ) -> Result<CachedPlayerSummary, String> {
     state.player_summary(request).await
+}
+
+#[tauri::command]
+pub async fn get_history_analysis_snapshot(
+    state: tauri::State<'_, DatabaseState>,
+    request: HistoryAnalysisQuery,
+) -> Result<HistoryAnalysisSnapshot, String> {
+    state.history_analysis_snapshot(request).await
 }
 
 #[tauri::command]
