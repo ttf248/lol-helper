@@ -23,10 +23,49 @@ const makeAnalytics = (services = {}) => createLoader({
   '@/recentMatch/utils/databaseCache': {},
   ...services,
 }, { [analyticsPath]: ['buildPartyGroupsStructure', 'buildCurrentTeamPartyGroups', 'buildCurrentMatchGame',
-  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames'] })(analyticsPath);
+  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage'] })(analyticsPath);
 const analytics = makeAnalytics();
 const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
-const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, source: 'test', sourceEndpoints: [] });
+const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, recentHistoryVerified: true, source: 'test', sourceEndpoints: [] });
+
+test('500 complete cached matches do not suppress hydration of a new partial match', async () => {
+  const old = Array.from({ length: 500 }, (_, i) => fullGame(i + 1, 1000000000000 + i));
+  const full = fullGame(501);
+  const partial = { ...full, participants: [full.participants[0]] };
+  let calls = 0;
+  const api = makeAnalytics({ '@/lcu/aboutMatch': {
+    queryMatchHistoryWithSource: async () => ({ games: [partial] }),
+    queryMatchHistoryFullWithSource: async (_puuid, start, count) => {
+      calls++;
+      assert.equal(start, 0);
+      assert.equal(count, 20);
+      return { games: [full] };
+    },
+  }});
+  const result = await api.syncPlayerModeGames(player(0), 'ranked', old);
+  assert.equal(calls, 1);
+  assert.equal(result.games[0].participants.length, 10);
+  assert.equal(result.recentHistoryVerified, true);
+});
+
+test('already complete latest window avoids needless full-roster requests', async () => {
+  const full = fullGame();
+  const api = makeAnalytics({ '@/lcu/aboutMatch': {
+    queryMatchHistoryWithSource: async () => ({ games: [full] }),
+    queryMatchHistoryFullWithSource: async () => { throw new Error('unnecessary request'); },
+  }});
+  assert.equal((await api.syncPlayerModeGames(player(0), 'ranked', [full])).games.length, 1);
+});
+
+test('stale or short recent windows remain explicitly insufficient', () => {
+  const games = [1, 2, 3, 4].map(i => fullGame(i));
+  const snapshots = new Map([['p0', snapshot(games)]]);
+  assert.equal(analytics.getTeamPartyCoverage([player(0)], snapshots, null).status, 'ready');
+  snapshots.get('p0').recentHistoryVerified = false;
+  assert.equal(analytics.getTeamPartyCoverage([player(0)], snapshots, null).status, 'insufficient');
+  snapshots.set('p0', snapshot(games.slice(0, 2)));
+  assert.equal(analytics.getTeamPartyCoverage([player(0)], snapshots, null).status, 'insufficient');
+});
 
 test('one authoritative roster suffices and player order cannot change historical groups', () => {
   const games = [fullGame(1), fullGame(2)];

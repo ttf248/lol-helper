@@ -432,6 +432,10 @@ export interface PlayerRecentAnalysis {
   positions: PositionRecentStats[];
   opponents: OpponentMatchupStats[];
   partyGroups: PartyGroupAnalysis[];
+  partyCoverage?: {
+    status: "ready" | "insufficient";
+    message: string;
+  };
   teammateSynergy?: TeammateSynergyStats[];
   confidence: ConfidenceInfo;
   moderation: PlayerModerationInfo;

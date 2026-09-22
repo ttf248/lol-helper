@@ -137,6 +137,8 @@ interface PlayerHistorySnapshot {
   sourceEndpoints: string[];
   complete: boolean;
   dataCoverage?: HistoryCoverageInfo;
+  /** 本次面板生命周期已成功刷新历史摘要；缓存本身不证明窗口最新。 */
+  recentHistoryVerified?: boolean;
 }
 
 export interface RecentAnalysisProgress {
@@ -403,6 +405,7 @@ interface QueueHydrationResult {
   source: string;
   sourceEndpoints: string[];
   coverage: HistoryCoverageInfo;
+  recentHistoryVerified: boolean;
 }
 
 interface QueueHydrationEntry {
@@ -425,6 +428,7 @@ const syncPlayerModeGames = async (
   source: string;
   sourceEndpoints: string[];
   coverage: HistoryCoverageInfo;
+  recentHistoryVerified: boolean;
 }> => {
   const startedAt = Date.now();
   const boundedServerLimit = Math.min(
@@ -465,10 +469,9 @@ const syncPlayerModeGames = async (
     { puuid: player.puuid, modeKey },
   );
 
-  // 本地已有完整窗口时，摘要只负责刷新最近数据，不必再请求完整参与者。
-  const needsFullParticipants =
-    existingGames.length < HISTORY_CACHE_PAGE_SIZE ||
-    !hasParticipantRoster(existingGames);
+  // 只检查本次请求可覆盖的窗口；旧缓存数量不能掩盖新摘要缺少参与者。
+  const latestWindow = summaryMerged.games.slice(0, boundedServerLimit);
+  const needsFullParticipants = latestWindow.some((game) => historyGameQuality(game) !== "complete");
 
   let finalGames = summaryMerged.games;
   let finalSource =
@@ -536,6 +539,7 @@ const syncPlayerModeGames = async (
     source: finalSource,
     sourceEndpoints: finalEndpoints,
     coverage: finalCoverage,
+    recentHistoryVerified: summaryResult !== null && summaryResult !== undefined,
   };
 };
 
@@ -578,6 +582,7 @@ const hydratePlayerQueueHistory = (
       source: synced.source,
       sourceEndpoints: synced.sourceEndpoints,
       coverage: synced.coverage,
+      recentHistoryVerified: synced.recentHistoryVerified,
     };
   })().catch((error) => {
     logger.warn({
@@ -594,6 +599,7 @@ const hydratePlayerQueueHistory = (
         [],
         HISTORY_CACHE_PAGE_SIZE,
       ).coverage,
+      recentHistoryVerified: false,
     };
   });
   queueHydration.set(key, {
@@ -624,7 +630,7 @@ const loadPlayerHistory = async (
       limit: HISTORY_CACHE_PAGE_SIZE,
     });
     if (cachedGames.length > 0) {
-      // 即使本地已经有 100 场，也只向服务器同步最近三页；
+      // 本地样本与最新窗口分开处理，服务器仅同步最近一页；
       // 合并时通过 gameId 去重并让接口的完整 participant 覆盖旧缓存。
       void hydratePlayerQueueHistory(player, modeKey, cachedGames);
       const limitedGames = new Map(
@@ -1357,6 +1363,7 @@ const buildRecentPartySnapshots = (
   for (const player of players) {
     const snapshot = snapshots.get(player.puuid);
     if (!snapshot) continue;
+    if (!snapshot.recentHistoryVerified) continue;
     const recentHistory = Array.from(snapshot.games.values())
       .filter((game) => !isCurrentMatchGame(game, currentGame))
       .sort(
@@ -1690,6 +1697,12 @@ const buildPlayerAnalysis = (
     positions: buildPositionStats(games, player),
     opponents,
     partyGroups,
+    partyCoverage: {
+      status: games.length > 0 && hasParticipantRoster(games) ? "ready" : "insufficient",
+      message: games.length > 0 && hasParticipantRoster(games)
+        ? "已检查当前已加载的历史记录"
+        : "参与者数据不足，未发现组合不代表没有组队关系",
+    },
     confidence: confidenceInfo(confidenceScore, confidenceReasons),
     moderation,
     source: snapshot.source,
@@ -2114,6 +2127,31 @@ const buildNetworkAnalysis = (
   return { nodes, edges, availableGames };
 };
 
+const getTeamPartyCoverage = (
+  team: RecentSumInfo[],
+  snapshots: Map<string, PlayerHistorySnapshot>,
+  currentGame: NormalizedHistoryGame | null,
+): NonNullable<PlayerRecentAnalysis["partyCoverage"]> => {
+  const evidence = buildHistoryEvidence(snapshots);
+  const ready = team.length > 0 && team.every((player) => {
+    const snapshot = snapshots.get(player.puuid);
+    if (!snapshot?.recentHistoryVerified) return false;
+    const window = Array.from(snapshot.games.values())
+      .filter((game) => !currentGame || !isCurrentMatchGame(game, currentGame))
+      .sort((a, b) => b.gameCreation - a.gameCreation || b.gameId - a.gameId)
+      .slice(0, PARTY_RECENT_MATCH_COUNT - 1);
+    return window.length === PARTY_RECENT_MATCH_COUNT - 1 && window.every((game) =>
+      historyGameQuality(evidence.get(game.gameId) || game) === "complete",
+    );
+  });
+  return {
+    status: ready ? "ready" : "insufficient",
+    message: ready
+      ? "已核验当前模式各成员最近4场；历史统计限于已加载记录"
+      : "近期窗口未刷新、场数不足或参与者缺失；暂无法排除组队关系",
+  };
+};
+
 const applyTeamAnalysis = (
   friendList: RecentSumInfo[],
   enemyList: RecentSumInfo[],
@@ -2133,8 +2171,7 @@ const applyTeamAnalysis = (
     [friendList, enemyList],
     [enemyList, friendList],
   ] as const) {
-    // 当前对局先做“当前 + 最近 4 场”的严格初筛，只有命中的组合
-    // 才会进入完整历史统计；这样远期偶然同队不会直接污染本局判断。
+    // 近期候选和历史关系独立保留，覆盖不足时明确标注，不能据此否定组队。
     const groups = currentGame
       ? buildCurrentTeamPartyGroups(
           team,
@@ -2147,7 +2184,7 @@ const applyTeamAnalysis = (
         );
     for (const player of team) {
       const snapshot = snapshotMap.get(player.puuid);
-      if (!snapshot || snapshot.games.size === 0) continue;
+      if (!snapshot) continue;
       player.recentAnalysis = buildPlayerAnalysis(
         player,
         snapshot,
@@ -2157,6 +2194,7 @@ const applyTeamAnalysis = (
         buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
         moderationMap.get(player.puuid) || emptyModeration(),
       );
+      player.recentAnalysis.partyCoverage = getTeamPartyCoverage(team, snapshotMap, currentGame);
     }
   }
 };
@@ -2373,12 +2411,6 @@ export const loadRecentTeamAnalysis = async (
         ...initialSnapshot.games.values(),
         ...hydratedGames,
       ]).slice(0, HISTORY_CACHE_PAGE_SIZE);
-      if (
-        mergedGames.length <= initialSnapshot.games.size &&
-        !hasParticipantRoster(mergedGames)
-      ) {
-        return initialSnapshot;
-      }
       return {
         puuid: player.puuid,
         games: new Map(mergedGames.map((game) => [game.gameId, game])),
@@ -2393,6 +2425,8 @@ export const loadRecentTeamAnalysis = async (
         complete:
           mergedGames.length >= HISTORY_CACHE_PAGE_SIZE &&
           hasParticipantRoster(mergedGames),
+        dataCoverage: hydratedResult?.coverage,
+        recentHistoryVerified: hydratedResult?.recentHistoryVerified ?? false,
       };
     });
   const hydratedSnapshotMap = new Map(

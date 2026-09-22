@@ -478,6 +478,9 @@ const teamInsight = computed(() => {
 
           <div>
             <div class="font-medium mb-1">开黑组合分析</div>
+            <div v-if="selectedPlayer.recentAnalysis.partyCoverage?.status === 'insufficient'" class="text-amber-600 mb-1">
+              {{ selectedPlayer.recentAnalysis.partyCoverage.message }}
+            </div>
             <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="duo-stack">
               <DuoGroupCard
                 v-for="group in selectedPlayer.recentAnalysis.partyGroups"
@@ -516,7 +519,9 @@ const teamInsight = computed(() => {
               </DuoGroupCard>
             </div>
             <div v-else class="text-gray-500">
-              最近5局未发现同队次数至少3次的组合，完整历史也未发现组合。
+              {{ selectedPlayer.recentAnalysis.partyCoverage?.status === 'ready'
+                ? '当前模式近期窗口及已加载历史中未发现达标组合。'
+                : '数据不足，暂未识别到组合。' }}
             </div>
             <div class="text-gray-500 mt-1">
               悬停组合标签可查看最近5局初筛次数与历史共同对局；依据同队出现推断，不代表接口提供了官方组队 ID。
