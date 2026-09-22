@@ -92,10 +92,19 @@ export const participantMatchesPlayer = (
     return rank >= 2 || (rank === 1 && Boolean(participant.summonerName?.includes("#")));
 };
 
+// 分析快照不可变；新版本对局必须替换 game 对象，旧条目随 GC 回收。
+let participantLookupCache = new WeakMap<object, Map<string, NormalizedHistoryParticipant | undefined>>();
+export const clearParticipantLookupCache = () => { participantLookupCache = new WeakMap(); };
+
 export const findPlayerParticipant = (
     game: { participants: NormalizedHistoryParticipant[] },
     player: RecentSumInfo,
-): NormalizedHistoryParticipant | undefined =>
-    uniqueIdentityMatch(game.participants, player);
+): NormalizedHistoryParticipant | undefined => {
+    let cache = participantLookupCache.get(game);
+    if (!cache) { cache = new Map(); participantLookupCache.set(game, cache); }
+    const key = JSON.stringify([player.puuid, player.summonerId, player.summonerName]);
+    if (!cache.has(key)) cache.set(key, uniqueIdentityMatch(game.participants, player));
+    return cache.get(key);
+};
 
 export type { FindParams };

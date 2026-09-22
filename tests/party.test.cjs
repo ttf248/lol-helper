@@ -23,7 +23,7 @@ const makeAnalytics = (services = {}) => createLoader({
   '@/recentMatch/utils/databaseCache': {},
   ...services,
 }, { [analyticsPath]: ['buildPartyGroupsStructure', 'buildCurrentTeamPartyGroups', 'buildCurrentMatchGame',
-  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage'] })(analyticsPath);
+  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage', 'applyTeamAnalysis'] })(analyticsPath);
 const analytics = makeAnalytics();
 const scoring = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/partyScoring.ts');
 const { selectPartyGroups } = createLoader()('src/recentMatch/utils/partyPresentation.ts');
@@ -181,4 +181,65 @@ test('exact PUUID takes precedence over an earlier weak match; ambiguous names f
   assert.equal(findPlayerParticipant({ participants: [weak, { ...weak }] }, a), undefined);
   assert.equal(participantMatchesPlayer({ ...weak, summonerName: 'Same#B' }, a), false);
   assert.equal(findPlayerParticipant({ participants: [{ puuid: '', summonerName: '' }] }, { puuid: '', summonerName: '' }), undefined);
+});
+
+test('incremental evidence recomputes only changed matches and removes evicted matches', () => {
+  const loader = createLoader({ '@/utils/logger': { logger: silentLogger } });
+  const evidence = loader('src/recentMatch/utils/historyEvidence.ts');
+  const membership = loader('src/recentMatch/utils/partyMembership.ts');
+  const games = [fullGame(1), fullGame(2)];
+  const first = new Map([['p0', snapshot(games)]]);
+  const initial = evidence.buildHistoryEvidence(first);
+  membership.buildPartyMembership([player(0), player(1)], initial);
+  const before = membership.partyMembershipStats().evaluatedGames;
+  const replacement = { ...games[1], participants: games[1].participants.map(p => ({ ...p, win: false })) };
+  const second = new Map([['p0', snapshot([games[0], replacement, fullGame(3)])]]);
+  const updated = evidence.buildHistoryEvidence(second, first);
+  assert.equal(evidence.historyEvidenceStats(second).updatedGames, 2);
+  assert.equal(updated.get(1), initial.get(1));
+  membership.buildPartyMembership([player(0), player(1)], updated);
+  assert.equal(membership.partyMembershipStats().evaluatedGames - before, 2);
+  assert.equal(evidence.buildHistoryEvidence(second), updated);
+  const third = new Map([['p0', snapshot([replacement])]]);
+  assert.equal(evidence.buildHistoryEvidence(third, second).has(1), false);
+  assert.equal(initial.get(2), games[1]);
+});
+
+test('moderation-only refresh preserves structural scores and new snapshot invalidates cached analysis', () => {
+  const team = [player(0), player(1)];
+  const games = [fullGame(1), fullGame(2)];
+  const snapshots = new Map(team.map(p => [p.puuid, snapshot(games)]));
+  analytics.applyTeamAnalysis(team, [], snapshots, new Map(), 420, 99);
+  const before = team[0].recentAnalysis;
+  analytics.applyTeamAnalysis(team, [], snapshots, new Map([['p0', { available: true, marked: true, reportCount: 2 }]]), 420, 99);
+  const after = team[0].recentAnalysis;
+  assert.equal(after.partyGroups[0].confidence.score, before.partyGroups[0].confidence.score);
+  assert.equal(after.partyGroups[0].evidence, before.partyGroups[0].evidence);
+  assert.equal(after.partyGroups[0].blacklistedMembers.length, 1);
+  assert.equal(before.partyGroups[0].blacklistedMembers.length, 0);
+  const updated = new Map(team.map(p => [p.puuid, snapshot([...games, fullGame(3)])]));
+  analytics.applyTeamAnalysis(team, [], updated, new Map(), 420, 99);
+  assert.equal(team[0].recentAnalysis.partyGroups[0].historicalGames, 3);
+  assert.equal(team[0].recentAnalysis.partyGroups[0].blacklistedMembers.length, 0);
+});
+
+test('membership index agrees with direct enumeration and does not join pairwise-only triples', () => {
+  const loader = createLoader();
+  const { buildPartyMembership } = loader('src/recentMatch/utils/partyMembership.ts');
+  const team = [0, 1, 2, 3, 4].map(player);
+  const games = Array.from({ length: 32 }, (_, bits) => {
+    const g = fullGame(bits + 1);
+    return { ...g, participants: g.participants.map((p, i) => i < 5 ?
+      { ...p, teamId: bits & (1 << i) ? 100 : 200 } : p) };
+  });
+  const actual = buildPartyMembership(team, new Map(games.map(g => [g.gameId, g])));
+  for (let mask = 1; mask < 32; mask++) {
+    const members = team.filter((_, i) => mask & (1 << i));
+    if (members.length < 2) continue;
+    const expected = games.filter(g => {
+      const found = members.map(p => g.participants.find(v => v.puuid === p.puuid));
+      return found.every(p => p.teamId === found[0].teamId);
+    }).map(g => g.gameId);
+    assert.deepEqual(actual.get(members.map(p => p.puuid).sort().join('|')), expected);
+  }
 });

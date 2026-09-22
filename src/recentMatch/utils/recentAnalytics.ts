@@ -41,12 +41,14 @@ import {
   HISTORY_PLAYER_MAX_GAMES,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
-import { buildHistoryEvidence } from "@/recentMatch/utils/historyEvidence";
+import { buildHistoryEvidence, clearHistoryEvidenceCache } from "@/recentMatch/utils/historyEvidence";
 import { scorePartyEvidence, hasHighWinRateEvidence } from "@/recentMatch/utils/partyScoring";
 import { comparePartyGroups } from "@/recentMatch/utils/partyPresentation";
+import { buildPartyMembership, clearPartyMembershipCache } from "@/recentMatch/utils/partyMembership";
 import {
     findPlayerParticipant,
     participantMatchesPlayer,
+    clearParticipantLookupCache,
 } from "@/recentMatch/utils/participantLookup";
 
 export const RECENT_DEFAULT_GAME_COUNT = HISTORY_PANEL_PREVIEW_COUNT;
@@ -1106,6 +1108,7 @@ const buildPartyGroupsStructure = (
     .find((game) => game.source === CURRENT_MATCH_SOURCE);
   const allGames = new Map(evidenceIndex);
   if (current) allGames.set(current.gameId, current);
+  const memberships = buildPartyMembership(players, allGames);
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
       if (
@@ -1114,7 +1117,7 @@ const buildPartyGroupsStructure = (
       ) {
         continue;
       }
-      const commonGameIds = Array.from(allGames.keys()).filter((gameId) =>
+      const commonGameIds = (memberships.get(partyGroupKey(group)) || []).filter((gameId) =>
         !options.requireWindowMembership || group.every((player) =>
           snapshots.get(player.puuid)?.games.has(gameId),
         ),
@@ -1309,27 +1312,6 @@ const isCurrentMatchGame = (
   game.source === CURRENT_MATCH_SOURCE ||
   (currentGame.gameId > 0 && game.gameId === currentGame.gameId);
 
-/** 给完整历史快照补入当前对局，但不改变缓存中的原始快照。 */
-const appendCurrentMatchToSnapshots = (
-  snapshots: Map<string, PlayerHistorySnapshot>,
-  players: RecentSumInfo[],
-  currentGame: NormalizedHistoryGame,
-): Map<string, PlayerHistorySnapshot> => {
-  const result = new Map<string, PlayerHistorySnapshot>();
-  for (const player of players) {
-    const snapshot = snapshots.get(player.puuid);
-    if (!snapshot) continue;
-    const games = new Map(
-      Array.from(snapshot.games.entries()).filter(
-        ([, game]) => !isCurrentMatchGame(game, currentGame),
-      ),
-    );
-    games.set(currentGame.gameId, currentGame);
-    result.set(player.puuid, { ...snapshot, games });
-  }
-  return result;
-};
-
 /**
  * 当前对局初筛只取每名玩家最近 4 场已结束对局，再把当前对局放到窗口中。
  * 这样历史缓存即使有 100/500 场，也不会让远期同队记录越过本局初筛。
@@ -1364,7 +1346,7 @@ const buildRecentPartySnapshots = (
 /**
  * 对局内开黑分析的双通道入口：
  * 1. 当前对局 + 最近 4 场，按同队次数至少 3 次生成近期候选；
- * 2. 同时运行旧的完整历史组合算法，最后按成员集合合并两边结果。
+ * 2. 历史门槛独立保留；两条通道复用一次历史统计，不重复扫描所有比赛。
  */
 const buildCurrentTeamPartyGroups = (
   team: RecentSumInfo[],
@@ -1372,59 +1354,33 @@ const buildCurrentTeamPartyGroups = (
   currentGame: NormalizedHistoryGame,
   moderationMap: Map<string, PlayerModerationInfo>,
 ): PartyGroupAnalysis[] => {
-  // 保留原有完整历史算法：它按 2/3/4/5 人组合的历史共同同队
-  // 门槛独立产出结果，不能因为最近窗口存在而跳过。
-  const legacyStructures = buildPartyGroupsStructure(team, snapshots);
-  const mergedStructures = new Map<string, StructuralPartyGroup>(
-    legacyStructures.map((group) => [partyGroupKey(group.members), group]),
-  );
-
   const recentSnapshots = buildRecentPartySnapshots(team, snapshots, currentGame);
-  const recentStructures = buildPartyGroupsStructure(team, recentSnapshots, {
-    requireWindowMembership: true,
-    evidence: buildHistoryEvidence(snapshots),
-    minimumGames: PARTY_RECENT_MIN_TEAM_GAMES,
-    requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
+  const historical = new Map(Array.from(buildHistoryEvidence(snapshots))
+    .filter(([, game]) => !isCurrentMatchGame(game, currentGame)));
+  const structures = buildPartyGroupsStructure(team, snapshots, {
+    minimumGames: 2, evidence: historical,
   });
-  if (recentStructures.length > 0) {
-    const candidateKeys = new Set(
-      recentStructures.map((group) => partyGroupKey(group.members)),
-    );
-    const historicalSnapshots = appendCurrentMatchToSnapshots(
-      snapshots,
-      team,
-      currentGame,
-    );
-    const historicalStructures = buildPartyGroupsStructure(
-      team,
-      historicalSnapshots,
-      {
-        allowedGroupKeys: candidateKeys,
-        // 近期候选已经完成判定，这里只负责补全完整历史统计，允许
-        // 当前局之外历史样本较少的组合保留下来。
-        minimumGames: 1,
-        requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
-      },
-    );
-    const historicalByKey = new Map(
-      historicalStructures.map((group) => [partyGroupKey(group.members), group]),
-    );
-
-    // 近期候选覆盖同一个历史组合时，以“完整历史 + 当前局”的结果为
-    // 主体，并把最近窗口次数合并进去，避免把两套证据重复累加。
-    for (const recentStructure of recentStructures) {
-      const key = partyGroupKey(recentStructure.members);
-      const historicalStructure = historicalByKey.get(key);
-      mergedStructures.set(key, {
-        ...(historicalStructure || recentStructure),
-        requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
-        recentWindowGames: recentStructure.games,
+  const mergedStructures: StructuralPartyGroup[] = [];
+  for (const structure of structures) {
+    const currentParticipants = structure.members.map((member) => findPlayerParticipant(currentGame, member));
+    const sameCurrentTeam = currentParticipants.every((p) => p && p.teamId > 0 && p.teamId === currentParticipants[0]?.teamId) &&
+      new Set(currentParticipants).size === structure.members.length;
+    const verified = structure.members.every((member) => recentSnapshots.has(member.puuid));
+    const recentCount = verified && sameCurrentTeam ? 1 + structure.evidence.filter((item) =>
+      structure.members.every((member) => recentSnapshots.get(member.puuid)?.games.has(item.gameId)),
+    ).length : 0;
+    if (recentCount >= PARTY_RECENT_MIN_TEAM_GAMES) {
+      mergedStructures.push({ ...structure, requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
+        recentWindowGames: recentCount, games: structure.historicalGames + 1, currentMatchGames: 1,
+        evidence: [{ gameId: currentGame.gameId, gameCreation: currentGame.gameCreation, isCurrentMatch: true }, ...structure.evidence],
       });
+    } else if (structure.historicalGames >= structure.requiredGames) {
+      mergedStructures.push(structure);
     }
   }
 
   const now = Date.now();
-  return Array.from(mergedStructures.values())
+  return mergedStructures
     .map((structure) => applyPartyGroupOverlay(structure, moderationMap, now))
     .sort(comparePartyGroups);
 };
@@ -2090,6 +2046,28 @@ const getTeamPartyCoverage = (
   };
 };
 
+// 同一不可变快照的举报刷新只叠加附加信息；时间分桶避免跨分钟复用衰减分数。
+let teamAnalysisCache = new WeakMap<Map<string, PlayerHistorySnapshot>, {
+  key: string; analyses: Map<string, PlayerRecentAnalysis>;
+}>();
+
+const overlayModeration = (
+  analysis: PlayerRecentAnalysis, puuid: string, moderation: Map<string, PlayerModerationInfo>,
+): PlayerRecentAnalysis => {
+  const member = (value: PartyMember): PartyMember => ({ ...value, moderation: moderation.get(value.puuid) || emptyModeration() });
+  return { ...analysis, moderation: moderation.get(puuid) || emptyModeration(),
+    partyGroups: analysis.partyGroups.map(group => {
+      const members = group.members.map(member);
+      return { ...group, members,
+        moderationAvailable: members.every(m => m.moderation?.available),
+        blacklistedMembers: members.filter(m => m.moderation?.marked),
+        reportedMembers: members.filter(m => (m.moderation?.reportCount || 0) > 0),
+      };
+    }),
+    opponents: analysis.opponents.map(opponent => ({ ...opponent, opponent: member(opponent.opponent) })),
+  };
+};
+
 const applyTeamAnalysis = (
   friendList: RecentSumInfo[],
   enemyList: RecentSumInfo[],
@@ -2099,6 +2077,17 @@ const applyTeamAnalysis = (
   currentGameId = 0,
 ) => {
   const now = Date.now();
+  const key = JSON.stringify([queueId, currentGameId, Math.floor(now / 60_000),
+    [friendList, enemyList].map(team => team.map(p => [p.puuid, p.summonerId, p.summonerName, p.champId]))]);
+  const cached = teamAnalysisCache.get(snapshotMap);
+  if (cached?.key === key) {
+    for (const player of [...friendList, ...enemyList]) {
+      const analysis = cached.analyses.get(player.puuid);
+      if (analysis) player.recentAnalysis = overlayModeration(analysis, player.puuid, moderationMap);
+    }
+    return;
+  }
+  const analyses = new Map<string, PlayerRecentAnalysis>();
   const currentGame = buildCurrentMatchGame(
     friendList,
     enemyList,
@@ -2109,6 +2098,7 @@ const applyTeamAnalysis = (
     [friendList, enemyList],
     [enemyList, friendList],
   ] as const) {
+    const partyCoverage = getTeamPartyCoverage(team, snapshotMap, currentGame);
     // 近期候选和历史关系独立保留，覆盖不足时明确标注，不能据此否定组队。
     const groups = currentGame
       ? buildCurrentTeamPartyGroups(
@@ -2132,9 +2122,11 @@ const applyTeamAnalysis = (
         buildOpponentStats(player, opposingTeam, snapshotMap, moderationMap),
         moderationMap.get(player.puuid) || emptyModeration(),
       );
-      player.recentAnalysis.partyCoverage = getTeamPartyCoverage(team, snapshotMap, currentGame);
+      player.recentAnalysis.partyCoverage = partyCoverage;
+      analyses.set(player.puuid, player.recentAnalysis);
     }
   }
+  teamAnalysisCache.set(snapshotMap, { key, analyses });
 };
 
 export const loadRecentTeamAnalysis = async (
@@ -2370,6 +2362,7 @@ export const loadRecentTeamAnalysis = async (
   const hydratedSnapshotMap = new Map(
     players.map((player, index) => [player.puuid, hydratedSnapshots[index]]),
   );
+  buildHistoryEvidence(hydratedSnapshotMap, snapshotMap);
   applyTeamAnalysis(
     friendList,
     enemyList,
@@ -2408,6 +2401,8 @@ export const loadRecentTeamAnalysis = async (
 export const clearRecentAnalysisCache = () => {
   historyCache.clear();
   queueHydration.clear();
-  // partyGroupsStructureCache 是 WeakMap，键（snapshotMap / players 数组）
-  // 被 GC 后条目自动回收，不需要也无接口手动 clear。
+  teamAnalysisCache = new WeakMap();
+  clearHistoryEvidenceCache();
+  clearPartyMembershipCache();
+  clearParticipantLookupCache();
 };

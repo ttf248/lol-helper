@@ -6,6 +6,7 @@
 	"packageManager": "pnpm@9.15.9",
 	"scripts": {
 		"test:party": "node --test tests/party.test.cjs",
+		"bench:party": "node scripts/benchmark-party.cjs",
 		"dev": "vite",
 		"build": "node scripts/build-frontend.mjs",
 		"build:force": "vite build",
