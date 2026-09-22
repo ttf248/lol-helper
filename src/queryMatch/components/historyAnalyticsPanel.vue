@@ -18,9 +18,9 @@ import {
 } from "@/recentMatch/utils/databaseCache";
 import {
   MATCH_MODES,
-  MatchModeKey,
   modeLabel,
 } from "@/recentMatch/utils/matchMode";
+import type { MatchModeKey } from "@/recentMatch/utils/matchMode";
 import { loadPlayerCacheAnalysis } from "@/recentMatch/utils/recentAnalytics";
 import {
   PlayerRecentAnalysis,
@@ -43,6 +43,7 @@ import { positionLabel } from "@/lcu/utils";
 import { getChampionImageUrl } from "@/utils/championImage";
 import { useSummonerNavigation } from "@/queryMatch/composables/useSummonerNavigation";
 import type { PartyMember, RecentNetworkNode } from "@/recentMatch/utils/queryTypes";
+import { inferHistoryMode } from "@/queryMatch/utils/historyMode";
 
 type PartyRankingMode = "frequency" | "winRate";
 type HistoryWindowSize = 20 | 50 | 100 | 500;
@@ -68,7 +69,7 @@ const championImage = (championId: number) => {
 };
 
 const props = defineProps<{ player: RecentSumInfo }>();
-const selectedMode = ref<MatchModeKey>("match");
+const selectedMode = ref<MatchModeKey>(inferHistoryMode(props.player));
 const partyRankingMode = ref<PartyRankingMode>("frequency");
 const analysis = ref<PlayerRecentAnalysis | null>(null);
 const snapshot = ref<HistoryAnalysisSnapshot | null>(null);
@@ -429,6 +430,12 @@ watch(
     props.player.matchList.map((match) => match.gameId).join(","),
   ],
   () => {
+    const inferredMode = inferHistoryMode(props.player);
+    if (selectedMode.value !== inferredMode) {
+      selectedMode.value = inferredMode;
+      return;
+    }
+
     analysis.value = null;
     snapshot.value = null;
     void loadAnalysis();

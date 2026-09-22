@@ -7,6 +7,7 @@ const a = { puuid: 'a', summonerId: 1, summonerName: 'Same#A' };
 const b = { puuid: 'b', summonerId: 2, summonerName: 'Same#B' };
 const silentLogger = { debug() {}, info() {}, warn() {} };
 const history = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/historyData.ts');
+const { inferHistoryMode } = createLoader()('src/queryMatch/utils/historyMode.ts');
 const fullGame = (gameId = 1, gameCreation = Date.now()) => ({
   gameId, gameCreation, queueId: 420,
   participants: Array.from({ length: 10 }, (_, i) => ({
@@ -50,6 +51,12 @@ test('recent evidence wins display priority, identical subgroups fold, independe
 });
 const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
 const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, recentHistoryVerified: true, source: 'test', sourceEndpoints: [] });
+
+test('history panel follows the newest supported queue', () => {
+  assert.equal(inferHistoryMode({ matchList: [{ queueId: 2400 }] }), 'hex-aram');
+  assert.equal(inferHistoryMode({ matchList: [{ queueId: 420 }] }), 'ranked');
+  assert.equal(inferHistoryMode({ matchList: [{ queueId: 9999 }] }), 'match');
+});
 
 test('500 complete cached matches do not suppress hydration of a new partial match', async () => {
   const old = Array.from({ length: 500 }, (_, i) => fullGame(i + 1, 1000000000000 + i));
