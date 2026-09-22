@@ -250,6 +250,7 @@ const init = () => {
                 friendList.value,
                 enemyList.value,
                 allSumInfo.queueId,
+                allSumInfo.currentGameId,
                 (progress: RecentAnalysisProgress) => {
                     setLoadingState({
                         stage: progress.stage === "cache" ? "history" : progress.stage,
@@ -258,7 +259,7 @@ const init = () => {
                         message: progress.message,
                         detail: progress.stage === "full"
                             ? `${progress.completed}/${progress.total} 名玩家已完成服务器兜底与本地缓存合并。`
-                            : `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场已可查看，后台继续基于本地缓存计算团队分析。`,
+                            : `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场个人战绩已可查看；开黑初筛使用最近5局（含当前），后台继续补充历史数据。`,
                     });
                 },
             )

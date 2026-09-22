@@ -153,6 +153,8 @@ export interface RecentAllSumInfo {
   friendList: RecentSumInfo[];
   enemyList: RecentSumInfo[];
   queueId: number;
+  /** 当前对局 gameflow session 的 gameId，用于把本局计入开黑初筛。 */
+  currentGameId?: number;
 }
 
 export type RecentMatchLoadingStage =
@@ -274,13 +276,23 @@ export interface PartyMember {
 export interface PartyEvidence {
   gameId: number;
   gameCreation: number;
+  /** 当前正在查看的对局，不代表已经产生可统计的胜负结果。 */
+  isCurrentMatch?: boolean;
 }
 
 export interface PartyGroupAnalysis {
   members: PartyMember[];
-  /** 判定该人数规模所需的最少共同同队场次。 */
+  /** 该结果使用的最少同队次数；对局内初筛固定为 3，历史页按组合规模计算。 */
   requiredGames: number;
+  /** 当前对局 + 最近历史窗口内的共同同队次数；对局内初筛使用。 */
+  recentWindowGames?: number;
+  /** 完整历史中排除当前对局后的共同同队次数。 */
+  historicalGames?: number;
+  /** 当前对局计数，通常为 1；当前对局结果未知时不计入胜率。 */
+  currentMatchGames?: number;
+  /** 共同同队总次数；对局内分析包含当前对局。 */
   games: number;
+  /** 已结束共同对局中的胜场，当前对局不计入。 */
   wins: number;
   winRate: number;
   latestGameAt: number;

@@ -89,7 +89,9 @@ export const partyEvidenceTime = (timestamp: number): string => {
  * 共同对局 + 人数门槛的简短描述，用于弹窗摘要。
  */
 export const partyEvidenceSummary = (group: PartyGroupAnalysis): string =>
-  `共同同队 ${group.games} 场 / ${group.members.length} 人组合门槛 ${group.requiredGames} 场`;
+  group.recentWindowGames === undefined
+    ? `共同同队 ${group.games} 场 / ${group.members.length} 人组合门槛 ${group.requiredGames} 场`
+    : `最近5局同队 ${group.recentWindowGames} 次（含当前） · 历史共同 ${group.historicalGames || 0} 场`;
 
 /**
  * 组合胜率对应的 Naive UI tag type。

@@ -208,7 +208,13 @@ const teamInsight = computed(() => {
             风险 {{ teamInsight.risk.summonerName }} · {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
           <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
-            疑似开黑 {{ teamInsight.groups[0].members.length }}人 · {{ teamInsight.groups[0].games }}场
+            疑似开黑 {{ teamInsight.groups[0].members.length }}人 ·
+            <template v-if="teamInsight.groups[0].recentWindowGames !== undefined">
+              最近5局 {{ teamInsight.groups[0].recentWindowGames }}次
+            </template>
+            <template v-else>
+              历史 {{ teamInsight.groups[0].historicalGames ?? teamInsight.groups[0].games }}场
+            </template>
           </span>
         </div>
       </div>
@@ -471,7 +477,7 @@ const teamInsight = computed(() => {
           </div>
 
           <div>
-            <div class="font-medium mb-1">历史同队组合</div>
+            <div class="font-medium mb-1">开黑组合分析</div>
             <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="duo-stack">
               <DuoGroupCard
                 v-for="group in selectedPlayer.recentAnalysis.partyGroups"
@@ -486,7 +492,13 @@ const teamInsight = computed(() => {
                     <div class="font-medium">{{ partyGroupNames(group) }}</div>
                     <div>{{ partyEvidenceSummary(group) }}</div>
                     <div>
-                      近30天共同 {{ group.recentGames }} 场 · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
+                      <template v-if="group.recentWindowGames !== undefined">
+                        最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同 {{ group.historicalGames || 0 }} 场
+                      </template>
+                      <template v-else>
+                        完整历史共同 {{ group.historicalGames ?? group.games }} 场
+                      </template>
+                      · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
                     </div>
                     <div class="font-medium mt-1">共同同队对局证据</div>
                     <div
@@ -494,20 +506,20 @@ const teamInsight = computed(() => {
                       :key="evidence.gameId"
                       class="text-gray-500"
                     >
-                      {{ partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.gameId }}
+                      {{ evidence.isCurrentMatch ? "当前对局" : partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.isCurrentMatch ? "本局" : evidence.gameId }}
                     </div>
                     <div class="text-gray-500 mt-1">
-                      判定使用的是多人历史对局的 gameId 交集，并逐局确认成员 teamId 相同；不是按个人历史列表长相、英雄、KDA 或单人胜率判断。接口没有官方组队 ID，所以只能表示历史上疑似固定同队。
+                      先以当前对局加最近4场中同队至少3次作为近期初筛，同时保留完整历史算法结果并合并统计；不是按个人历史列表长相、英雄、KDA 或单人胜率判断。接口没有官方组队 ID，所以只能表示疑似固定同队。
                     </div>
                   </div>
                 </template>
               </DuoGroupCard>
             </div>
             <div v-else class="text-gray-500">
-              最近 100 场未发现达到人数门槛的共同同队记录。
+              最近5局未发现同队次数至少3次的组合，完整历史也未发现组合。
             </div>
             <div class="text-gray-500 mt-1">
-              悬停组合标签可查看共同对局 ID 与判定门槛；依据历史同队出现推断，不代表接口提供了官方组队 ID。
+              悬停组合标签可查看最近5局初筛次数与历史共同对局；依据同队出现推断，不代表接口提供了官方组队 ID。
             </div>
           </div>
 

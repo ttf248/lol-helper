@@ -53,6 +53,14 @@ const RECENT_ACTIVITY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MODERATION_TIMEOUT_MS = 2500;
 
+/**
+ * 对局内开黑初筛窗口：当前对局 + 最近 4 场已结束对局。
+ * 同队次数至少 3 次才进入历史分析；历史分析通道仍会独立保留。
+ */
+export const PARTY_RECENT_MATCH_COUNT = 5;
+export const PARTY_RECENT_MIN_TEAM_GAMES = 3;
+const CURRENT_MATCH_SOURCE = "current-match";
+
 export interface NormalizedHistoryParticipant {
   puuid: string;
   summonerId?: number;
@@ -1047,13 +1055,20 @@ const buildOpponentStats = (
  * 「疑似开黑」检测结构层中间结果。
  *
  * 与 `PartyGroupAnalysis` 相比，不依赖举报/黑名单信息（moderationMap），
- * 可被多次复用：例如 `applyTeamAnalysis` 在「先空 moderation 快出结果、
- * 后用真实 moderation 再算一次」的两段式调用中，复用结构层即可。
+ * 先用于最近窗口初筛，再用于候选组合的完整历史统计；举报结果只在
+ * overlay 阶段叠加。
  */
 type StructuralPartyGroup = {
   members: RecentSumInfo[];
   requiredGames: number;
+  /** 结构层总同队次数；对局内结果包含当前对局。 */
   games: number;
+  /** 排除当前对局后的已结束对局次数。 */
+  historicalGames: number;
+  /** 当前对局次数，当前对局结果未知时不参与胜率。 */
+  currentMatchGames: number;
+  /** 初筛窗口内的同队次数，仅在初筛结构上填充。 */
+  recentWindowGames?: number;
   wins: number;
   winRate: number;
   latestGameAt: number;
@@ -1065,27 +1080,36 @@ type StructuralPartyGroup = {
   evidence: PartyEvidence[];
 };
 
-/**
- * 结构层 WeakMap 缓存：外层 key 是 snapshotMap 引用，内层 key 是
- * players 数组引用。当 `loadRecentTeamAnalysis` 内的 friendList /
- * enemyList 在 Pass 1 与 Pass 2 共享同一引用时，Pass 2 直接命中；
- * Pass 3（hydratedSnapshotMap）引用不同，会触发一次 miss 后再次命中。
- *
- * WeakMap 的引用特性保证 snapshotMap 与 players 被 GC 后条目自动回收。
- */
-const partyGroupsStructureCache = new WeakMap<
-  Map<string, PlayerHistorySnapshot>,
-  WeakMap<RecentSumInfo[], StructuralPartyGroup[]>
->();
+interface PartyGroupStructureOptions {
+  /** 只计算已经通过最近窗口初筛的成员集合。 */
+  allowedGroupKeys?: ReadonlySet<string>;
+  /** 结构至少需要多少场；默认沿用人数门槛。 */
+  minimumGames?: number;
+  /** 写入结果的门槛，当前对局初筛固定为 3。 */
+  requiredGames?: number;
+}
+
+const partyGroupKey = (members: RecentSumInfo[]): string =>
+  members
+    .map((member) => member.puuid)
+    .sort()
+    .join("|");
 
 const buildPartyGroupsStructure = (
   players: RecentSumInfo[],
   snapshots: Map<string, PlayerHistorySnapshot>,
+  options: PartyGroupStructureOptions = {},
 ): StructuralPartyGroup[] => {
   const structures: StructuralPartyGroup[] = [];
   const now = Date.now();
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
+      if (
+        options.allowedGroupKeys &&
+        !options.allowedGroupKeys.has(partyGroupKey(group))
+      ) {
+        continue;
+      }
       const groupSnapshots = group
         .map((player) => snapshots.get(player.puuid))
         .filter(
@@ -1101,6 +1125,8 @@ const buildPartyGroupsStructure = (
       }
 
       let games = 0;
+      let historicalGames = 0;
+      let currentMatchGames = 0;
       let wins = 0;
       let latestGameAt = 0;
       let recentGames = 0;
@@ -1128,10 +1154,17 @@ const buildPartyGroupsStructure = (
           continue;
         }
         games += 1;
-        wins += participants[0]!.win ? 1 : 0;
+        const isCurrentMatch = game.source === CURRENT_MATCH_SOURCE;
+        if (isCurrentMatch) {
+          currentMatchGames += 1;
+        } else {
+          historicalGames += 1;
+          wins += participants[0]!.win ? 1 : 0;
+        }
         evidence.push({
           gameId: game.gameId,
           gameCreation: game.gameCreation,
+          isCurrentMatch,
         });
         latestGameAt = Math.max(latestGameAt, game.gameCreation);
         if (game.gameCreation >= now - RECENT_ACTIVITY_DAYS * DAY_MS) {
@@ -1139,12 +1172,14 @@ const buildPartyGroupsStructure = (
         }
       }
 
-      // 人数越多，偶然同队的概率越高。两人两场可以作为候选，
-      // 三/四/五人组合分别至少需要三/四/五场完全相同的共同同队对局。
-      // 这样不会因为一两场交集就把整队误报成一个开黑小队。
-      const requiredGames = Math.max(2, Math.min(group.length, 5));
-      if (games < requiredGames) continue;
-      const winRate = roundRate(wins, games) ?? 0;
+      // 对局内的候选门槛由调用方明确传入：当前对局 + 最近 4 场中，
+      // 同队次数至少 3 次。历史阶段只负责丰富近期候选；旧的完整历史
+      // 通道由调用方另外执行并在最后合并。
+      const requiredGames =
+        options.requiredGames ?? Math.max(2, Math.min(group.length, 5));
+      const minimumGames = options.minimumGames ?? requiredGames;
+      if (games < minimumGames) continue;
+      const winRate = roundRate(wins, historicalGames) ?? 0;
       const stabilityScore = Math.round(
         Math.min(games / 10, 1) * 40 +
           Math.min(recentGames / 5, 1) * 30 +
@@ -1154,13 +1189,15 @@ const buildPartyGroupsStructure = (
         members: group,
         requiredGames,
         games,
+        historicalGames,
+        currentMatchGames,
         wins,
         winRate,
         latestGameAt,
         recentGames,
         stabilityScore,
         highWinRateAlert:
-          games >= 5 && winRate >= 65 && stabilityScore >= 55,
+          historicalGames >= 5 && winRate >= 65 && stabilityScore >= 55,
         evidence: evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
@@ -1175,22 +1212,6 @@ const buildPartyGroupsStructure = (
       right.stabilityScore - left.stabilityScore ||
       right.games - left.games,
   );
-};
-
-const getCachedPartyGroupsStructure = (
-  players: RecentSumInfo[],
-  snapshots: Map<string, PlayerHistorySnapshot>,
-): StructuralPartyGroup[] => {
-  let perSnapshot = partyGroupsStructureCache.get(snapshots);
-  if (!perSnapshot) {
-    perSnapshot = new WeakMap();
-    partyGroupsStructureCache.set(snapshots, perSnapshot);
-  }
-  const cached = perSnapshot.get(players);
-  if (cached) return cached;
-  const fresh = buildPartyGroupsStructure(players, snapshots);
-  perSnapshot.set(players, fresh);
-  return fresh;
 };
 
 /**
@@ -1214,9 +1235,11 @@ const applyPartyGroupOverlay = (
   const moderationAvailable = members.every(
     (member) => member.moderation?.available === true,
   );
+  const historicalGames = structure.historicalGames;
+  const recentWindowGames = structure.recentWindowGames;
   const confidenceScore = Math.round(
-    Math.min(structure.games / 10, 1) * 70 +
-      Math.min(structure.recentGames / 5, 1) * 20 +
+    Math.min((recentWindowGames ?? historicalGames) / PARTY_RECENT_MATCH_COUNT, 1) * 50 +
+      Math.min(historicalGames / 10, 1) * 40 +
       (moderationAvailable ? 10 : 0),
   );
   const lastActiveDays = structure.latestGameAt
@@ -1225,6 +1248,9 @@ const applyPartyGroupOverlay = (
   return {
     members,
     requiredGames: structure.requiredGames,
+    recentWindowGames,
+    historicalGames,
+    currentMatchGames: structure.currentMatchGames,
     games: structure.games,
     wins: structure.wins,
     winRate: structure.winRate,
@@ -1235,16 +1261,194 @@ const applyPartyGroupOverlay = (
     stabilityLevel: confidenceLevel(structure.stabilityScore),
     highWinRateAlert: structure.highWinRateAlert,
     confidence: confidenceInfo(confidenceScore, [
-      `共同对局 ${structure.games} 场`,
-      `${structure.members.length}人组合门槛 ${structure.requiredGames} 场共同同队`,
+      ...(recentWindowGames === undefined
+        ? [`共同对局 ${structure.games} 场`]
+        : [
+            `最近${PARTY_RECENT_MATCH_COUNT}局共同同队 ${recentWindowGames} 次（含当前对局）`,
+            `初筛门槛：同队次数至少 3 次`,
+          ]),
+      `历史共同同队 ${historicalGames} 场`,
       `近${RECENT_ACTIVITY_DAYS}天共同对局 ${structure.recentGames} 场`,
-      "组队关系由历史同队记录推断",
+      "组队关系由最近窗口初筛，再由历史同队记录补充",
     ]),
     moderationAvailable,
     blacklistedMembers,
     reportedMembers,
     evidence: structure.evidence,
   };
+};
+
+const toCurrentMatchParticipant = (
+  player: RecentSumInfo,
+  teamId: number,
+): NormalizedHistoryParticipant => ({
+  puuid: player.puuid,
+  summonerId: player.summonerId,
+  summonerName: player.summonerName,
+  teamId,
+  championId: player.champId,
+  position: "UNKNOWN",
+  kills: 0,
+  deaths: 0,
+  assists: 0,
+  // 当前对局尚未结算；结构分析会通过 source 排除它的胜负数据。
+  win: false,
+});
+
+/** 把当前阵容变成只用于关系分析的临时完整对局。 */
+const buildCurrentMatchGame = (
+  friendList: RecentSumInfo[],
+  enemyList: RecentSumInfo[],
+  queueId: number,
+  currentGameId = 0,
+): NormalizedHistoryGame | null => {
+  const participants = [
+    ...friendList.map((player) => toCurrentMatchParticipant(player, 100)),
+    ...enemyList.map((player) => toCurrentMatchParticipant(player, 200)),
+  ].filter((participant) => participant.puuid);
+  if (participants.length === 0) return null;
+
+  return {
+    // session gameId 缺失时使用 0；source 仍能保证它与历史数据区分。
+    gameId:
+      Number.isFinite(currentGameId) && currentGameId > 0 ? currentGameId : 0,
+    gameCreation: Date.now(),
+    queueId,
+    participants,
+    source: CURRENT_MATCH_SOURCE,
+  };
+};
+
+const isCurrentMatchGame = (
+  game: NormalizedHistoryGame,
+  currentGame: NormalizedHistoryGame,
+): boolean =>
+  game.source === CURRENT_MATCH_SOURCE ||
+  (currentGame.gameId > 0 && game.gameId === currentGame.gameId);
+
+/** 给完整历史快照补入当前对局，但不改变缓存中的原始快照。 */
+const appendCurrentMatchToSnapshots = (
+  snapshots: Map<string, PlayerHistorySnapshot>,
+  players: RecentSumInfo[],
+  currentGame: NormalizedHistoryGame,
+): Map<string, PlayerHistorySnapshot> => {
+  const result = new Map<string, PlayerHistorySnapshot>();
+  for (const player of players) {
+    const snapshot = snapshots.get(player.puuid);
+    if (!snapshot) continue;
+    const games = new Map(
+      Array.from(snapshot.games.entries()).filter(
+        ([, game]) => !isCurrentMatchGame(game, currentGame),
+      ),
+    );
+    games.set(currentGame.gameId, currentGame);
+    result.set(player.puuid, { ...snapshot, games });
+  }
+  return result;
+};
+
+/**
+ * 当前对局初筛只取每名玩家最近 4 场已结束对局，再把当前对局放到窗口中。
+ * 这样历史缓存即使有 100/500 场，也不会让远期同队记录越过本局初筛。
+ */
+const buildRecentPartySnapshots = (
+  players: RecentSumInfo[],
+  snapshots: Map<string, PlayerHistorySnapshot>,
+  currentGame: NormalizedHistoryGame,
+): Map<string, PlayerHistorySnapshot> => {
+  const result = new Map<string, PlayerHistorySnapshot>();
+  const historicalLimit = PARTY_RECENT_MATCH_COUNT - 1;
+  for (const player of players) {
+    const snapshot = snapshots.get(player.puuid);
+    if (!snapshot) continue;
+    const recentHistory = Array.from(snapshot.games.values())
+      .filter((game) => !isCurrentMatchGame(game, currentGame))
+      .sort(
+        (left, right) =>
+          right.gameCreation - left.gameCreation || right.gameId - left.gameId,
+      )
+      .slice(0, historicalLimit);
+    const games = new Map<number, NormalizedHistoryGame>([
+      [currentGame.gameId, currentGame],
+      ...recentHistory.map((game) => [game.gameId, game] as const),
+    ]);
+    result.set(player.puuid, { ...snapshot, games });
+  }
+  return result;
+};
+
+/**
+ * 对局内开黑分析的双通道入口：
+ * 1. 当前对局 + 最近 4 场，按同队次数至少 3 次生成近期候选；
+ * 2. 同时运行旧的完整历史组合算法，最后按成员集合合并两边结果。
+ */
+const buildCurrentTeamPartyGroups = (
+  team: RecentSumInfo[],
+  snapshots: Map<string, PlayerHistorySnapshot>,
+  currentGame: NormalizedHistoryGame,
+  moderationMap: Map<string, PlayerModerationInfo>,
+): PartyGroupAnalysis[] => {
+  // 保留原有完整历史算法：它按 2/3/4/5 人组合的历史共同同队
+  // 门槛独立产出结果，不能因为最近窗口存在而跳过。
+  const legacyStructures = buildPartyGroupsStructure(team, snapshots);
+  const mergedStructures = new Map<string, StructuralPartyGroup>(
+    legacyStructures.map((group) => [partyGroupKey(group.members), group]),
+  );
+
+  const recentSnapshots = buildRecentPartySnapshots(team, snapshots, currentGame);
+  const recentStructures = buildPartyGroupsStructure(team, recentSnapshots, {
+    minimumGames: PARTY_RECENT_MIN_TEAM_GAMES,
+    requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
+  });
+  if (recentStructures.length > 0) {
+    const candidateKeys = new Set(
+      recentStructures.map((group) => partyGroupKey(group.members)),
+    );
+    const historicalSnapshots = appendCurrentMatchToSnapshots(
+      snapshots,
+      team,
+      currentGame,
+    );
+    const historicalStructures = buildPartyGroupsStructure(
+      team,
+      historicalSnapshots,
+      {
+        allowedGroupKeys: candidateKeys,
+        // 近期候选已经完成判定，这里只负责补全完整历史统计，允许
+        // 当前局之外历史样本较少的组合保留下来。
+        minimumGames: 1,
+        requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
+      },
+    );
+    const historicalByKey = new Map(
+      historicalStructures.map((group) => [partyGroupKey(group.members), group]),
+    );
+
+    // 近期候选覆盖同一个历史组合时，以“完整历史 + 当前局”的结果为
+    // 主体，并把最近窗口次数合并进去，避免把两套证据重复累加。
+    for (const recentStructure of recentStructures) {
+      const key = partyGroupKey(recentStructure.members);
+      const historicalStructure = historicalByKey.get(key);
+      mergedStructures.set(key, {
+        ...(historicalStructure || recentStructure),
+        requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
+        recentWindowGames: recentStructure.games,
+      });
+    }
+  }
+
+  const now = Date.now();
+  return Array.from(mergedStructures.values())
+    .map((structure) => applyPartyGroupOverlay(structure, moderationMap, now))
+    .sort(
+      (left, right) =>
+        Number(right.recentWindowGames !== undefined) -
+          Number(left.recentWindowGames !== undefined) ||
+        Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
+        (right.recentWindowGames || 0) - (left.recentWindowGames || 0) ||
+        right.games - left.games ||
+        right.stabilityScore - left.stabilityScore,
+    );
 };
 
 /**
@@ -1925,20 +2129,32 @@ const applyTeamAnalysis = (
   enemyList: RecentSumInfo[],
   snapshotMap: Map<string, PlayerHistorySnapshot>,
   moderationMap: Map<string, PlayerModerationInfo>,
+  queueId: number,
+  currentGameId = 0,
 ) => {
   const now = Date.now();
+  const currentGame = buildCurrentMatchGame(
+    friendList,
+    enemyList,
+    queueId,
+    currentGameId,
+  );
   for (const [team, opposingTeam] of [
     [friendList, enemyList],
     [enemyList, friendList],
   ] as const) {
-    // 结构层使用 WeakMap 缓存：Pass 1 / Pass 2 共享同一 snapshotMap
-    // 引用时第二次命中，跳过组合枚举；Pass 3 (hydrated snapshotMap)
-    // 引用不同会重新计算一次。overlay 是 O(groups × members)，
-    // 远小于结构层 O(2^N × games)。
-    const structures = getCachedPartyGroupsStructure(team, snapshotMap);
-    const groups = structures.map((structure) =>
-      applyPartyGroupOverlay(structure, moderationMap, now),
-    );
+    // 当前对局先做“当前 + 最近 4 场”的严格初筛，只有命中的组合
+    // 才会进入完整历史统计；这样远期偶然同队不会直接污染本局判断。
+    const groups = currentGame
+      ? buildCurrentTeamPartyGroups(
+          team,
+          snapshotMap,
+          currentGame,
+          moderationMap,
+        )
+      : buildPartyGroupsStructure(team, snapshotMap).map((structure) =>
+          applyPartyGroupOverlay(structure, moderationMap, now),
+        );
     for (const player of team) {
       const snapshot = snapshotMap.get(player.puuid);
       if (!snapshot || snapshot.games.size === 0) continue;
@@ -1959,6 +2175,7 @@ export const loadRecentTeamAnalysis = async (
   friendList: RecentSumInfo[],
   enemyList: RecentSumInfo[],
   queueId: number,
+  currentGameId = 0,
   onProgress?: (progress: RecentAnalysisProgress) => void,
 ): Promise<RecentNetworkAnalysis> => {
   const players = Array.from(
@@ -2038,24 +2255,26 @@ export const loadRecentTeamAnalysis = async (
     players.map((player, index) => [player.puuid, snapshots[index]]),
   );
 
-  // 第一阶段只使用缓存/首屏的最近 10 场，立刻把个人分析交付给 UI。
-  // 先使用空的举报结果，避免外部举报服务拖慢首屏。
+  // 第一阶段先基于当前对局 + 最近 4 场完成开黑初筛，个人统计仍沿用
+  // 缓存中的近期样本；先使用空的举报结果，避免外部举报服务拖慢首屏。
   applyTeamAnalysis(
     friendList,
     enemyList,
     snapshotMap,
     new Map(players.map((player) => [player.puuid, emptyModeration()])),
+    queueId,
+    currentGameId,
   );
   logger.info({
     tag: "recent.analysis",
-    message: "近期分析阶段：最近 10 场完成",
+    message: "近期分析阶段：最近 5 局开黑初筛完成",
     context: { stage: "recent", queue_id: queueId, players: players.length },
   });
   onProgress?.({
     stage: "recent",
     completed: players.length,
     total: players.length,
-    message: "最近 10 场分析已完成",
+    message: "最近 5 局开黑初筛已完成，个人数据继续使用近期战绩",
   });
 
   const hydrationEntries = players
@@ -2123,12 +2342,14 @@ export const loadRecentTeamAnalysis = async (
   );
 
   const moderationMap = await moderationPromise;
-  // 举报记录完成后只刷新已有的最近 10 场结果，不影响历史补全任务。
+  // 举报记录完成后刷新最近 5 局初筛和已有的个人结果，不影响历史补全任务。
   applyTeamAnalysis(
     friendList,
     enemyList,
     snapshotMap,
     moderationMap,
+    queueId,
+    currentGameId,
   );
 
   if (hydrationEntries.length === 0) {
@@ -2192,6 +2413,8 @@ export const loadRecentTeamAnalysis = async (
     enemyList,
     hydratedSnapshotMap,
     moderationMap,
+    queueId,
+    currentGameId,
   );
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
   logger.info({

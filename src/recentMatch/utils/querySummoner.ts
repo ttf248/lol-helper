@@ -576,7 +576,12 @@ class QuerySummoner {
       total: this.getExpectedTeamSize(this.matchSession) * 2,
       message: `本局玩家读取完成（${friendList.length + enemyList.length} 人）`,
     });
-    return {friendList, enemyList,queueId:this.queueId}
+    return {
+      friendList,
+      enemyList,
+      queueId: this.queueId,
+      currentGameId: Number(this.matchSession.gameData.gameId) || 0,
+    }
   }
   // 获取召唤师Icon
   public getIconAlias = (summoner:TeamData) => {
