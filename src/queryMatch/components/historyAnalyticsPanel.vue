@@ -44,6 +44,9 @@ import { useSummonerNavigation } from "@/queryMatch/composables/useSummonerNavig
 import type { PartyMember, RecentNetworkNode } from "@/recentMatch/utils/queryTypes";
 
 type PartyRankingMode = "frequency" | "winRate";
+type HistoryWindowSize = 20 | 50 | 100 | 500;
+
+const HISTORY_WINDOW_SIZES: readonly HistoryWindowSize[] = [20, 50, 100, 500];
 
 const POSITION_LABEL_CACHE = new Map<string, string>();
 const positionName = (position: string) => {
@@ -68,7 +71,7 @@ const selectedMode = ref<MatchModeKey>("match");
 const partyRankingMode = ref<PartyRankingMode>("frequency");
 const analysis = ref<PlayerRecentAnalysis | null>(null);
 const snapshot = ref<HistoryAnalysisSnapshot | null>(null);
-const windowSize = ref<20 | 50 | 100>(50);
+const windowSize = ref<HistoryWindowSize>(50);
 const selectedResult = ref<HistoryResultFilter>("all");
 const snapshotLoading = ref(false);
 const analysisProgress = ref<PlayerAnalysisProgress | null>(null);
@@ -91,6 +94,40 @@ const cachedPlayerSummary = ref<CachedPlayerSummary>({
 });
 let databaseRequestId = 0;
 let snapshotRequestId = 0;
+
+const availableHistoryGames = computed<number | null>(() => {
+  if (
+    cachedPlayerSummary.value.modeKey === selectedMode.value &&
+    cachedPlayerSummary.value.matches > 0
+  ) {
+    return cachedPlayerSummary.value.matches;
+  }
+  const analysisGames = analysis.value?.actualGames || 0;
+  return analysisGames > 0 ? analysisGames : null;
+});
+
+const windowOptionLabel = (size: HistoryWindowSize) => {
+  if (size !== 500) return `${size} 场`;
+  const available = availableHistoryGames.value;
+  return available !== null && available < size
+    ? `500 场（实际 ${available} 场）`
+    : "500 场";
+};
+
+const selectedWindowHint = computed(() => {
+  if (windowSize.value !== 500) return "";
+  const currentSnapshot = snapshot.value;
+  const actualGames =
+    currentSnapshot?.windowSize === 500
+      ? currentSnapshot.actualGames
+      : availableHistoryGames.value;
+  if (actualGames === null || actualGames === undefined) {
+    return "将读取最多 500 场";
+  }
+  return actualGames < 500
+    ? `当前条件实际 ${actualGames} 场`
+    : "当前条件将读取最近 500 场";
+});
 
 const { navigate } = useSummonerNavigation();
 // 关系图节点保留了与 PartyMember 相同的玩家身份字段，直接复用跳转入口。
@@ -197,10 +234,14 @@ const trendClass = (win: boolean) => (win ? "trend-point--win" : "trend-point--l
 const trendTitle = (point: HistoryAnalysisSnapshot["trend"][number]) =>
   `${point.win ? "胜" : "负"} · ${championName(point.championId)} · ${positionName(point.position)}`;
 const selectWindow = (size: number) => {
-  if (size === 20 || size === 50 || size === 100) {
+  if (size === 20 || size === 50 || size === 100 || size === 500) {
     windowSize.value = size;
   }
 };
+const displayWindowSize = (current: HistoryAnalysisSnapshot) =>
+  current.actualGames < current.windowSize
+    ? current.actualGames
+    : current.windowSize;
 const selectResult = (result: string) => {
   if (result === "all" || result === "win" || result === "loss") {
     selectedResult.value = result;
@@ -439,14 +480,17 @@ onMounted(() => {
       <span class="control-label window-label">窗口</span>
       <n-button-group size="small">
         <n-button
-          v-for="size in [20, 50, 100]"
+          v-for="size in HISTORY_WINDOW_SIZES"
           :key="size"
           :type="windowSize === size ? 'primary' : 'default'"
           @click="selectWindow(size)"
         >
-          {{ size }} 场
+          {{ windowOptionLabel(size) }}
         </n-button>
       </n-button-group>
+      <span v-if="selectedWindowHint" class="window-hint">
+        {{ selectedWindowHint }}
+      </span>
       <span class="control-label window-label">结果</span>
       <n-button-group size="small">
         <n-button
@@ -509,7 +553,7 @@ onMounted(() => {
         <div v-if="snapshot" class="decision-dashboard">
           <div class="dashboard-summary">
             <div class="summary-main">
-              <div class="summary-eyebrow">复盘结论 · 最近 {{ snapshot.windowSize }} 场</div>
+              <div class="summary-eyebrow">复盘结论 · 最近 {{ displayWindowSize(snapshot) }} 场</div>
               <div class="summary-title">
                 {{ snapshot.winRate === null ? "暂无有效样本" : `胜率 ${formatRate(snapshot.winRate)}` }}
               </div>
@@ -951,6 +995,12 @@ onMounted(() => {
 
 .window-label {
   margin-left: 0.35rem;
+}
+
+.window-hint {
+  color: #64748b;
+  font-size: 0.68rem;
+  white-space: nowrap;
 }
 
 .decision-dashboard {
