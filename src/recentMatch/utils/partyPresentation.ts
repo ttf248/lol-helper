@@ -38,3 +38,22 @@ export const selectPartyGroups = (
   }));
   return visible.sort((a, b) => comparePartyGroups(a, b, options.mode)).slice(0, options.limit ?? Infinity);
 };
+
+/**
+ * 对局总览只显示互不重叠的主小组：先去掉相同证据的子组，再按近期性和
+ * 证据强度选择。成员已进入一个主小组后不再被另一张卡重复占用。
+ */
+export const selectPrimaryPartyGroups = (
+  groups: PartyGroupAnalysis[],
+  limit = 2,
+): PartyGroupAnalysis[] => {
+  const selected: PartyGroupAnalysis[] = [];
+  const occupied = new Set<string>();
+  for (const group of selectPartyGroups(groups)) {
+    if (group.members.some((member) => occupied.has(member.puuid))) continue;
+    selected.push(group);
+    group.members.forEach((member) => occupied.add(member.puuid));
+    if (selected.length >= limit) break;
+  }
+  return selected;
+};

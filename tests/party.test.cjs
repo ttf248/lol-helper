@@ -26,7 +26,7 @@ const makeAnalytics = (services = {}) => createLoader({
   'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage', 'applyTeamAnalysis', 'buildTeammateSynergy'] })(analyticsPath);
 const analytics = makeAnalytics();
 const scoring = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/partyScoring.ts');
-const { selectPartyGroups } = createLoader()('src/recentMatch/utils/partyPresentation.ts');
+const { selectPartyGroups, selectPrimaryPartyGroups } = createLoader()('src/recentMatch/utils/partyPresentation.ts');
 
 test('recent evidence wins display priority, identical subgroups fold, independent evidence survives', () => {
   const group = (ids, games, kind = 'historical') => ({
@@ -43,6 +43,10 @@ test('recent evidence wins display priority, identical subgroups fold, independe
   assert.equal(selectPartyGroups([child, parent, independent]).includes(independent), true);
   assert.equal(selectPartyGroups([child, parent], { showSubgroups: true }).length, 2);
   assert.equal(selectPartyGroups([parent, independent], { mode: 'frequency' })[0], independent);
+  const secondParty = group(['f', 'g'], [20, 21], 'recent');
+  const overlap = group(['d', 'f'], [30, 31], 'recent');
+  assert.deepEqual(selectPrimaryPartyGroups([child, parent, independent, recent, secondParty, overlap]), [recent, secondParty]);
+  assert.deepEqual(selectPrimaryPartyGroups([recent, secondParty]), [recent, secondParty]);
 });
 const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
 const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, recentHistoryVerified: true, source: 'test', sourceEndpoints: [] });

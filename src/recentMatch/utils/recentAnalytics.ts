@@ -7,7 +7,7 @@ import { Games } from "@/lcu/types/queryMatchLcuTypes";
 import { GamesBySgp } from "@/lcu/types/queryMatchSgpGameTypes";
 import BlackList from "@/main/views/record/blackList";
 import { Hater } from "@/main/views/record/blackListTypes";
-import { cacheHistory, getCachedHistory, getCachedPlayerSummary } from "@/recentMatch/utils/databaseCache";
+import { cacheHistory, getCachedHistory, getCachedPlayerSummary, getCachedTeamHistory } from "@/recentMatch/utils/databaseCache";
 import { isModeQueue, MatchModeKey, modeForQueue } from "@/recentMatch/utils/matchMode";
 import {
   ChampionRecentStats,
@@ -1353,9 +1353,10 @@ const buildCurrentTeamPartyGroups = (
   snapshots: Map<string, PlayerHistorySnapshot>,
   currentGame: NormalizedHistoryGame,
   moderationMap: Map<string, PlayerModerationInfo>,
+  localTeamEvidence?: Map<number, NormalizedHistoryGame>,
 ): PartyGroupAnalysis[] => {
   const recentSnapshots = buildRecentPartySnapshots(team, snapshots, currentGame);
-  const historical = new Map(Array.from(buildHistoryEvidence(snapshots))
+  const historical = new Map(Array.from(localTeamEvidence || buildHistoryEvidence(snapshots))
     .filter(([, game]) => !isCurrentMatchGame(game, currentGame)));
   const structures = buildPartyGroupsStructure(team, snapshots, {
     minimumGames: 2, evidence: historical,
@@ -2026,8 +2027,9 @@ const getTeamPartyCoverage = (
   team: RecentSumInfo[],
   snapshots: Map<string, PlayerHistorySnapshot>,
   currentGame: NormalizedHistoryGame | null,
+  localTeamEvidence?: Map<number, NormalizedHistoryGame>,
 ): NonNullable<PlayerRecentAnalysis["partyCoverage"]> => {
-  const evidence = buildHistoryEvidence(snapshots);
+  const evidence = localTeamEvidence || buildHistoryEvidence(snapshots);
   const ready = team.length > 0 && team.every((player) => {
     const snapshot = snapshots.get(player.puuid);
     if (!snapshot?.recentHistoryVerified) return false;
@@ -2076,6 +2078,7 @@ const applyTeamAnalysis = (
   moderationMap: Map<string, PlayerModerationInfo>,
   queueId: number,
   currentGameId = 0,
+  teamEvidence?: readonly [Map<number, NormalizedHistoryGame>, Map<number, NormalizedHistoryGame>],
 ) => {
   const now = Date.now();
   const key = JSON.stringify([queueId, currentGameId, Math.floor(now / 60_000),
@@ -2095,11 +2098,11 @@ const applyTeamAnalysis = (
     queueId,
     currentGameId,
   );
-  for (const [team, opposingTeam] of [
-    [friendList, enemyList],
-    [enemyList, friendList],
+  for (const [team, opposingTeam, localEvidence] of [
+    [friendList, enemyList, teamEvidence?.[0]],
+    [enemyList, friendList, teamEvidence?.[1]],
   ] as const) {
-    const partyCoverage = getTeamPartyCoverage(team, snapshotMap, currentGame);
+    const partyCoverage = getTeamPartyCoverage(team, snapshotMap, currentGame, localEvidence);
     // 近期候选和历史关系独立保留，覆盖不足时明确标注，不能据此否定组队。
     const groups = currentGame
       ? buildCurrentTeamPartyGroups(
@@ -2107,6 +2110,7 @@ const applyTeamAnalysis = (
           snapshotMap,
           currentGame,
           moderationMap,
+          localEvidence,
         )
       : buildPartyGroupsStructure(team, snapshotMap).map((structure) =>
           applyPartyGroupOverlay(structure, moderationMap, now),
@@ -2128,6 +2132,19 @@ const applyTeamAnalysis = (
     }
   }
   teamAnalysisCache.set(snapshotMap, { key, analyses });
+};
+
+/** 当前一边队伍统一从本地 PostgreSQL 取证；个人历史仍负责最近窗口和战绩。 */
+const loadTeamPartyEvidence = async (
+  team: RecentSumInfo[],
+  queueId: number,
+): Promise<Map<number, NormalizedHistoryGame>> => {
+  const games = await getCachedTeamHistory({
+    puuids: team.map((player) => player.puuid),
+    modeKey: modeForQueue(queueId),
+    limit: HISTORY_CACHE_PAGE_SIZE,
+  });
+  return new Map(games.map((game) => [game.gameId, game]));
 };
 
 export const loadRecentTeamAnalysis = async (
@@ -2197,6 +2214,10 @@ export const loadRecentTeamAnalysis = async (
 
   // 举报记录不是首屏最近 10 场分析的前置条件，与缓存读取并行执行。
   const moderationPromise = loadModerationMap(players);
+  const teamEvidencePromise = Promise.all([
+    loadTeamPartyEvidence(friendList, queueId),
+    loadTeamPartyEvidence(enemyList, queueId),
+  ] as const);
   const snapshots = await mapWithConcurrency(
     players,
     HISTORY_CONCURRENCY,
@@ -2213,6 +2234,7 @@ export const loadRecentTeamAnalysis = async (
   const snapshotMap = new Map(
     players.map((player, index) => [player.puuid, snapshots[index]]),
   );
+  const initialTeamEvidence = await teamEvidencePromise;
 
   // 第一阶段先基于当前对局 + 最近 4 场完成开黑初筛，个人统计仍沿用
   // 缓存中的近期样本；先使用空的举报结果，避免外部举报服务拖慢首屏。
@@ -2223,6 +2245,7 @@ export const loadRecentTeamAnalysis = async (
     new Map(players.map((player) => [player.puuid, emptyModeration()])),
     queueId,
     currentGameId,
+    initialTeamEvidence,
   );
   logger.info({
     tag: "recent.analysis",
@@ -2309,6 +2332,7 @@ export const loadRecentTeamAnalysis = async (
     moderationMap,
     queueId,
     currentGameId,
+    initialTeamEvidence,
   );
 
   if (hydrationEntries.length === 0) {
@@ -2364,6 +2388,10 @@ export const loadRecentTeamAnalysis = async (
     players.map((player, index) => [player.puuid, hydratedSnapshots[index]]),
   );
   buildHistoryEvidence(hydratedSnapshotMap, snapshotMap);
+  const hydratedTeamEvidence = await Promise.all([
+    loadTeamPartyEvidence(friendList, queueId),
+    loadTeamPartyEvidence(enemyList, queueId),
+  ] as const);
   applyTeamAnalysis(
     friendList,
     enemyList,
@@ -2371,6 +2399,7 @@ export const loadRecentTeamAnalysis = async (
     moderationMap,
     queueId,
     currentGameId,
+    hydratedTeamEvidence,
   );
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
   logger.info({

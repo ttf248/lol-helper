@@ -96,6 +96,28 @@ export const partyEvidenceSummary = (group: PartyGroupAnalysis): string =>
 export const partyRelationLabel = (group: PartyGroupAnalysis): string =>
   group.relationKind === "recent" ? "近期疑似组队" : "历史同队关系";
 
+const partySizeLabel = (size: number): string =>
+  ({ 2: "双人", 3: "三人", 4: "四人", 5: "五人" }[size] || `${size}人`);
+
+/** 对局总览专用名称：按阵营和序号标识，避免把成员组合误读为多支队伍。 */
+export const partyGroupTitle = (
+  group: PartyGroupAnalysis,
+  teamLabel: string,
+  ordinal: number,
+): string => `${teamLabel}${group.relationKind === "recent" ? "近期" : "历史"}同队小组 ${"①②③④⑤".charAt(ordinal - 1) || ordinal}`;
+
+export const partyGroupKindLabel = (group: PartyGroupAnalysis): string =>
+  `${partySizeLabel(group.members.length)}组队`;
+
+export const partyGroupTeammates = (
+  group: PartyGroupAnalysis,
+  selfPuuid?: string,
+): string =>
+  group.members
+    .filter((member) => member.puuid !== selfPuuid)
+    .map((member) => member.summonerName?.trim() || "未知玩家")
+    .join("、");
+
 /**
  * 组合胜率对应的 Naive UI tag type。
  *   ≥65% → success（绿）

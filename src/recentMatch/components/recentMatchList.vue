@@ -10,16 +10,15 @@ import {
   RecentMatchLoadingState,
   RecentSumInfo,
 } from "@/recentMatch/utils/queryTypes";
-import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
 import {
   confidenceLabel,
   formatRate,
-  partyEvidenceSummary,
-  partyEvidenceTime,
   partyGroupNames,
-  partyRelationLabel,
+  partyGroupKindLabel,
+  partyGroupTeammates,
+  partyGroupTitle,
 } from "@/recentMatch/utils/partyDisplay";
-import { selectPartyGroups } from "@/recentMatch/utils/partyPresentation";
+import { selectPrimaryPartyGroups } from "@/recentMatch/utils/partyPresentation";
 import {
   championName as championNameShared,
   historyStatusLabel as initialStatusLabel,
@@ -46,10 +45,6 @@ const emits = defineEmits<{
 }>();
 
 const selectedPuuid = ref<string | null>(null);
-const showPartySubgroups = ref(false);
-const visiblePartyGroups = computed(() => selectPartyGroups(
-  selectedPlayer.value?.recentAnalysis?.partyGroups || [], { showSubgroups: showPartySubgroups.value },
-));
 
 const selectedPlayer = computed(() =>
   sumList.find((player) => player.puuid === selectedPuuid.value) || null,
@@ -142,8 +137,30 @@ const teamGroups = computed(() => {
       if (!previous || group.games > previous.games) groupMap.set(key, group);
     }
   }
-  return selectPartyGroups(Array.from(groupMap.values()), { limit: 2 });
+  return selectPrimaryPartyGroups(Array.from(groupMap.values()));
 });
+
+const teamPartyGroups = computed(() =>
+  teamGroups.value.map((group, index) => ({
+    group,
+    ordinal: index + 1,
+    title: partyGroupTitle(group, isFri ? "友方" : "敌方", index + 1),
+    kind: partyGroupKindLabel(group),
+  })),
+);
+
+const teamGroupByPuuid = computed(() => {
+  const result = new Map<string, (typeof teamPartyGroups.value)[number]>();
+  for (const party of teamPartyGroups.value) {
+    party.group.members.forEach((member) => result.set(member.puuid, party));
+  }
+  return result;
+});
+
+const groupForPlayer = (puuid: string) => teamGroupByPuuid.value.get(puuid);
+const selectedPlayerGroup = computed(() =>
+  selectedPlayer.value ? groupForPlayer(selectedPlayer.value.puuid) : undefined,
+);
 
 const teamInsight = computed(() => {
   const analyzed = analyzedPlayers.value;
@@ -207,7 +224,7 @@ const teamInsight = computed(() => {
             风险 {{ teamInsight.risk.summonerName }} · {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
           <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
-            {{ partyRelationLabel(teamInsight.groups[0]) }} {{ teamInsight.groups[0].members.length }}人 ·
+            已识别 {{ teamPartyGroups.length }} 个同队小组 ·
             <template v-if="teamInsight.groups[0].recentWindowGames !== undefined">
               当前模式最近5局 {{ teamInsight.groups[0].recentWindowGames }}次
             </template>
@@ -217,6 +234,44 @@ const teamInsight = computed(() => {
           </span>
         </div>
       </div>
+      <section v-if="teamPartyGroups.length" class="team-party-summary" :aria-label="`${isFri ? '友方' : '敌方'}同队小组`">
+        <div class="team-party-summary-header">
+          <div>
+            <div class="team-party-summary-title">{{ isFri ? "友方" : "敌方" }}同队小组</div>
+            <div class="team-party-summary-note">成员只归入一个主小组；依据本地历史共同同队记录推断。</div>
+          </div>
+          <span class="team-party-summary-count">{{ teamPartyGroups.length }} 组</span>
+        </div>
+        <div class="team-party-cards">
+          <article v-for="party in teamPartyGroups" :key="party.title" class="team-party-card">
+            <div class="team-party-card-heading">
+              <strong>{{ party.title }}</strong>
+              <n-tag size="tiny" :bordered="false" :type="party.group.relationKind === 'recent' ? 'success' : 'default'">
+                {{ party.kind }}
+              </n-tag>
+            </div>
+            <div class="team-party-members" :aria-label="`${party.title}成员`">
+              <button
+                v-for="member in party.group.members"
+                :key="member.puuid"
+                type="button"
+                class="team-party-member"
+                :title="`查看 ${member.summonerName} 的个人分析`"
+                @click="toggleAnalysis(member.puuid)"
+              >{{ member.summonerName }}</button>
+            </div>
+            <div class="team-party-evidence">
+              <template v-if="party.group.recentWindowGames !== undefined">
+                当前模式最近5局同队 {{ party.group.recentWindowGames }} 次（含本局）
+              </template>
+              <template v-else>
+                已加载历史共同同队 {{ party.group.historicalGames ?? party.group.games }} 场
+              </template>
+              · 最近 {{ party.group.lastActiveDays === null ? "未知" : party.group.lastActiveDays === 0 ? "今天" : `${party.group.lastActiveDays}天前` }}
+            </div>
+          </article>
+        </div>
+      </section>
       <div class="team-grid">
         <div
           v-for="summoner in sumList"
@@ -270,7 +325,7 @@ const teamInsight = computed(() => {
             <div
               v-if="
                 shouldShowHistoryStatus(summoner.historyStatus) ||
-                summoner.recentAnalysis?.partyGroups.length ||
+                groupForPlayer(summoner.puuid) ||
                 summoner.recentAnalysis?.moderation.reportCount
               "
               class="player-status-row"
@@ -287,16 +342,13 @@ const teamInsight = computed(() => {
                 </span>
               </span>
               <button
-                v-if="summoner.recentAnalysis?.partyGroups.length"
+                v-if="groupForPlayer(summoner.puuid)"
                 class="status-chip status-chip-party"
                 type="button"
-                :title="partyGroupNames(summoner.recentAnalysis.partyGroups[0])"
+                :title="`${groupForPlayer(summoner.puuid)?.title}：${partyGroupNames(groupForPlayer(summoner.puuid)!.group)}`"
                 @click="toggleAnalysis(summoner.puuid)"
               >
-                {{ partyRelationLabel(summoner.recentAnalysis.partyGroups[0]) }} {{ summoner.recentAnalysis.partyGroups[0].members.length }}人
-                <span v-if="summoner.recentAnalysis.partyGroups.length > 1" class="status-chip-extra">
-                  +{{ summoner.recentAnalysis.partyGroups.length - 1 }}
-                </span>
+                {{ groupForPlayer(summoner.puuid)?.title }} · 同组 {{ partyGroupTeammates(groupForPlayer(summoner.puuid)!.group, summoner.puuid) }}
               </button>
               <n-tag
                 v-if="summoner.recentAnalysis?.moderation.reportCount"
@@ -476,57 +528,36 @@ const teamInsight = computed(() => {
           </div>
 
           <div>
-            <div class="font-medium mb-1">开黑组合分析</div>
-            <n-button v-if="selectedPlayer.recentAnalysis.partyGroups.length" size="tiny" text @click="showPartySubgroups = !showPartySubgroups">
-              {{ showPartySubgroups ? '折叠相同证据的子组合' : '展开全部子组合' }}
-            </n-button>
+            <div class="font-medium mb-1">所属同队小组</div>
             <div v-if="selectedPlayer.recentAnalysis.partyCoverage?.status === 'insufficient'" class="text-amber-600 mb-1">
               {{ selectedPlayer.recentAnalysis.partyCoverage.message }}
             </div>
-            <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="duo-stack">
-              <DuoGroupCard
-                v-for="group in visiblePartyGroups"
-                :key="group.members.map((member) => member.puuid).join('-')"
-                :group="group"
-                mode="full"
-                always-show-evidence
-              >
-                <template #evidence>
-                  <div class="text-xs leading-5">
-                    <div class="font-medium mb-1">{{ partyRelationLabel(group) }}的依据</div>
-                    <div class="font-medium">{{ partyGroupNames(group) }}</div>
-                    <div>{{ partyEvidenceSummary(group) }}</div>
-                    <div>
-                      <template v-if="group.recentWindowGames !== undefined">
-                        当前模式最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同 {{ group.historicalGames || 0 }} 场
-                      </template>
-                      <template v-else>
-                        已加载历史共同 {{ group.historicalGames ?? group.games }} 场
-                      </template>
-                      · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
-                    </div>
-                    <div class="font-medium mt-1">共同同队对局证据</div>
-                    <div
-                      v-for="evidence in group.evidence.slice(0, 6)"
-                      :key="evidence.gameId"
-                      class="text-gray-500"
-                    >
-                      {{ evidence.isCurrentMatch ? "当前对局" : partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.isCurrentMatch ? "本局" : evidence.gameId }}
-                    </div>
-                    <div class="text-gray-500 mt-1">
-                      近期关系要求当前模式各成员最近4场加本局共同同队至少3次；历史关系独立保留，不代表本局正在组队。排位模式包含单双排与灵活排位。证据强度不是组队概率，接口没有官方组队 ID。
-                    </div>
-                  </div>
+            <div v-if="selectedPlayerGroup" class="selected-party-group">
+              <div class="selected-party-group-title">
+                <strong>{{ selectedPlayerGroup.title }}</strong>
+                <n-tag size="tiny" :bordered="false" :type="selectedPlayerGroup.group.relationKind === 'recent' ? 'success' : 'default'">
+                  {{ selectedPlayerGroup.kind }}
+                </n-tag>
+              </div>
+              <div class="selected-party-group-members">
+                同组成员：{{ partyGroupTeammates(selectedPlayerGroup.group, selectedPlayer.puuid) }}
+              </div>
+              <div class="text-gray-500">
+                <template v-if="selectedPlayerGroup.group.recentWindowGames !== undefined">
+                  当前模式最近5局同队 {{ selectedPlayerGroup.group.recentWindowGames }} 次（含本局）
                 </template>
-              </DuoGroupCard>
+                <template v-else>
+                  已加载历史共同同队 {{ selectedPlayerGroup.group.historicalGames ?? selectedPlayerGroup.group.games }} 场
+                </template>
+              </div>
             </div>
             <div v-else class="text-gray-500">
               {{ selectedPlayer.recentAnalysis.partyCoverage?.status === 'ready'
-                ? '当前模式近期窗口及已加载历史中未发现达标组合。'
-                : '数据不足，暂未识别到组合。' }}
+                ? '该玩家未归入当前队伍的主同队小组。'
+                : '数据不足，暂不归类。' }}
             </div>
             <div class="text-gray-500 mt-1">
-              可查看当前模式最近5局初筛与历史共同对局；相同证据的子组合默认折叠，可展开查看。
+              小组总览在本队顶部；成员只归入一个主小组，避免重叠组合造成混淆。
             </div>
           </div>
 
@@ -709,6 +740,106 @@ const teamInsight = computed(() => {
 	margin-right: 3px;
 	color: #6b7280;
 	font-weight: 500;
+}
+
+.team-party-summary {
+	margin: 0 0 9px;
+	padding: 9px;
+	border: 1px solid rgba(99, 102, 241, 0.22);
+	border-radius: 9px;
+	background: rgba(238, 242, 255, 0.68);
+}
+
+.team-party-summary-header,
+.team-party-card-heading,
+.selected-party-group-title {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.team-party-summary-title {
+	font-size: 12px;
+	font-weight: 700;
+	color: #3730a3;
+}
+
+.team-party-summary-note,
+.team-party-evidence {
+	margin-top: 2px;
+	font-size: 10px;
+	line-height: 1.45;
+	color: #6b7280;
+}
+
+.team-party-summary-count {
+	flex: 0 0 auto;
+	padding: 2px 6px;
+	border-radius: 999px;
+	background: rgba(199, 210, 254, 0.7);
+	color: #4338ca;
+	font-size: 10px;
+	font-weight: 600;
+}
+
+.team-party-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: 6px;
+	margin-top: 7px;
+}
+
+.team-party-card {
+	padding: 7px;
+	border: 1px solid rgba(129, 140, 248, 0.26);
+	border-radius: 7px;
+	background: rgba(255, 255, 255, 0.72);
+}
+
+.team-party-card-heading strong,
+.selected-party-group-title strong {
+	font-size: 11px;
+	color: #312e81;
+}
+
+.team-party-members {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.team-party-member {
+	max-width: 100%;
+	padding: 2px 5px;
+	border: 1px solid rgba(99, 102, 241, 0.24);
+	border-radius: 999px;
+	background: rgba(224, 231, 255, 0.6);
+	color: #3730a3;
+	font: inherit;
+	font-size: 10px;
+	cursor: pointer;
+}
+
+.team-party-member:hover,
+.team-party-member:focus-visible {
+	border-color: rgba(79, 70, 229, 0.65);
+	background: rgba(199, 210, 254, 0.78);
+	outline: none;
+}
+
+.selected-party-group {
+	padding: 8px;
+	border: 1px solid rgba(99, 102, 241, 0.24);
+	border-radius: 7px;
+	background: rgba(238, 242, 255, 0.54);
+}
+
+.selected-party-group-members {
+	margin: 5px 0 2px;
+	font-weight: 600;
+	color: #3730a3;
 }
 
 .team-insight-party {

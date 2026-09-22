@@ -33,6 +33,7 @@ const summaryCache: { current: CachedEntry<DatabaseSummary> | null } = {
 };
 const playerSummaryCache = new Map<string, CachedEntry<CachedPlayerSummary>>();
 const historyCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
+const teamHistoryCache = new Map<string, CachedEntry<NormalizedHistoryGame[]>>();
 const historyAnalysisCache = new Map<
   string,
   CachedEntry<HistoryAnalysisSnapshot | null>
@@ -123,6 +124,9 @@ const isFresh = <T>(entry: CachedEntry<T> | undefined, ttl: number) =>
 const historyCacheKey = (query: CachedHistoryQuery) =>
   `${query.puuid}|${query.modeKey ?? ""}|${query.queueId ?? ""}|${query.offset ?? 0}|${query.limit}`;
 
+const teamHistoryCacheKey = (query: CachedTeamHistoryQuery) =>
+  `${query.puuids.slice().sort().join("|")}|${query.modeKey ?? ""}|${query.limit}`;
+
 const playerSummaryCacheKey = (puuid: string, modeKey?: MatchModeKey | null) =>
   `${puuid}|${modeKey ?? ""}`;
 
@@ -135,6 +139,7 @@ export const resetDatabaseCache = (reason?: string) => {
     summary: summaryCache.current !== null ? 1 : 0,
     player_summary: playerSummaryCache.size,
     history: historyCache.size,
+    team_history: teamHistoryCache.size,
     history_analysis: historyAnalysisCache.size,
     summoner_by_id: summonerByIdCache.size(),
     summoner_by_puuid: summonerByPuuidCache.size(),
@@ -146,6 +151,7 @@ export const resetDatabaseCache = (reason?: string) => {
   summaryCache.current = null;
   playerSummaryCache.clear();
   historyCache.clear();
+  teamHistoryCache.clear();
   historyAnalysisCache.clear();
   summonerByIdCache.clear();
   summonerByPuuidCache.clear();
@@ -171,6 +177,12 @@ export interface CachedHistoryQuery {
   offset?: number;
 }
 
+export interface CachedTeamHistoryQuery {
+  puuids: string[];
+  modeKey?: MatchModeKey;
+  limit: number;
+}
+
 interface CachedParticipant {
   puuid: string;
   summonerId?: number;
@@ -192,6 +204,26 @@ interface CachedGame {
   source: string;
   participants: CachedParticipant[];
 }
+
+const normalizeCachedGames = (games: CachedGame[]): NormalizedHistoryGame[] =>
+  games.map((game) => ({
+    gameId: game.gameId,
+    gameCreation: game.gameCreation,
+    queueId: game.queueId,
+    source: game.source || "postgres",
+    participants: game.participants.map((participant) => ({
+      puuid: participant.puuid,
+      summonerId: participant.summonerId,
+      summonerName: participant.summonerName,
+      teamId: participant.teamId,
+      championId: participant.championId,
+      position: participant.position,
+      kills: participant.kills,
+      deaths: participant.deaths,
+      assists: participant.assists,
+      win: participant.win,
+    })),
+  }));
 
 export const getCachedHistory = async (
   query: CachedHistoryQuery,
@@ -230,24 +262,7 @@ export const getCachedHistory = async (
     const games = await invoke<CachedGame[]>("get_cached_match_history", {
       request: query,
     });
-    const value = (games || []).map((game) => ({
-      gameId: game.gameId,
-      gameCreation: game.gameCreation,
-      queueId: game.queueId,
-      source: game.source || "postgres",
-      participants: (game.participants || []).map((participant) => ({
-        puuid: participant.puuid,
-        summonerId: participant.summonerId,
-        summonerName: participant.summonerName,
-        teamId: participant.teamId,
-        championId: participant.championId,
-        position: participant.position,
-        kills: participant.kills,
-        deaths: participant.deaths,
-        assists: participant.assists,
-        win: participant.win,
-      })),
-    }));
+    const value = normalizeCachedGames(games || []);
     historyCache.set(cacheKey, { value, fetchedAt: Date.now() });
     logger.info({
       tag: "db.cache",
@@ -277,6 +292,31 @@ export const getCachedHistory = async (
         duration_ms: Date.now() - startedAt,
         error: String(error).slice(0, 500),
       },
+    });
+    return [];
+  }
+};
+
+/** 当前一支队伍统一使用的本地历史证据，避免前端拼接逐玩家历史。 */
+export const getCachedTeamHistory = async (
+  query: CachedTeamHistoryQuery,
+): Promise<NormalizedHistoryGame[]> => {
+  const puuids = Array.from(new Set(query.puuids.filter(Boolean))).sort();
+  if (puuids.length < 2) return [];
+  const request = { ...query, puuids, limit: Math.min(500, Math.max(1, query.limit)) };
+  const cacheKey = teamHistoryCacheKey(request);
+  const cached = teamHistoryCache.get(cacheKey);
+  if (isFresh(cached, HISTORY_TTL_MS)) return cached!.value;
+  try {
+    const games = await invoke<CachedGame[]>("get_cached_team_match_history", { request });
+    const value = normalizeCachedGames(games || []);
+    teamHistoryCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    return value;
+  } catch (error) {
+    logger.warn({
+      tag: "db.cache",
+      message: "读取团队统一历史失败",
+      context: { players: puuids.length, mode_key: query.modeKey, error: String(error).slice(0, 200) },
     });
     return [];
   }
@@ -342,6 +382,7 @@ export const cacheHistory = async (request: {
         historyCache.delete(key);
       }
     }
+    teamHistoryCache.clear();
     playerSummaryCache.delete(`${request.puuid}|${request.modeKey}`);
     for (const key of Array.from(historyAnalysisCache.keys())) {
       if (key.startsWith(`${request.puuid}|`)) {
