@@ -41,6 +41,7 @@ import {
   HISTORY_PLAYER_MAX_GAMES,
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
+import { buildHistoryEvidence } from "@/recentMatch/utils/historyEvidence";
 import {
     findPlayerParticipant,
     participantMatchesPlayer,
@@ -1010,22 +1011,14 @@ const buildOpponentStats = (
   snapshots: Map<string, PlayerHistorySnapshot>,
   moderationMap: Map<string, PlayerModerationInfo>,
 ): OpponentMatchupStats[] => {
-  const ownSnapshot = snapshots.get(player.puuid);
-  if (!ownSnapshot) return [];
+  const evidence = buildHistoryEvidence(snapshots);
 
   return opponents
     .map((opponent) => {
-      const opponentSnapshot = snapshots.get(opponent.puuid);
-      if (!opponentSnapshot) return null;
-      const opponentGames = new Set(opponentSnapshot.games.keys());
-      const sharedGameIds = Array.from(ownSnapshot.games.keys()).filter((gameId) =>
-        opponentGames.has(gameId),
-      );
       let games = 0;
       let wins = 0;
       let opponentWins = 0;
-      for (const gameId of sharedGameIds) {
-        const game = ownSnapshot.games.get(gameId);
+      for (const game of evidence.values()) {
         const ownParticipant = game
           ? findPlayerParticipant(game, player)
           : undefined;
@@ -1033,6 +1026,7 @@ const buildOpponentStats = (
           ? findPlayerParticipant(game, opponent)
           : undefined;
         if (!ownParticipant || !opponentParticipant) continue;
+        if (ownParticipant === opponentParticipant || ownParticipant.teamId <= 0 || opponentParticipant.teamId <= 0) continue;
         if (ownParticipant.teamId === opponentParticipant.teamId) continue;
         games += 1;
         wins += ownParticipant.win ? 1 : 0;
@@ -1081,6 +1075,9 @@ type StructuralPartyGroup = {
 };
 
 interface PartyGroupStructureOptions {
+  /** 近期窗口必须逐成员确认比赛归属，历史证据则允许单来源。 */
+  requireWindowMembership?: boolean;
+  evidence?: Map<number, NormalizedHistoryGame>;
   /** 只计算已经通过最近窗口初筛的成员集合。 */
   allowedGroupKeys?: ReadonlySet<string>;
   /** 结构至少需要多少场；默认沿用人数门槛。 */
@@ -1102,6 +1099,12 @@ const buildPartyGroupsStructure = (
 ): StructuralPartyGroup[] => {
   const structures: StructuralPartyGroup[] = [];
   const now = Date.now();
+  const evidenceIndex = options.evidence || buildHistoryEvidence(snapshots);
+  // 当前局仅供显式近期窗口使用，不进入共享历史证据。
+  const current = Array.from(snapshots.values()).flatMap((s) => Array.from(s.games.values()))
+    .find((game) => game.source === CURRENT_MATCH_SOURCE);
+  const allGames = new Map(evidenceIndex);
+  if (current) allGames.set(current.gameId, current);
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
       if (
@@ -1110,19 +1113,11 @@ const buildPartyGroupsStructure = (
       ) {
         continue;
       }
-      const groupSnapshots = group
-        .map((player) => snapshots.get(player.puuid))
-        .filter(
-          (snapshot): snapshot is PlayerHistorySnapshot =>
-            snapshot !== undefined,
-        );
-      if (groupSnapshots.length !== group.length) continue;
-
-      let commonGameIds = Array.from(groupSnapshots[0].games.keys());
-      for (const snapshot of groupSnapshots.slice(1)) {
-        const gameIds = new Set(snapshot.games.keys());
-        commonGameIds = commonGameIds.filter((gameId) => gameIds.has(gameId));
-      }
+      const commonGameIds = Array.from(allGames.keys()).filter((gameId) =>
+        !options.requireWindowMembership || group.every((player) =>
+          snapshots.get(player.puuid)?.games.has(gameId),
+        ),
+      );
 
       let games = 0;
       let historicalGames = 0;
@@ -1132,7 +1127,7 @@ const buildPartyGroupsStructure = (
       let recentGames = 0;
       const evidence: PartyEvidence[] = [];
       for (const gameId of commonGameIds) {
-        const game = groupSnapshots[0].games.get(gameId);
+        const game = allGames.get(gameId);
         if (!game) continue;
         const participants = group.map((player) =>
           findPlayerParticipant(game, player),
@@ -1145,6 +1140,7 @@ const buildPartyGroupsStructure = (
         ) {
           continue;
         }
+        if (new Set(participants).size !== group.length) continue;
         const teamId = participants[0]!.teamId;
         if (
           participants.some(
@@ -1397,6 +1393,8 @@ const buildCurrentTeamPartyGroups = (
 
   const recentSnapshots = buildRecentPartySnapshots(team, snapshots, currentGame);
   const recentStructures = buildPartyGroupsStructure(team, recentSnapshots, {
+    requireWindowMembership: true,
+    evidence: buildHistoryEvidence(snapshots),
     minimumGames: PARTY_RECENT_MIN_TEAM_GAMES,
     requiredGames: PARTY_RECENT_MIN_TEAM_GAMES,
   });
@@ -1487,7 +1485,7 @@ const buildPlayerPartyGroups = (
             (participant) =>
               participant.teamId === ownParticipant.teamId &&
               participant.teamId > 0 &&
-              !participantMatchesPlayer(participant, player),
+              participant !== ownParticipant && !participantMatchesPlayer(participant, player),
           )
           .map((participant) => [participant.puuid, participant]),
       ).values(),
@@ -2075,27 +2073,21 @@ const buildNetworkAnalysis = (
   );
   const players = [...friendList, ...enemyList];
   const edges: RecentNetworkEdge[] = [];
+  const evidence = buildHistoryEvidence(snapshots);
 
   for (let leftIndex = 0; leftIndex < players.length; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < players.length; rightIndex++) {
       const left = players[leftIndex];
       const right = players[rightIndex];
-      const leftSnapshot = snapshots.get(left.puuid);
-      const rightSnapshot = snapshots.get(right.puuid);
-      if (!leftSnapshot || !rightSnapshot) continue;
-      const rightGameIds = new Set(rightSnapshot.games.keys());
-      const sharedGameIds = Array.from(leftSnapshot.games.keys()).filter((gameId) =>
-        rightGameIds.has(gameId),
-      );
       let sameTeamGames = 0;
       let opposedGames = 0;
       let sourceWins = 0;
       let targetWins = 0;
-      for (const gameId of sharedGameIds) {
-        const game = leftSnapshot.games.get(gameId);
+      for (const game of evidence.values()) {
         const source = game ? findPlayerParticipant(game, left) : undefined;
         const target = game ? findPlayerParticipant(game, right) : undefined;
         if (!source || !target) continue;
+        if (source === target || source.teamId <= 0 || target.teamId <= 0) continue;
         if (source.teamId === target.teamId) {
           sameTeamGames += 1;
         } else {
@@ -2118,9 +2110,7 @@ const buildNetworkAnalysis = (
     }
   }
 
-  const availableGames = new Set(
-    Array.from(snapshots.values()).flatMap((snapshot) => snapshot.games.keys()),
-  ).size;
+  const availableGames = evidence.size;
   return { nodes, edges, availableGames };
 };
 

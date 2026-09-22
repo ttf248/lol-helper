@@ -15,6 +15,45 @@ const fullGame = (gameId = 1, gameCreation = Date.now()) => ({
     position: 'UNKNOWN', kills: 0, deaths: 0, assists: 0,
   })),
 });
+const analyticsPath = 'src/recentMatch/utils/recentAnalytics.ts';
+const makeAnalytics = (services = {}) => createLoader({
+  '@/utils/logger': { logger: silentLogger },
+  '@/lcu/aboutMatch': {},
+  '@/main/views/record/blackList': { default: class {} },
+  '@/recentMatch/utils/databaseCache': {},
+  ...services,
+}, { [analyticsPath]: ['buildPartyGroupsStructure', 'buildCurrentTeamPartyGroups', 'buildCurrentMatchGame',
+  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames'] })(analyticsPath);
+const analytics = makeAnalytics();
+const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
+const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, source: 'test', sourceEndpoints: [] });
+
+test('one authoritative roster suffices and player order cannot change historical groups', () => {
+  const games = [fullGame(1), fullGame(2)];
+  const partial = games.map(g => ({ ...g, participants: [g.participants[0]] }));
+  const snapshots = new Map([['p0', snapshot(partial)], ['p1', snapshot(games)]]);
+  for (const team of [[player(0), player(1)], [player(1), player(0)]]) {
+    assert.equal(analytics.buildPartyGroupsStructure(team, snapshots)[0].historicalGames, 2);
+  }
+  const onlyA = new Map([['p0', snapshot(games)]]);
+  assert.equal(analytics.buildPartyGroupsStructure([player(0), player(1)], onlyA).length, 1);
+  assert.equal(analytics.buildNetworkAnalysis([player(0), player(1)], [], onlyA).edges[0].sameTeamGames, 2);
+  assert.equal(analytics.buildOpponentStats(player(0), [player(5)], onlyA, new Map())[0].games, 2);
+});
+
+test('historical evidence does not invent membership in another player recent window', () => {
+  const team = [player(0), player(1)];
+  const games = [fullGame(1), fullGame(2)];
+  const snapshots = new Map([['p0', snapshot(games)], ['p1', snapshot([])]]);
+  const current = analytics.buildCurrentMatchGame(team, [], 420, 99);
+  const result = analytics.buildCurrentTeamPartyGroups(team, snapshots, current, new Map());
+  assert.equal(result[0].recentWindowGames, undefined);
+  const both = new Map([['p0', snapshot(games)], ['p1', snapshot(games)]]);
+  const recent = analytics.buildCurrentTeamPartyGroups(team, both, current, new Map())[0];
+  assert.equal(recent.recentWindowGames, 3);
+  assert.equal(recent.historicalGames, 2);
+  assert.equal(recent.winRate, 100);
+});
 
 test('complete rosters survive partial records in either merge direction, including duplicate cache rows', () => {
   const full = fullGame();
