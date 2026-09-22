@@ -23,7 +23,7 @@ const makeAnalytics = (services = {}) => createLoader({
   '@/recentMatch/utils/databaseCache': {},
   ...services,
 }, { [analyticsPath]: ['buildPartyGroupsStructure', 'buildCurrentTeamPartyGroups', 'buildCurrentMatchGame',
-  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage', 'applyTeamAnalysis'] })(analyticsPath);
+  'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage', 'applyTeamAnalysis', 'buildTeammateSynergy'] })(analyticsPath);
 const analytics = makeAnalytics();
 const scoring = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/partyScoring.ts');
 const { selectPartyGroups } = createLoader()('src/recentMatch/utils/partyPresentation.ts');
@@ -242,4 +242,18 @@ test('membership index agrees with direct enumeration and does not join pairwise
     }).map(g => g.gameId);
     assert.deepEqual(actual.get(members.map(p => p.puuid).sort().join('|')), expected);
   }
+});
+
+test('legacy nickname-only self is never counted as a teammate', () => {
+  const self = { ...player(0), summonerName: 'Legacy' };
+  const games = [fullGame(1), fullGame(2)].map(g => ({ ...g,
+    participants: g.participants.map((p, i) => i === 0 ? {
+      ...p, puuid: 'summoner-name:legacy', summonerId: undefined, summonerName: 'Legacy',
+    } : p),
+  }));
+  const result = analytics.buildTeammateSynergy(self, snapshot(games), new Map());
+  assert.equal(result.length, 4);
+  assert.equal(result.some(g => g.teammate.puuid === 'summoner-name:legacy'), false);
+  const groups = analytics.buildPlayerPartyGroups(self, snapshot(games), new Map());
+  assert.equal(groups.some(g => g.members.some(p => p.puuid === 'summoner-name:legacy')), false);
 });

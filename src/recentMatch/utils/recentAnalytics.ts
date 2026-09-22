@@ -1511,6 +1511,7 @@ const buildTeammateSynergy = (
       if (
         participant.teamId !== ownParticipant.teamId ||
         participant.teamId <= 0 ||
+        participant === ownParticipant ||
         participantMatchesPlayer(participant, player)
       ) {
         continue;
@@ -1629,7 +1630,7 @@ const computePlayerRelations = async (
     const ownParticipant = findPlayerParticipant(game, player);
     if (!ownParticipant || ownParticipant.teamId <= 0) continue;
     for (const participant of game.participants) {
-      if (participantMatchesPlayer(participant, player)) continue;
+      if (participant === ownParticipant || participantMatchesPlayer(participant, player)) continue;
       if (participant.teamId <= 0) continue;
       const existing = related.get(participant.puuid) || {
         player: participantToRecentPlayer(participant),
