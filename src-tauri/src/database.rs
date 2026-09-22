@@ -397,6 +397,16 @@ pub struct CachedPlayerSummary {
     pub sources: Vec<DatabaseSourceSummary>,
 }
 
+/// 当前一支队伍的统一历史证据查询。一次从本地 PG 读取所有成员出现过的
+/// 对局，避免前端把逐玩家历史拼接后产生来源顺序或展示上的歧义。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedTeamHistoryQuery {
+    pub puuids: Vec<String>,
+    pub mode_key: Option<String>,
+    pub limit: i64,
+}
+
 /// 历史分析快照请求。分析窗口只允许读取有限数量的最近对局，避免把
 /// PostgreSQL 中的长期缓存一次性搬到前端。
 #[derive(Debug, Clone, Deserialize)]
@@ -1806,6 +1816,89 @@ impl DatabaseState {
             ),
         }
         result
+    }
+
+    pub async fn cached_team_history(
+        &self,
+        request: CachedTeamHistoryQuery,
+    ) -> Result<Vec<CachedMatchGame>, String> {
+        let puuids: Vec<String> = request
+            .puuids
+            .into_iter()
+            .filter(|puuid| !puuid.trim().is_empty())
+            .collect();
+        if puuids.len() < 2 {
+            return Ok(Vec::new());
+        }
+        let limit = request.limit.clamp(1, 500);
+        let client = self.require_client().await?;
+        let rows = client
+            .query(
+                "WITH selected_matches AS (
+                     SELECT m.game_id, m.game_creation, m.queue_id, m.mode_key, m.source
+                       FROM matches m
+                      WHERE EXISTS (
+                            SELECT 1 FROM match_participants target
+                             WHERE target.game_id = m.game_id
+                               AND target.puuid = ANY($1::TEXT[])
+                      )
+                        AND (
+                               $2::TEXT IS NULL
+                            OR m.mode_key = $2
+                            OR ($2 = 'match' AND m.queue_id IN (400, 430, 490))
+                            OR ($2 = 'ranked' AND m.queue_id IN (420, 440))
+                            OR ($2 = 'aram' AND m.queue_id IN (450))
+                            OR ($2 = 'hex-aram' AND m.queue_id IN (2400, 2401))
+                            OR ($2 = 'other' AND m.queue_id NOT IN (400, 430, 490, 420, 440, 450, 2400, 2401))
+                        )
+                      ORDER BY m.game_creation DESC
+                      LIMIT $3
+                 )
+                 SELECT selected_matches.game_id, selected_matches.game_creation,
+                        selected_matches.queue_id, selected_matches.mode_key,
+                        selected_matches.source,
+                        COALESCE(
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'puuid', p.puuid,
+                                    'summonerId', p.summoner_id,
+                                    'summonerName', p.summoner_name,
+                                    'teamId', p.team_id,
+                                    'championId', p.champion_id,
+                                    'position', p.position,
+                                    'kills', p.kills,
+                                    'deaths', p.deaths,
+                                    'assists', p.assists,
+                                    'win', p.win
+                                ) ORDER BY p.puuid
+                            ) FILTER (WHERE p.puuid IS NOT NULL),
+                            '[]'::jsonb
+                        ) AS participants
+                   FROM selected_matches
+                   JOIN match_participants p ON p.game_id = selected_matches.game_id
+                  GROUP BY selected_matches.game_id, selected_matches.game_creation,
+                           selected_matches.queue_id, selected_matches.mode_key,
+                           selected_matches.source
+                  ORDER BY selected_matches.game_creation DESC",
+                &[&puuids, &request.mode_key, &limit],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        rows.into_iter()
+            .map(|row| {
+                let participants_value: Value = row.get("participants");
+                Ok(CachedMatchGame {
+                    game_id: row.get("game_id"),
+                    game_creation: row.get("game_creation"),
+                    queue_id: row.get("queue_id"),
+                    mode_key: row.get("mode_key"),
+                    source: row.get("source"),
+                    participants: serde_json::from_value(participants_value)
+                        .map_err(|error| format!("团队缓存参与者解析失败: {error}"))?,
+                })
+            })
+            .collect()
     }
 
     pub async fn summary(&self) -> Result<DatabaseSummary, String> {
@@ -3692,6 +3785,14 @@ pub async fn get_cached_match_history(
     request: CachedHistoryQuery,
 ) -> Result<Vec<CachedMatchGame>, String> {
     state.cached_history(request).await
+}
+
+#[tauri::command]
+pub async fn get_cached_team_match_history(
+    state: tauri::State<'_, DatabaseState>,
+    request: CachedTeamHistoryQuery,
+) -> Result<Vec<CachedMatchGame>, String> {
+    state.cached_team_history(request).await
 }
 
 #[tauri::command]
