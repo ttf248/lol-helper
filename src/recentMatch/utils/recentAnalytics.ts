@@ -43,6 +43,7 @@ import {
 import { logger } from "@/utils/logger";
 import { buildHistoryEvidence } from "@/recentMatch/utils/historyEvidence";
 import { scorePartyEvidence, hasHighWinRateEvidence } from "@/recentMatch/utils/partyScoring";
+import { comparePartyGroups } from "@/recentMatch/utils/partyPresentation";
 import {
     findPlayerParticipant,
     participantMatchesPlayer,
@@ -1425,15 +1426,7 @@ const buildCurrentTeamPartyGroups = (
   const now = Date.now();
   return Array.from(mergedStructures.values())
     .map((structure) => applyPartyGroupOverlay(structure, moderationMap, now))
-    .sort(
-      (left, right) =>
-        Number(right.recentWindowGames !== undefined) -
-          Number(left.recentWindowGames !== undefined) ||
-        Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
-        (right.recentWindowGames || 0) - (left.recentWindowGames || 0) ||
-        right.games - left.games ||
-        right.stabilityScore - left.stabilityScore,
-    );
+    .sort(comparePartyGroups);
 };
 
 /**
@@ -2240,14 +2233,14 @@ export const loadRecentTeamAnalysis = async (
   );
   logger.info({
     tag: "recent.analysis",
-    message: "近期分析阶段：最近 5 局开黑初筛完成",
+    message: "近期分析阶段：缓存历史关系分析完成，待核验最新窗口",
     context: { stage: "recent", queue_id: queueId, players: players.length },
   });
   onProgress?.({
     stage: "recent",
     completed: players.length,
     total: players.length,
-    message: "最近 5 局开黑初筛已完成，个人数据继续使用近期战绩",
+    message: "缓存历史关系已分析，正在核验当前模式最近5局",
   });
 
   const hydrationEntries = players
@@ -2388,7 +2381,7 @@ export const loadRecentTeamAnalysis = async (
   const network = buildNetworkAnalysis(friendList, enemyList, hydratedSnapshotMap);
   logger.info({
     tag: "recent.analysis",
-    message: "近期分析阶段：100 场完成",
+    message: "近期分析阶段：已加载历史分析完成",
     context: {
       purpose: "对局内面板：双方全员近期分析（团队/开黑关系 + 个人统计）",
       stage: "done",
@@ -2407,7 +2400,7 @@ export const loadRecentTeamAnalysis = async (
     stage: "done",
     completed: hydrationEntries.length,
     total: hydrationEntries.length,
-    message: "近期 100 场分析已完成",
+    message: "当前模式已加载历史分析完成",
   });
   return network;
 };

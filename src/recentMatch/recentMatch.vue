@@ -259,7 +259,7 @@ const init = () => {
                         message: progress.message,
                         detail: progress.stage === "full"
                             ? `${progress.completed}/${progress.total} 名玩家已完成服务器兜底与本地缓存合并。`
-                            : `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场个人战绩已可查看；开黑初筛使用最近5局（含当前），后台继续补充历史数据。`,
+                            : `最近 ${HISTORY_PANEL_PREVIEW_COUNT} 场个人战绩已可查看；组队初筛使用当前模式最近5局（含当前），后台继续核验最新窗口。`,
                     });
                 },
             )

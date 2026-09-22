@@ -33,6 +33,7 @@ import {
 } from "@/recentMatch/utils/queryTypes";
 import RecentNetworkGraph from "@/recentMatch/components/recentNetworkGraph.vue";
 import DuoGroupCard from "@/recentMatch/components/DuoGroupCard.vue";
+import { selectPartyGroups } from "@/recentMatch/utils/partyPresentation";
 import {
   confidenceLabel,
   formatRate,
@@ -248,25 +249,18 @@ const selectResult = (result: string) => {
   }
 };
 
-// 把排序 + 切片缩到 top 5，再交给模板用 v-memo 守住子节点重渲染。
+const showPartySubgroups = ref(false);
+// 相同证据的子组默认折叠；频率和胜率是用户显式选择的历史排行。
 const partyRankingSections = computed(() => {
-  const groups = analysis.value?.partyGroups || [];
+  const groups = selectPartyGroups(analysis.value?.partyGroups || [], {
+    showSubgroups: showPartySubgroups.value, mode: partyRankingMode.value,
+  });
   const byFrequency = partyRankingMode.value === "frequency";
   return [2, 3, 4, 5].map((size) => {
     const matched = groups.filter(
       (group) =>
         group.members.length === size &&
         (byFrequency || group.games >= 5),
-    );
-    matched.sort(
-      (left, right) =>
-        byFrequency
-          ? right.games - left.games ||
-            right.stabilityScore - left.stabilityScore ||
-            right.winRate - left.winRate
-          : right.winRate - left.winRate ||
-            right.games - left.games ||
-            right.stabilityScore - left.stabilityScore,
     );
     return {
       size,
@@ -799,10 +793,13 @@ onMounted(() => {
 
         <n-card v-if="analysis && selectedResult === 'all'" size="small" title="我常和谁开黑 · 组合 Top 5" :bordered="false">
           <div class="party-ranking-caption">
-            基于 PostgreSQL 当前模式最近 {{ partyAnalysisGames }} 场完整对局；
+            基于当前模式已加载的 {{ partyAnalysisGames }} 场历史记录；
             {{ partyRankingMode === "frequency" ? "常玩排行按共同同队场次排序" : "最佳胜率排行要求至少共同 5 场" }}。
           </div>
           <div class="party-ranking-toolbar">
+            <n-button size="tiny" @click="showPartySubgroups = !showPartySubgroups">
+              {{ showPartySubgroups ? '折叠相同证据子组合' : '展开全部子组合' }}
+            </n-button>
             <span class="control-label">排行依据</span>
             <n-button-group size="tiny">
               <n-button
@@ -832,7 +829,6 @@ onMounted(() => {
               <div v-if="section.items.length" class="party-ranking-list">
                 <div
                   v-for="(group, index) in section.items"
-                  v-memo="[group.games, group.winRate, group.stabilityScore, group.recentGames, group.lastActiveDays, group.highWinRateAlert, group.confidence.level, group.confidence.score, group.blacklistedMembers.length, group.reportedMembers.length, group.members.map((member) => `${member.puuid}:${member.summonerName}:${member.moderation?.marked}:${member.moderation?.reportCount}`).join('|'), partyRankingMode]"
                   :key="group.members.map((item) => item.puuid).join('-')"
                   class="party-ranking-row"
                 >
@@ -845,12 +841,14 @@ onMounted(() => {
                   />
                 </div>
               </div>
-              <div v-else class="empty-note">暂无达到门槛的组合</div>
+              <div v-else class="empty-note">暂无独立证据的达标组合（相同证据子组合可能已折叠）</div>
             </div>
           </div>
           <div class="party-ranking-note">
             判定门槛：双人至少共同同队 2 场，三/四/五人组合至少 3/4/5 场；
             只按同一局的 gameId、队伍归属和完整参与者判断，不按英雄或 KDA 猜测。
+            历史关系不代表本局正在组队，证据强度不是组队概率。
+            {{ analysis.partyCoverage?.status === 'insufficient' ? analysis.partyCoverage.message : '' }}
           </div>
 
           <div v-if="analysis?.opponents.length" class="opponent-list">

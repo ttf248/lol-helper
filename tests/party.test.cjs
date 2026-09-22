@@ -26,6 +26,24 @@ const makeAnalytics = (services = {}) => createLoader({
   'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage'] })(analyticsPath);
 const analytics = makeAnalytics();
 const scoring = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/partyScoring.ts');
+const { selectPartyGroups } = createLoader()('src/recentMatch/utils/partyPresentation.ts');
+
+test('recent evidence wins display priority, identical subgroups fold, independent evidence survives', () => {
+  const group = (ids, games, kind = 'historical') => ({
+    members: ids.map(puuid => ({ puuid })), relationKind: kind,
+    evidence: games.map(gameId => ({ gameId })), games: games.length, historicalGames: games.length,
+    confidence: { score: 50 }, stabilityScore: 50, winRate: 100,
+    recentWindowGames: kind === 'recent' ? 3 : undefined,
+  });
+  const parent = group(['a', 'b', 'c'], [1, 2, 3]);
+  const child = group(['a', 'b'], [1, 2, 3]);
+  const independent = group(['a', 'c'], [1, 2, 3, 4]);
+  const recent = group(['d', 'e'], [8, 9], 'recent');
+  assert.deepEqual(selectPartyGroups([child, parent, independent, recent], { limit: 2 }), [recent, parent]);
+  assert.equal(selectPartyGroups([child, parent, independent]).includes(independent), true);
+  assert.equal(selectPartyGroups([child, parent], { showSubgroups: true }).length, 2);
+  assert.equal(selectPartyGroups([parent, independent], { mode: 'frequency' })[0], independent);
+});
 const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
 const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, recentHistoryVerified: true, source: 'test', sourceEndpoints: [] });
 

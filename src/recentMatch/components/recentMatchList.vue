@@ -17,7 +17,9 @@ import {
   partyEvidenceSummary,
   partyEvidenceTime,
   partyGroupNames,
+  partyRelationLabel,
 } from "@/recentMatch/utils/partyDisplay";
+import { selectPartyGroups } from "@/recentMatch/utils/partyPresentation";
 import {
   championName as championNameShared,
   historyStatusLabel as initialStatusLabel,
@@ -44,6 +46,10 @@ const emits = defineEmits<{
 }>();
 
 const selectedPuuid = ref<string | null>(null);
+const showPartySubgroups = ref(false);
+const visiblePartyGroups = computed(() => selectPartyGroups(
+  selectedPlayer.value?.recentAnalysis?.partyGroups || [], { showSubgroups: showPartySubgroups.value },
+));
 
 const selectedPlayer = computed(() =>
   sumList.find((player) => player.puuid === selectedPuuid.value) || null,
@@ -136,14 +142,7 @@ const teamGroups = computed(() => {
       if (!previous || group.games > previous.games) groupMap.set(key, group);
     }
   }
-  return Array.from(groupMap.values())
-    .sort(
-      (left, right) =>
-        Number(right.highWinRateAlert) - Number(left.highWinRateAlert) ||
-        right.games - left.games ||
-        right.winRate - left.winRate,
-    )
-    .slice(0, 2);
+  return selectPartyGroups(Array.from(groupMap.values()), { limit: 2 });
 });
 
 const teamInsight = computed(() => {
@@ -208,9 +207,9 @@ const teamInsight = computed(() => {
             风险 {{ teamInsight.risk.summonerName }} · {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
           <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
-            疑似开黑 {{ teamInsight.groups[0].members.length }}人 ·
+            {{ partyRelationLabel(teamInsight.groups[0]) }} {{ teamInsight.groups[0].members.length }}人 ·
             <template v-if="teamInsight.groups[0].recentWindowGames !== undefined">
-              最近5局 {{ teamInsight.groups[0].recentWindowGames }}次
+              当前模式最近5局 {{ teamInsight.groups[0].recentWindowGames }}次
             </template>
             <template v-else>
               历史 {{ teamInsight.groups[0].historicalGames ?? teamInsight.groups[0].games }}场
@@ -294,7 +293,7 @@ const teamInsight = computed(() => {
                 :title="partyGroupNames(summoner.recentAnalysis.partyGroups[0])"
                 @click="toggleAnalysis(summoner.puuid)"
               >
-                开黑 {{ summoner.recentAnalysis.partyGroups[0].members.length }}人
+                {{ partyRelationLabel(summoner.recentAnalysis.partyGroups[0]) }} {{ summoner.recentAnalysis.partyGroups[0].members.length }}人
                 <span v-if="summoner.recentAnalysis.partyGroups.length > 1" class="status-chip-extra">
                   +{{ summoner.recentAnalysis.partyGroups.length - 1 }}
                 </span>
@@ -478,12 +477,15 @@ const teamInsight = computed(() => {
 
           <div>
             <div class="font-medium mb-1">开黑组合分析</div>
+            <n-button v-if="selectedPlayer.recentAnalysis.partyGroups.length" size="tiny" text @click="showPartySubgroups = !showPartySubgroups">
+              {{ showPartySubgroups ? '折叠相同证据的子组合' : '展开全部子组合' }}
+            </n-button>
             <div v-if="selectedPlayer.recentAnalysis.partyCoverage?.status === 'insufficient'" class="text-amber-600 mb-1">
               {{ selectedPlayer.recentAnalysis.partyCoverage.message }}
             </div>
             <div v-if="selectedPlayer.recentAnalysis.partyGroups.length" class="duo-stack">
               <DuoGroupCard
-                v-for="group in selectedPlayer.recentAnalysis.partyGroups"
+                v-for="group in visiblePartyGroups"
                 :key="group.members.map((member) => member.puuid).join('-')"
                 :group="group"
                 mode="full"
@@ -491,15 +493,15 @@ const teamInsight = computed(() => {
               >
                 <template #evidence>
                   <div class="text-xs leading-5">
-                    <div class="font-medium mb-1">为什么标记为“疑似开黑”</div>
+                    <div class="font-medium mb-1">{{ partyRelationLabel(group) }}的依据</div>
                     <div class="font-medium">{{ partyGroupNames(group) }}</div>
                     <div>{{ partyEvidenceSummary(group) }}</div>
                     <div>
                       <template v-if="group.recentWindowGames !== undefined">
-                        最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同 {{ group.historicalGames || 0 }} 场
+                        当前模式最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同 {{ group.historicalGames || 0 }} 场
                       </template>
                       <template v-else>
-                        完整历史共同 {{ group.historicalGames ?? group.games }} 场
+                        已加载历史共同 {{ group.historicalGames ?? group.games }} 场
                       </template>
                       · 最近一次 {{ group.lastActiveDays === null ? "未知" : `${group.lastActiveDays} 天前` }} · 组合胜率 {{ formatRate(group.winRate) }}
                     </div>
@@ -512,7 +514,7 @@ const teamInsight = computed(() => {
                       {{ evidence.isCurrentMatch ? "当前对局" : partyEvidenceTime(evidence.gameCreation) }} · 对局 {{ evidence.isCurrentMatch ? "本局" : evidence.gameId }}
                     </div>
                     <div class="text-gray-500 mt-1">
-                      先以当前对局加最近4场中同队至少3次作为近期初筛，同时保留完整历史算法结果并合并统计；不是按个人历史列表长相、英雄、KDA 或单人胜率判断。接口没有官方组队 ID，所以只能表示疑似固定同队。
+                      近期关系要求当前模式各成员最近4场加本局共同同队至少3次；历史关系独立保留，不代表本局正在组队。排位模式包含单双排与灵活排位。证据强度不是组队概率，接口没有官方组队 ID。
                     </div>
                   </div>
                 </template>
@@ -524,7 +526,7 @@ const teamInsight = computed(() => {
                 : '数据不足，暂未识别到组合。' }}
             </div>
             <div class="text-gray-500 mt-1">
-              悬停组合标签可查看最近5局初筛次数与历史共同对局；依据同队出现推断，不代表接口提供了官方组队 ID。
+              可查看当前模式最近5局初筛与历史共同对局；相同证据的子组合默认折叠，可展开查看。
             </div>
           </div>
 
