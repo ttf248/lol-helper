@@ -124,6 +124,77 @@ test('historical evidence does not invent membership in another player recent wi
   assert.equal(recent.relationKind, 'recent');
   assert.equal(recent.historicalGames, 2);
   assert.equal(recent.winRate, 100);
+
+  // 团队级缓存为空时，仍应回退到逐玩家历史证据，不能丢掉近期三局判定。
+  const fallback = analytics.buildCurrentTeamPartyGroups(
+    team,
+    both,
+    current,
+    new Map(),
+    new Map(),
+  )[0];
+  assert.equal(fallback.recentWindowGames, 3);
+
+  const cachedOnly = new Map(
+    ["p0", "p1"].map((puuid) => [
+      puuid,
+      { ...snapshot(games), recentHistoryVerified: false },
+    ]),
+  );
+  const cachedFallback = analytics.buildCurrentTeamPartyGroups(
+    team,
+    cachedOnly,
+    current,
+    new Map(),
+    new Map(),
+  )[0];
+  assert.equal(cachedFallback.recentWindowGames, 3);
+});
+
+test('recent three-game groups and legacy historical groups are both retained', () => {
+  const team = [0, 1, 2, 3].map(player);
+  const now = Date.now();
+  const withTeam = (game, team100) => ({
+    ...game,
+    participants: game.participants.map((participant, index) => ({
+      ...participant,
+      teamId: team100.includes(index) ? 100 : 200,
+    })),
+  });
+  const recentGames = [1, 2, 3].map((id, index) =>
+    withTeam(fullGame(id, now - index * 1000), [0, 1, 2, 4, 5]),
+  );
+  const legacyGames = [101, 102].map((id, index) =>
+    withTeam(fullGame(id, now - 100000 - index * 1000), [0, 3, 4, 5, 6]),
+  );
+  const snapshots = new Map(
+    team.map((item) => [item.puuid, snapshot([...recentGames, ...legacyGames])]),
+  );
+  const current = analytics.buildCurrentMatchGame(team, [], 420, 999);
+  const groups = analytics.buildCurrentTeamPartyGroups(
+    team,
+    snapshots,
+    current,
+    new Map(),
+  );
+  assert.equal(
+    groups.some(
+      (group) =>
+        group.relationKind === 'recent' &&
+        group.members.length === 3 &&
+        group.members.every((member) => ['p0', 'p1', 'p2'].includes(member.puuid)),
+    ),
+    true,
+  );
+  assert.equal(
+    groups.some(
+      (group) =>
+        group.relationKind === 'historical' &&
+        group.members.length === 2 &&
+        group.members.every((member) => ['p0', 'p3'].includes(member.puuid)),
+    ),
+    true,
+  );
 });
 
 test('party strength is independent of wins and moderation, and agrees across entry points', () => {
