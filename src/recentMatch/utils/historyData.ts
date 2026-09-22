@@ -3,16 +3,17 @@ import type {
 } from "@/recentMatch/utils/queryTypes";
 import type { NormalizedHistoryGame } from "@/recentMatch/utils/recentAnalytics";
 import { logger } from "@/utils/logger";
+import { isStrongPuuid } from "@/recentMatch/utils/participantLookup";
+import { modeForQueue } from "@/recentMatch/utils/matchMode";
 
 export type HistoryGameQuality = "complete" | "partial";
 
 const participantRosterIsComplete = (game: NormalizedHistoryGame): boolean => {
-  if (game.participants.length < 5) return false;
-  return new Set(
-    game.participants
-      .map((participant) => participant.teamId)
-      .filter((teamId) => teamId > 0),
-  ).size >= 2;
+  // 本项目明确支持的模式均为 5v5；未知队列不猜测阵容规模。
+  if (modeForQueue(game.queueId) === "other" || game.participants.length !== 10) return false;
+  if (new Set(game.participants.map((p) => p.puuid)).size !== 10) return false;
+  if (game.participants.some((p) => !p.puuid || ![100, 200].includes(p.teamId))) return false;
+  return game.participants.filter((p) => p.teamId === 100).length === 5;
 };
 
 export const historyGameQuality = (
@@ -20,9 +21,23 @@ export const historyGameQuality = (
 ): HistoryGameQuality =>
   participantRosterIsComplete(game) ? "complete" : "partial";
 
-const qualityScore = (game: NormalizedHistoryGame): number => {
-  if (participantRosterIsComplete(game)) return 2;
-  return Math.min(game.participants.length, 4);
+const qualityScore = (game: NormalizedHistoryGame): number[] => {
+  const valid = game.participants.filter((p) => p.puuid && p.teamId > 0);
+  return [
+    Number(participantRosterIsComplete(game)),
+    new Set(valid.map((p) => p.puuid)).size,
+    valid.filter((p) => isStrongPuuid(p.puuid)).length,
+    valid.filter((p) => p.championId > 0 && p.summonerName).length,
+  ];
+};
+
+/** 按完整性、身份覆盖、字段质量逐层比较，人数不能越过完整性等级。 */
+export const compareHistoryGameQuality = (left: NormalizedHistoryGame, right: NormalizedHistoryGame): number => {
+  const a = qualityScore(left), b = qualityScore(right);
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
 };
 
 const sortHistoryGames = (games: NormalizedHistoryGame[]) =>
@@ -46,13 +61,12 @@ export const mergeHistoryGames = (
   loggerContext?: { puuid?: string; modeKey?: string },
 ): { games: NormalizedHistoryGame[]; coverage: HistoryCoverageInfo } => {
   const merged = new Map<number, NormalizedHistoryGame>();
-  const cachedIds = new Set<number>();
   let conflicts = 0;
 
   for (const game of cachedGames) {
     if (!Number.isFinite(game.gameId)) continue;
-    cachedIds.add(game.gameId);
-    merged.set(game.gameId, game);
+    const previous = merged.get(game.gameId);
+    if (!previous || compareHistoryGameQuality(game, previous) >= 0) merged.set(game.gameId, game);
   }
 
   for (const game of interfaceGames) {
@@ -64,7 +78,7 @@ export const mergeHistoryGames = (
     }
 
     conflicts += 1;
-    const interfaceIsBetter = qualityScore(game) >= qualityScore(previous);
+    const interfaceIsBetter = compareHistoryGameQuality(game, previous) >= 0;
     if (interfaceIsBetter) {
       merged.set(game.gameId, game);
     }
