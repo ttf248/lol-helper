@@ -385,6 +385,9 @@ export interface PartyEvidence {
 }
 
 export interface PartyGroupAnalysis {
+  relationKind: "recent" | "historical";
+  /** 数据覆盖与身份覆盖，0..100；并非组队概率。 */
+  evidenceCoverage: { complete: number; identity: number };
   members: PartyMember[];
   /** 该结果使用的最少同队次数；对局内初筛固定为 3，历史页按组合规模计算。 */
   requiredGames: number;

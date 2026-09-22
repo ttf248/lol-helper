@@ -25,6 +25,7 @@ const makeAnalytics = (services = {}) => createLoader({
 }, { [analyticsPath]: ['buildPartyGroupsStructure', 'buildCurrentTeamPartyGroups', 'buildCurrentMatchGame',
   'buildNetworkAnalysis', 'buildOpponentStats', 'buildPlayerPartyGroups', 'applyPartyGroupOverlay', 'syncPlayerModeGames', 'getTeamPartyCoverage'] })(analyticsPath);
 const analytics = makeAnalytics();
+const scoring = createLoader({ '@/utils/logger': { logger: silentLogger } })('src/recentMatch/utils/partyScoring.ts');
 const player = (i) => ({ ...fullGame().participants[i], champId: i + 1, matchList: [] });
 const snapshot = (games) => ({ games: new Map(games.map(g => [g.gameId, g])), complete: true, recentHistoryVerified: true, source: 'test', sourceEndpoints: [] });
 
@@ -87,11 +88,46 @@ test('historical evidence does not invent membership in another player recent wi
   const current = analytics.buildCurrentMatchGame(team, [], 420, 99);
   const result = analytics.buildCurrentTeamPartyGroups(team, snapshots, current, new Map());
   assert.equal(result[0].recentWindowGames, undefined);
+  assert.equal(result[0].relationKind, 'historical');
   const both = new Map([['p0', snapshot(games)], ['p1', snapshot(games)]]);
   const recent = analytics.buildCurrentTeamPartyGroups(team, both, current, new Map())[0];
   assert.equal(recent.recentWindowGames, 3);
+  assert.equal(recent.relationKind, 'recent');
   assert.equal(recent.historicalGames, 2);
   assert.equal(recent.winRate, 100);
+});
+
+test('party strength is independent of wins and moderation, and agrees across entry points', () => {
+  const games = Array.from({ length: 5 }, (_, i) => fullGame(i + 1));
+  const team = [player(0), player(1)];
+  const snapshots = new Map([['p0', snapshot(games)], ['p1', snapshot(games)]]);
+  const structure = analytics.buildPartyGroupsStructure(team, snapshots)[0];
+  const absent = analytics.applyPartyGroupOverlay(structure, new Map(), Date.now());
+  const available = analytics.applyPartyGroupOverlay(structure, new Map(team.map(p => [p.puuid, { available: true }])), Date.now());
+  assert.equal(absent.confidence.score, available.confidence.score);
+  const losses = games.map(g => ({ ...g, participants: g.participants.map(p => ({ ...p, win: false })) }));
+  const lossStructure = analytics.buildPartyGroupsStructure(team, new Map([['p0', snapshot(losses)]]))[0];
+  assert.equal(structure.stabilityScore, lossStructure.stabilityScore);
+  const personal = analytics.buildPlayerPartyGroups(player(0), snapshot(games), new Map())
+    .find(g => g.members.length === 2 && g.members.some(p => p.puuid === 'p1'));
+  assert.equal(personal.confidence.score, absent.confidence.score);
+  assert.equal(personal.stabilityScore, absent.stabilityScore);
+  assert.equal(personal.highWinRateAlert, false);
+});
+
+test('old relationships decay and current match cannot refresh historical activity', () => {
+  const now = Date.now();
+  const team = [player(0), player(1)];
+  const old = [fullGame(1, now - 180 * 86400000), fullGame(2, now - 179 * 86400000)];
+  const snapshots = new Map(team.map(p => [p.puuid, snapshot(old)]));
+  const result = analytics.buildCurrentTeamPartyGroups(team, snapshots,
+    analytics.buildCurrentMatchGame(team, [], 420, 99), new Map())[0];
+  assert.equal(result.lastActiveDays, 179);
+  assert.equal(result.recentGames, 0);
+  assert.equal(result.stabilityScore, 0);
+  assert.equal(scoring.hasHighWinRateEvidence(5, 5), false);
+  assert.equal(scoring.hasHighWinRateEvidence(8, 10), false);
+  assert.equal(scoring.hasHighWinRateEvidence(9, 10), true);
 });
 
 test('complete rosters survive partial records in either merge direction, including duplicate cache rows', () => {

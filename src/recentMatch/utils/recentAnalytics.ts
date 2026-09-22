@@ -42,6 +42,7 @@ import {
 } from "@/recentMatch/utils/historyConfig";
 import { logger } from "@/utils/logger";
 import { buildHistoryEvidence } from "@/recentMatch/utils/historyEvidence";
+import { scorePartyEvidence, hasHighWinRateEvidence } from "@/recentMatch/utils/partyScoring";
 import {
     findPlayerParticipant,
     participantMatchesPlayer,
@@ -1001,16 +1002,6 @@ const participantToRecentPlayer = (
   matchList: [],
 });
 
-const toPartyMemberFromParticipant = (
-  participant: NormalizedHistoryParticipant,
-  moderationMap: Map<string, PlayerModerationInfo>,
-): PartyMember => ({
-  puuid: participant.puuid,
-  summonerId: participant.summonerId,
-  summonerName: participantDisplayName(participant),
-  moderation: moderationMap.get(participant.puuid) || emptyModeration(),
-});
-
 const buildOpponentStats = (
   player: RecentSumInfo,
   opponents: RecentSumInfo[],
@@ -1059,6 +1050,9 @@ const buildOpponentStats = (
  * overlay 阶段叠加。
  */
 type StructuralPartyGroup = {
+  confidenceScore: number;
+  completeCoverage: number;
+  identityCoverage: number;
   members: RecentSumInfo[];
   requiredGames: number;
   /** 结构层总同队次数；对局内结果包含当前对局。 */
@@ -1073,7 +1067,7 @@ type StructuralPartyGroup = {
   winRate: number;
   latestGameAt: number;
   recentGames: number;
-  /** 已经包含 games/recentGames/winRate 的预计算分。 */
+  /** 关系强度：时间衰减、近期共同占比与连续同队，排除胜负。 */
   stabilityScore: number;
   /** 仅依赖结构层数据，可提前计算避免在 overlay 阶段再判一次。 */
   highWinRateAlert: boolean;
@@ -1129,8 +1123,6 @@ const buildPartyGroupsStructure = (
       let historicalGames = 0;
       let currentMatchGames = 0;
       let wins = 0;
-      let latestGameAt = 0;
-      let recentGames = 0;
       const evidence: PartyEvidence[] = [];
       for (const gameId of commonGameIds) {
         const game = allGames.get(gameId);
@@ -1168,10 +1160,6 @@ const buildPartyGroupsStructure = (
           gameCreation: game.gameCreation,
           isCurrentMatch,
         });
-        latestGameAt = Math.max(latestGameAt, game.gameCreation);
-        if (game.gameCreation >= now - RECENT_ACTIVITY_DAYS * DAY_MS) {
-          recentGames += 1;
-        }
       }
 
       // 对局内的候选门槛由调用方明确传入：当前对局 + 最近 4 场中，
@@ -1182,11 +1170,7 @@ const buildPartyGroupsStructure = (
       const minimumGames = options.minimumGames ?? requiredGames;
       if (games < minimumGames) continue;
       const winRate = roundRate(wins, historicalGames) ?? 0;
-      const stabilityScore = Math.round(
-        Math.min(games / 10, 1) * 40 +
-          Math.min(recentGames / 5, 1) * 30 +
-          (winRate / 100) * 30,
-      );
+      const scores = scorePartyEvidence(group, evidence, Array.from(allGames.values()), now);
       structures.push({
         members: group,
         requiredGames,
@@ -1195,11 +1179,8 @@ const buildPartyGroupsStructure = (
         currentMatchGames,
         wins,
         winRate,
-        latestGameAt,
-        recentGames,
-        stabilityScore,
-        highWinRateAlert:
-          historicalGames >= 5 && winRate >= 65 && stabilityScore >= 55,
+        ...scores,
+        highWinRateAlert: hasHighWinRateEvidence(wins, historicalGames),
         evidence: evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
@@ -1239,16 +1220,13 @@ const applyPartyGroupOverlay = (
   );
   const historicalGames = structure.historicalGames;
   const recentWindowGames = structure.recentWindowGames;
-  const confidenceScore = Math.round(
-    Math.min((recentWindowGames ?? historicalGames) / PARTY_RECENT_MATCH_COUNT, 1) * 50 +
-      Math.min(historicalGames / 10, 1) * 40 +
-      (moderationAvailable ? 10 : 0),
-  );
   const lastActiveDays = structure.latestGameAt
     ? Math.max(0, Math.floor((now - structure.latestGameAt) / DAY_MS))
     : null;
   return {
     members,
+    relationKind: recentWindowGames === undefined ? "historical" : "recent",
+    evidenceCoverage: { complete: structure.completeCoverage, identity: structure.identityCoverage },
     requiredGames: structure.requiredGames,
     recentWindowGames,
     historicalGames,
@@ -1262,16 +1240,18 @@ const applyPartyGroupOverlay = (
     stabilityScore: structure.stabilityScore,
     stabilityLevel: confidenceLevel(structure.stabilityScore),
     highWinRateAlert: structure.highWinRateAlert,
-    confidence: confidenceInfo(confidenceScore, [
+    confidence: confidenceInfo(structure.confidenceScore, [
       ...(recentWindowGames === undefined
         ? [`共同对局 ${structure.games} 场`]
         : [
-            `最近${PARTY_RECENT_MATCH_COUNT}局共同同队 ${recentWindowGames} 次（含当前对局）`,
+            `当前模式最近${PARTY_RECENT_MATCH_COUNT}局共同同队 ${recentWindowGames} 次（含当前对局）`,
             `初筛门槛：同队次数至少 3 次`,
           ]),
       `历史共同同队 ${historicalGames} 场`,
       `近${RECENT_ACTIVITY_DAYS}天共同对局 ${structure.recentGames} 场`,
-      "组队关系由最近窗口初筛，再由历史同队记录补充",
+      recentWindowGames === undefined ? "历史同队关系，不代表本局正在组队" : "近期疑似组队，历史记录用于补充证据",
+      `阵容完整覆盖 ${structure.completeCoverage}% · 强身份覆盖 ${structure.identityCoverage}%`,
+      "证据强度不是组队概率；关系强度不使用胜负或举报信息",
     ]),
     moderationAvailable,
     blacklistedMembers,
@@ -1484,6 +1464,7 @@ const buildPlayerPartyGroups = (
   for (const game of snapshot.games.values()) {
     const ownParticipant = findPlayerParticipant(game, player);
     if (!ownParticipant || ownParticipant.teamId <= 0) continue;
+    if (game.source === CURRENT_MATCH_SOURCE) continue;
 
     const teammates = Array.from(
       new Map(
@@ -1535,60 +1516,24 @@ const buildPlayerPartyGroups = (
       if (group.games < requiredGames) return null;
 
       const winRate = roundRate(group.wins, group.games) ?? 0;
-      const lastActiveDays = group.latestGameAt
-        ? Math.max(0, Math.floor((now - group.latestGameAt) / DAY_MS))
-        : null;
-      const stabilityScore = Math.round(
-        Math.min(group.games / 10, 1) * 40 +
-          Math.min(group.recentGames / 5, 1) * 30 +
-          (winRate / 100) * 30,
-      );
       const members = [
-        toPartyMember(player, moderationMap),
-        ...group.teammates.map((participant) =>
-          toPartyMemberFromParticipant(participant, moderationMap),
-        ),
+        player,
+        ...group.teammates.map(participantToRecentPlayer),
       ];
-      const blacklistedMembers = members.filter(
-        (member) => member.moderation?.marked === true,
-      );
-      const reportedMembers = members.filter(
-        (member) => (member.moderation?.reportCount || 0) > 0,
-      );
-      const confidenceScore = Math.round(
-        Math.min(group.games / 10, 1) * 70 +
-          Math.min(group.recentGames / 5, 1) * 20 +
-          (members.every((member) => member.moderation?.available) ? 10 : 0),
-      );
-
-      return {
+      return applyPartyGroupOverlay({
         members,
         requiredGames,
         games: group.games,
+        historicalGames: group.games,
+        currentMatchGames: 0,
         wins: group.wins,
         winRate,
-        latestGameAt: group.latestGameAt,
-        recentGames: group.recentGames,
-        lastActiveDays,
-        stabilityScore,
-        stabilityLevel: confidenceLevel(stabilityScore),
-        highWinRateAlert:
-          group.games >= 5 && winRate >= 65 && stabilityScore >= 55,
-        confidence: confidenceInfo(confidenceScore, [
-          `共同对局 ${group.games} 场`,
-          `${memberCount}人组合门槛 ${requiredGames} 场共同同队`,
-          `近${RECENT_ACTIVITY_DAYS}天共同对局 ${group.recentGames} 场`,
-          "组合由 PostgreSQL 缓存中的逐局同队记录推断",
-        ]),
-        moderationAvailable: members.every(
-          (member) => member.moderation?.available === true,
-        ),
-        blacklistedMembers,
-        reportedMembers,
+        ...scorePartyEvidence(members, group.evidence, Array.from(snapshot.games.values()), now),
+        highWinRateAlert: hasHighWinRateEvidence(group.wins, group.games),
         evidence: group.evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
-      } satisfies PartyGroupAnalysis;
+      }, moderationMap, now);
     })
     .filter((group): group is PartyGroupAnalysis => group !== null)
     .sort(

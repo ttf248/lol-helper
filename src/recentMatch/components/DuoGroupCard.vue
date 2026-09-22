@@ -8,6 +8,7 @@ import {
   lastActiveLabel,
   partyGroupNames,
   partyEvidenceTime,
+  partyRelationLabel,
   winRateTagType,
 } from "@/recentMatch/utils/partyDisplay";
 
@@ -47,7 +48,7 @@ const tagType = computed(() =>
     : winRateTagType(props.group.winRate),
 );
 const headerTagText = computed(() =>
-  props.group.highWinRateAlert ? "高胜率开黑" : "疑似开黑",
+  partyRelationLabel(props.group),
 );
 </script>
 
@@ -70,6 +71,7 @@ const headerTagText = computed(() =>
         <n-tag size="tiny" :type="tagType" :bordered="false">
           {{ headerTagText }}
         </n-tag>
+        <n-tag v-if="group.highWinRateAlert" size="tiny" type="warning" :bordered="false">共同对局高胜率</n-tag>
         <n-tag
           v-if="group.blacklistedMembers.length"
           size="tiny"
@@ -110,19 +112,19 @@ const headerTagText = computed(() =>
             {{ formatRate(group.winRate) }}
           </span>
           <span class="duo-card-metric-sep">·</span>
-          <span class="duo-card-metric">{{ group.games }}场</span>
+          <span class="duo-card-metric">{{ group.historicalGames ?? group.games }}场已结束</span>
           <span v-if="mode !== 'compact'" class="duo-card-metric-sep">·</span>
           <span v-if="mode !== 'compact'" class="duo-card-metric">
-            稳定度{{ group.stabilityScore }}
+            关系强度{{ group.stabilityScore }}
           </span>
         </div>
         <div v-if="mode === 'full'" class="duo-card-submetric-row">
           <template v-if="group.recentWindowGames !== undefined">
-            最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
+            当前模式最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
             {{ group.historicalGames || 0 }} 场 ·
           </template>
           <template v-else>近30天 {{ group.recentGames }} 场 ·</template>
-          最近 {{ lastActiveLabel(group) }} · 置信度 {{ confidenceLabel(group.confidence) }}
+          最近历史同队 {{ lastActiveLabel(group) }} · 证据强度 {{ confidenceLabel(group.confidence) }}
         </div>
       </div>
     </div>
@@ -132,11 +134,11 @@ const headerTagText = computed(() =>
       <div class="duo-card-evidence">
         <slot name="evidence" :group="group">
           <div class="duo-card-evidence-inner text-xs leading-5">
-            <div class="font-medium mb-1">为什么标记为“疑似开黑”</div>
+            <div class="font-medium mb-1">{{ partyRelationLabel(group) }}的依据</div>
             <div class="font-medium">{{ names }}</div>
             <div>
               <template v-if="group.recentWindowGames !== undefined">
-                最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
+                当前模式最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
                 {{ group.historicalGames || 0 }} 场
               </template>
               <template v-else>
@@ -176,11 +178,11 @@ const headerTagText = computed(() =>
       </template>
       <slot name="evidence" :group="group">
         <div class="duo-card-evidence-inner text-xs leading-5">
-          <div class="font-medium mb-1">为什么标记为“疑似开黑”</div>
+          <div class="font-medium mb-1">{{ partyRelationLabel(group) }}的依据</div>
           <div class="font-medium">{{ names }}</div>
           <div>
             <template v-if="group.recentWindowGames !== undefined">
-              最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
+              当前模式最近5局同队 {{ group.recentWindowGames }} 次（含当前） · 历史共同
               {{ group.historicalGames || 0 }} 场 ·
             </template>
             <template v-else>近30天 {{ group.recentGames }} 场 ·</template>
@@ -196,7 +198,7 @@ const headerTagText = computed(() =>
             {{ evidence.isCurrentMatch ? "本局" : evidence.gameId }}
           </div>
           <div class="text-gray-500 mt-1">
-            先按当前对局加最近4场做同队初筛，再取通过初筛的组合的历史 gameId 交集并确认 teamId。
+            近期关系要求当前模式各成员最近4场加本局共同同队至少3次；历史关系来自已加载的同队记录，不代表本局正在组队。证据强度并非组队概率。
           </div>
         </div>
       </slot>
