@@ -700,9 +700,10 @@ test('T9: 4 人随机各只同队 1 次不会被误判为 4-黑', () => {
   assert.equal(size4, undefined, '单场 4 人同队 1 次不构成 4-黑');
 });
 
-// 关闭凝聚 fallback（cohesionPairThreshold=Infinity）应回到原行为：
+// 关闭凝聚 fallback（cohesionPairThreshold=Infinity）和连续松弛
+// （consecutiveRelaxationThreshold=Infinity）应回到原行为：
 // 4-黑 只打了 2 场 size=4 走不过 size 门槛 → 不输出。
-test('T10: cohesionPairThreshold=Infinity 关闭 fallback，回到 size-based 门槛', () => {
+test('T10: 关闭两个 fallback（凝聚力 + 连续松弛），回到 size-based 门槛', () => {
   const nowMs = Date.now();
   const fourBlack = [
     fixtures.CORE_PUUIDS.player,
@@ -730,9 +731,10 @@ test('T10: cohesionPairThreshold=Infinity 关闭 fallback，回到 size-based �
   );
   const structures = analytics.buildPartyGroupsStructure(players, snapshots, {
     cohesionPairThreshold: Infinity,
+    consecutiveRelaxationThreshold: Infinity,
   });
   const size4 = structures.find((s) => s.members.length === 4);
-  assert.equal(size4, undefined, '关闭 fallback 后 size=4 不应输出');
+  assert.equal(size4, undefined, '关闭两个 fallback 后 size=4 不应输出');
   const size2 = structures.filter((s) => s.members.length === 2);
   assert.equal(size2.length, 6, '保留 6 个 size=2 子组合');
 });
@@ -795,4 +797,150 @@ test('T11: 含额外 AB-2黑历史的 4-黑，仍识别为完整 size=4', () => 
     ].sort().join('|'),
     'primary 必须是玩家+Uzi+solo+1is 这个 4-黑',
   );
+});
+
+// 新门槛公式：size≥3 封顶在 3 场（不再随 size 缩放）
+test('T12: 4-黑 打了 3 场（非连续）也通过 size-based 门槛（封顶 3）', () => {
+  const nowMs = Date.now();
+  const fourBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const games = [];
+  // 3 场 4-黑，每场之间插一个该玩家不参与的"间隔对局"
+  // 让这 3 场在每位玩家时间线上不连续，验证仅靠 size-based 门槛（封顶3）
+  // 而不是连续松弛来通过。
+  for (let i = 0; i < 3; i += 1) {
+    games.push(fixtures.makeHexAramTeam({
+      gameId: 7000 + i * 2,
+      gameCreation: nowMs - i * 60 * 60 * 1000,
+      ownPuuids: fourBlack,
+    }));
+  }
+  const players = fourBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const size4 = structures.find((s) => s.members.length === 4);
+  assert.ok(size4, '4-黑 打了 3 场应被识别（封顶 3 而非 size=4→4）');
+  assert.equal(size4.historicalGames, 3);
+});
+
+// 连续松弛：3+ 人组只要 2 场"对所有成员都连续"的同队即视为开黑
+test('T13: 4-黑 打了 2 场连续场命中（成员之间没插队）→ 通过连续松弛', () => {
+  const nowMs = Date.now();
+  const fourBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  // 2 场连续 4-黑，时间戳相邻，成员没有"插队"对局
+  const games = [
+    fixtures.makeHexAramTeam({
+      gameId: 8001,
+      gameCreation: nowMs - 0,
+      ownPuuids: fourBlack,
+    }),
+    fixtures.makeHexAramTeam({
+      gameId: 8002,
+      gameCreation: nowMs - 30 * 60 * 1000,
+      ownPuuids: fourBlack,
+    }),
+  ];
+  const players = fourBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const size4 = structures.find((s) => s.members.length === 4);
+  assert.ok(size4, '4-黑 2 场连续对所有成员 → 应识别为 size=4');
+  assert.equal(size4.historicalGames, 2);
+});
+
+// 5-黑 打了 2 场连续 → size-first 选最大组，5-黑胜出
+test('T14: 5-黑 2 场连续 → 识别为 size=5（原本门槛 5 现在封顶 3）', () => {
+  const nowMs = Date.now();
+  const fiveBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.zhongyi,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const games = [
+    fixtures.makeHexAramTeam({
+      gameId: 9001,
+      gameCreation: nowMs - 0,
+      ownPuuids: fiveBlack,
+    }),
+    fixtures.makeHexAramTeam({
+      gameId: 9002,
+      gameCreation: nowMs - 30 * 60 * 1000,
+      ownPuuids: fiveBlack,
+    }),
+  ];
+  const players = fiveBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const size5 = structures.find((s) => s.members.length === 5);
+  assert.ok(size5, '5-黑 2 场连续 → 应识别为 size=5（不再卡 5 场门槛）');
+  assert.equal(size5.historicalGames, 2);
+});
+
+// 反例：4-黑 2 场 NON-consecutive（成员 A 在中间打了别的）→ 连续松弛失败
+// 期望凝聚力 fallback（每对 PUUID 都 2 场）兜底
+test('T15: 4-黑 2 场成员中途打过别的对局（非连续）→ 连续松弛失败，凝聚力兜底', () => {
+  const nowMs = Date.now();
+  const A = fixtures.CORE_PUUIDS.player;
+  const B = fixtures.CORE_PUUIDS.uzi;
+  const C = fixtures.CORE_PUUIDS.solo;
+  const D = fixtures.CORE_PUUIDS.yisi;
+  const fourBlack = [A, B, C, D];
+
+  // 第 1 场 4-黑 (nowMs - 60min)
+  const game1 = fixtures.makeHexAramTeam({
+    gameId: 11001,
+    gameCreation: nowMs - 60 * 60 * 1000,
+    ownPuuids: fourBlack,
+  });
+  // 玩家 A 在中间插了一场 ARAM（不进队），破坏连续
+  const interlude = fixtures.makeHexAramTeam({
+    gameId: 11002,
+    gameCreation: nowMs - 30 * 60 * 1000,
+    ownPuuids: [A, 'opp-x1', 'opp-x2', 'opp-x3', 'opp-x4'],
+  });
+  // 第 2 场 4-黑 (nowMs)
+  const game2 = fixtures.makeHexAramTeam({
+    gameId: 11003,
+    gameCreation: nowMs - 0,
+    ownPuuids: fourBlack,
+  });
+
+  const players = fourBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  // A 拥有 3 场（含中间插的），B/C/D 只有 2 场
+  const snapshots = new Map([
+    [players[0].puuid, fixtures.snapshot([game1, interlude, game2])],
+    [players[1].puuid, fixtures.snapshot([game1, game2])],
+    [players[2].puuid, fixtures.snapshot([game1, game2])],
+    [players[3].puuid, fixtures.snapshot([game1, game2])],
+  ]);
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const size4 = structures.find((s) => s.members.length === 4);
+  // 阈值 3 不达（仅 2 场），连续松弛因 A 插队失败，
+  // 凝聚力 fallback：6 对 PUUID 各有 2 场 ≥ 2 → 凝聚力通过
+  assert.ok(size4, '非连续时凝聚力兜底（连续松弛失败但凝聚力通过）');
 });

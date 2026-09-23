@@ -1103,6 +1103,13 @@ interface PartyGroupStructureOptions {
    * （用于回归测试与关闭新逻辑）。
    */
   cohesionPairThreshold?: number;
+  /**
+   * 连续同队松弛：3+ 人组队时，2 场"对所有成员都连续"的同队即视为开黑。
+   * 关闭后只剩 size-based 门槛 + 凝聚力 fallback。
+   *
+   * 默认 2。设 `Infinity` 关闭连续松弛（用于回归测试）。
+   */
+  consecutiveRelaxationThreshold?: number;
 }
 
 /**
@@ -1215,32 +1222,93 @@ export const buildPartyGroupsStructure = (
       // 对局内的候选门槛由调用方明确传入：当前对局 + 最近 4 场中，
       // 同队次数至少 3 次。历史阶段只负责丰富近期候选；旧的完整历史
       // 通道由调用方另外执行并在最后合并。
-      const defaultRequiredGames = Math.max(2, Math.min(group.length, 5));
+      //
+      // 默认门槛封顶在 3：size=2 需 2 场，size≥3 一律按 3 场算。原本
+      // size=4 需 4 场、size=5 需 5 场，对真实开黑过严 —— 5 人协调同
+      // 队已是强信号，5 行门槛不合理。
+      const defaultRequiredGames = Math.max(2, Math.min(group.length, 3));
       const requiredGames = options.requiredGames ?? defaultRequiredGames;
       const minimumGames = options.minimumGames ?? requiredGames;
       if (games < minimumGames) {
-        // 凝聚力 fallback：size-based 门槛未达成时启用，每对 PUUID
-        // 都已至少同队 `cohesionPairThreshold` 次 → 视为真组队。
-        // 这是修复 "4-黑 只打了 2-3 场被拆成 2+2" 的关键：默认门槛
-        // size=4 ≥ 4 场，但 4-黑 只同队 2 次时 6 对都满足 2 ≥ 2。
+        // 三段式 fallback（从最强证据到最弱）：
+        //
+        // 1. 连续同队松弛：size≥3 的组只要有 N 场"对所有成员都连续"
+        //    的同队 → 视为真组队。这是"3+ 人连续 2 局就判定开黑"的
+        //    实现。"连续"=对每个成员，这两场之间没打过别的对局。
+        //
+        // 2. 凝聚力 fallback：size-based 门槛未达成时启用，每对 PUUID
+        //    都已至少同队 cohesionPairThreshold 次 → 视为真组队。
+        //    修复 "4-黑 只打了 2-3 场被拆成 2+2" 的关键。
+        //
+        // 3. 否则拒绝。
         //
         // 仅在调用方没显式覆盖 requiredGames（用了 size-based 默认值）
         // 时启用 fallback。近期窗口初筛传 requiredGames=3 是有意压
         // 高门槛、不希望被 fallback 削弱。
         if (requiredGames !== defaultRequiredGames) continue;
-        const cohesionThreshold = options.cohesionPairThreshold ?? 2;
-        if (cohesionThreshold === Infinity) continue;
-        let cohesive = true;
-        outer: for (let i = 0; i < group.length; i += 1) {
-          for (let j = i + 1; j < group.length; j += 1) {
-            const key = [group[i].puuid, group[j].puuid].sort().join("|");
-            if ((pairCounts.get(key) ?? 0) < cohesionThreshold) {
-              cohesive = false;
-              break outer;
+        let passesFallback = false;
+
+        // 第 1 段：连续同队松弛
+        const consecutiveThreshold =
+          options.consecutiveRelaxationThreshold ?? 2;
+        if (
+          group.length >= 3 &&
+          consecutiveThreshold !== Infinity &&
+          games >= consecutiveThreshold &&
+          evidence.length >= consecutiveThreshold
+        ) {
+          // 取时间戳最近的连续 N 场 evidence
+          const sortedEvidence = [...evidence].sort(
+            (left, right) => right.gameCreation - left.gameCreation,
+          );
+          const topN = sortedEvidence.slice(0, consecutiveThreshold);
+          const distinctIds = new Set(topN.map((item) => item.gameId));
+          if (distinctIds.size >= consecutiveThreshold) {
+            // 检查这 N 场之间对每个成员都没有"其他对局"
+            let allConsecutive = true;
+            outerConsecutive: for (const member of group) {
+              const snapshot = snapshots.get(member.puuid);
+              if (!snapshot) continue;
+              const memberGameIds = new Set(topN.map((item) => item.gameId));
+              for (const game of snapshot.games.values()) {
+                if (memberGameIds.has(game.gameId)) continue;
+                // game 不在连续 N 场里，但 gameCreation 在 N 场范围内
+                // 视为成员在 N 场之间打过其他对局 → 破坏连续性
+                const minCreation = Math.min(
+                  ...topN.map((item) => item.gameCreation),
+                );
+                const maxCreation = Math.max(
+                  ...topN.map((item) => item.gameCreation),
+                );
+                if (
+                  game.gameCreation > minCreation &&
+                  game.gameCreation < maxCreation
+                ) {
+                  allConsecutive = false;
+                  break outerConsecutive;
+                }
+              }
             }
+            if (allConsecutive) passesFallback = true;
           }
         }
-        if (!cohesive) continue;
+
+        // 第 2 段：凝聚力 fallback
+        if (!passesFallback) {
+          const cohesionThreshold = options.cohesionPairThreshold ?? 2;
+          if (cohesionThreshold === Infinity) continue;
+          let cohesive = true;
+          outer: for (let i = 0; i < group.length; i += 1) {
+            for (let j = i + 1; j < group.length; j += 1) {
+              const key = [group[i].puuid, group[j].puuid].sort().join("|");
+              if ((pairCounts.get(key) ?? 0) < cohesionThreshold) {
+                cohesive = false;
+                break outer;
+              }
+            }
+          }
+          if (!cohesive) continue;
+        }
       }
       const winRate = roundRate(wins, historicalGames) ?? 0;
       // 每位成员作为同队成员在该组合 evidence 中出现的最少场次。
