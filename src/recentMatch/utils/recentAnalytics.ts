@@ -1052,7 +1052,7 @@ const buildOpponentStats = (
  * 先用于最近窗口初筛，再用于候选组合的完整历史统计；举报结果只在
  * overlay 阶段叠加。
  */
-type StructuralPartyGroup = {
+export type StructuralPartyGroup = {
   confidenceScore: number;
   completeCoverage: number;
   identityCoverage: number;
@@ -1097,13 +1097,19 @@ interface PartyGroupStructureOptions {
   requiredGames?: number;
 }
 
+/**
+ * 对一组玩家 × 各自历史的快照，枚举所有 size≥2 同队组合并返回
+ * 结构层结果（不含 moderation/置信度字段；调用方需通过
+ * `applyPartyGroupOverlay` 叠加）。已在前端对局内面板和首页历史分析
+ * 使用；首页战绩查询面板也通过 `useMatchPartyAnalysis` 复用本函数。
+ */
 const partyGroupKey = (members: RecentSumInfo[]): string =>
   members
     .map((member) => member.puuid)
     .sort()
     .join("|");
 
-const buildPartyGroupsStructure = (
+export const buildPartyGroupsStructure = (
   players: RecentSumInfo[],
   snapshots: Map<string, PlayerHistorySnapshot>,
   options: PartyGroupStructureOptions = {},
@@ -1225,7 +1231,13 @@ const buildPartyGroupsStructure = (
  * 把结构层结果叠加 moderation/黑名单/置信度等 UI 字段。
  * 纯函数：给定相同输入（structure + moderationMap + now）总返回相同结果。
  */
-const applyPartyGroupOverlay = (
+/**
+ * 把结构层结果叠加 moderation/黑名单/置信度等 UI 字段。
+ * 纯函数：给定相同输入（structure + moderationMap + now）总返回相同结果。
+ * 已在前端对局内面板和首页历史分析使用；首页战绩查询面板也通过
+ * `useMatchPartyAnalysis` 复用本函数。
+ */
+export const applyPartyGroupOverlay = (
   structure: StructuralPartyGroup,
   moderationMap: Map<string, PlayerModerationInfo>,
   now: number,
