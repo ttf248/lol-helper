@@ -505,3 +505,61 @@ test('T5: 现有稳定性不依赖胜负与举报（回归保护）', () => {
   )[0];
   assert.equal(structure.stabilityScore, lossStructure.stabilityScore);
 });
+
+// T6 / T7 复用 fixtures 验证首页开黑分析 composable 链路：
+// buildPartyGroupsStructure → applyPartyGroupOverlay → selectPrimaryPartyGroups
+
+test('T6: 首页开黑分析复用 buildPartyGroupsStructure 输出正确结构', () => {
+  // 5 名玩家 + 9 场 5 黑对局 → 应输出 size=5 全员组合 key 多起，historicalGames=9。
+  const nowMs = Date.now();
+  const games = fixtures.buildPlayerHistoricalTenGames(nowMs);
+  const player = fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '鼠标加键盘');
+  const teammates = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.zhongyi, '中意不如介意'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+  ];
+  const allPlayers = [player, ...teammates];
+  const snapshots = new Map(allPlayers.map(p => [p.puuid, fixtures.snapshot(games)]));
+  const structures = analytics.buildPartyGroupsStructure(
+    allPlayers, snapshots,
+    { evidence: new Map(games.map(g => [g.gameId, g])) },
+  );
+  const fullFive = structures.find(s => s.members.length === 5);
+  assert.ok(fullFive, 'should have a size=5 group');
+  assert.equal(fullFive.historicalGames, 9);
+  // overlay 后 evidence.count == games == 5（size=5 时）
+  const overlay = analytics.applyPartyGroupOverlay(fullFive, new Map(), Date.now());
+  assert.equal(overlay.members.length, 5);
+  assert.equal(overlay.historicalGames, 9);
+});
+
+test('T7: 首页开黑 chip 标记：size=4 子组合胜出 size=5 全员组合', () => {
+  const nowMs = Date.now();
+  const games = fixtures.buildPlayerHistoricalTenGames(nowMs);
+  const player = fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '鼠标加键盘');
+  const teammates = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.zhongyi, '中意不如介意'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+  ];
+  const allPlayers = [player, ...teammates];
+  const snapshots = new Map(allPlayers.map(p => [p.puuid, fixtures.snapshot(games)]));
+  const structures = analytics.buildPartyGroupsStructure(
+    allPlayers, snapshots,
+    { evidence: new Map(games.map(g => [g.gameId, g])) },
+  );
+  const groups = structures.map(s => analytics.applyPartyGroupOverlay(s, new Map(), Date.now()));
+  // selectPrimaryPartyGroups 输出形如「原始链表里按稳定性筛出的互不重叠小组」。
+  const primary = selectPartyGroups(groups, { showSubgroups: false });
+  const size4 = primary.find(g => g.members.length === 4);
+  const size5 = primary.find(g => g.members.length === 5);
+  assert.ok(size4 && size5, 'primary 应同时包含 size=4 子组合和 size=5 全员组合');
+  // 用户口述"最近两局四黑、前面五黑"与 size=4 子组合胜出对应。
+  assert.ok(size4.stabilityScore > size5.stabilityScore,
+    `expected size=4 (${size4.stabilityScore}) > size=5 (${size5.stabilityScore})`);
+  assert.equal(size4.historicalGames, 10);
+  assert.equal(size5.historicalGames, 9);
+});

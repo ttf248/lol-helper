@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { NSpace, NTag, NPopover } from "naive-ui";
 import { SummonerDetailInfo } from "@/queryMatch/utils/MatchDetail";
 import { getspellImgUrl } from "@/lcu/utils";
 import MatchSumDetails from "@/queryMatch/common/matchSumDetails.vue";
 import { getIconImg } from "@/queryMatch/utils/tools";
+import type { PartyGroupAnalysis } from "@/recentMatch/utils/queryTypes";
 
-const { summonerList, summonerId, isOne, showMode } = defineProps<{
+const { summonerList, summonerId, isOne, showMode, partyGroups } = defineProps<{
     summonerList: SummonerDetailInfo[];
     summonerId: number;
     isOne: boolean;
     showMode: string;
+    /** 当前对局涉及的开黑组合（首页战绩查询面板传入；undefined/空数组时无 chip）。 */
+    partyGroups?: PartyGroupAnalysis[];
 }>();
 
 const emits = defineEmits(["openDrawer"]);
@@ -23,6 +27,26 @@ const getMetric = (summoner: SummonerDetailInfo, key: string) =>
 
 const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
     (summoner.showDataDict as unknown as Record<string, string>)[key] ?? "0%";
+
+/**
+ * 把 `partyGroups` 摊平成 `Map<puuid, PartyGroupAnalysis>`，按
+ * `selectPrimaryPartyGroups` 的语义保证一个 puuid 最多出现在一个组里。
+ * 当 `partyGroups` 缺失或为空时返回空 Map。
+ */
+const partyGroupByPuuid = computed<Map<string, PartyGroupAnalysis>>(() => {
+    const map = new Map<string, PartyGroupAnalysis>();
+    if (!partyGroups || partyGroups.length === 0) return map;
+    for (const group of partyGroups) {
+        for (const member of group.members) {
+            if (!member.puuid) continue;
+            // selectPrimaryPartyGroups 在主程侧已保证不重复；这里再做一次兜底
+            // 防御，避免传入脏数据时同一个 puuid 出现在多个 chip 里。
+            if (map.has(member.puuid)) continue;
+            map.set(member.puuid, group);
+        }
+    }
+    return map;
+});
 </script>
 
 <template>
@@ -35,6 +59,8 @@ const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
                 :summoner="summoner"
                 :summoner-id="summonerId"
                 :is-one="isOne"
+                :party-group="partyGroupByPuuid.get(summoner.puuid) ?? null"
+                :self-puuid="summoner.puuid"
             />
             <!--        数据显示-->
             <div class="progressDivP">

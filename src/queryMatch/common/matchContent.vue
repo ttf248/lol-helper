@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ref, ref } from "vue";
+import { Ref, ref, watch } from "vue";
 import { NDrawer, NDrawerContent, NResult, NSpin } from "naive-ui";
 import MatchDetails from "./matchDetails.vue";
 import MatchConHeader from "./matchConHeader.vue";
@@ -7,9 +7,11 @@ import MatchDrawer from "@/queryMatch/common/matchDrawer.vue";
 import MatchDetailsFighter from "@/queryMatch/common/matchDetailsFighter.vue";
 import { SumDetail, SummonerDetailInfo } from "@/queryMatch/utils/MatchDetail";
 import { logger } from "@/utils/logger";
+import type { PartyGroupAnalysis } from "@/recentMatch/utils/queryTypes";
+import { loadMatchPartyAnalysis } from "@/queryMatch/composables/useMatchPartyAnalysis";
 
 const emits = defineEmits(["changeSum"]);
-const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn } =
+const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn, gameId } =
     defineProps<{
         teamOne: SummonerDetailInfo[];
         teamTwo: SummonerDetailInfo[];
@@ -17,7 +19,37 @@ const { teamOne, teamTwo, headerInfo, summonerId, queueId, isGameIn } =
         queueId: number;
         summonerId: number;
         isGameIn: boolean;
+        gameId?: number;
     }>();
+
+// 首页开黑组合分析：本场载入后异步从 PG 缓存拉取，结果通过
+// `partyGroupByPuuid` 在 `matchDetails` 内按 puuid 查找对应组合。
+const matchPartyGroups = ref<PartyGroupAnalysis[]>([]);
+watch(
+    () => gameId,
+    async (nextGameId) => {
+        if (nextGameId === undefined || !Number.isFinite(nextGameId) || nextGameId <= 0) {
+            matchPartyGroups.value = [];
+            return;
+        }
+        try {
+            matchPartyGroups.value = await loadMatchPartyAnalysis(
+                teamOne,
+                teamTwo,
+                queueId,
+                nextGameId,
+            );
+        } catch (error) {
+            logger.warn({
+                tag: "matchContent.party",
+                message: "首页开黑分析加载失败",
+                context: { game_id: nextGameId, error: String(error).slice(0, 200) },
+            });
+            matchPartyGroups.value = [];
+        }
+    },
+    { immediate: true },
+);
 
 const rotatedIndex = ref(0);
 const isMatchDra = ref(false);
@@ -118,6 +150,7 @@ const searchSummoner = () => {
                 :summoner-id="summonerId"
                 :show-mode="titleArr[rotatedIndex][0]"
                 :is-one="true"
+                :party-groups="matchPartyGroups"
             />
             <match-details
                 @open-drawer="openMatchDra"
@@ -125,6 +158,7 @@ const searchSummoner = () => {
                 :summoner-id="summonerId"
                 :show-mode="titleArr[rotatedIndex][0]"
                 :is-one="false"
+                :party-groups="matchPartyGroups"
             />
         </div>
     </div>
