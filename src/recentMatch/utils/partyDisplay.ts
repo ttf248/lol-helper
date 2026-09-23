@@ -109,6 +109,18 @@ export const partyGroupTitle = (
 export const partyGroupKindLabel = (group: PartyGroupAnalysis): string =>
   `${partySizeLabel(group.members.length)}组队`;
 
+/**
+ * 把 PartyGroupAnalysis 映射成稳定的字符串 key（按 PUUID 排序拼接）。
+ * 用于在 UI 层为同一组成员派生一个稳定的视觉颜色 / 边框，避免依赖
+ * 对象引用导致每次重渲染颜色变化。
+ */
+export const partyGroupStableKey = (group: PartyGroupAnalysis): string =>
+  group.members
+    .map((member) => member.puuid)
+    .filter((puuid): puuid is string => Boolean(puuid))
+    .sort()
+    .join("|");
+
 export const partyGroupTeammates = (
   group: PartyGroupAnalysis,
   selfPuuid?: string,

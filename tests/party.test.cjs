@@ -563,3 +563,236 @@ test('T7: 首页开黑 chip 标记：size=4 子组合胜出 size=5 全员组合'
   assert.equal(size4.historicalGames, 10);
   assert.equal(size5.historicalGames, 9);
 });
+
+// --- partyDisplay.ts 视觉辅助函数回归保护 ---
+// 这些测试只锁显示层文案 / 派生 key 的契约，确保未来重构不会
+// 把 "· N场" 之类历史统计重新带回到 chip 里。
+const displayModule = createLoader()('src/recentMatch/utils/partyDisplay.ts');
+const { partyGroupStableKey } = displayModule;
+
+test('partyGroupStableKey: 顺序无关、相同 PUUID 集合派生同一 key', () => {
+  const makeGroup = (puuidOrder) => ({
+    members: puuidOrder.map((puuid) => ({ puuid })),
+  });
+  const group123 = makeGroup(['p1', 'p2', 'p3']);
+  const group321 = makeGroup(['p3', 'p2', 'p1']);
+  const group213 = makeGroup(['p2', 'p1', 'p3']);
+  const key123 = partyGroupStableKey(group123);
+  const key321 = partyGroupStableKey(group321);
+  const key213 = partyGroupStableKey(group213);
+  assert.equal(key123, 'p1|p2|p3');
+  assert.equal(key321, key123, '顺序不同也应派生同一 key');
+  assert.equal(key213, key123, '任意排列都应派生同一 key');
+});
+
+test('partyGroupStableKey: 不同 PUUID 集合派生不同 key', () => {
+  const groupA = { members: [{ puuid: 'p1' }, { puuid: 'p2' }] };
+  const groupB = { members: [{ puuid: 'p1' }, { puuid: 'p3' }] };
+  assert.notEqual(
+    partyGroupStableKey(groupA),
+    partyGroupStableKey(groupB),
+    '只差一名成员的组必须派生不同 key',
+  );
+});
+
+test('partyGroupStableKey: 过滤掉无 puuid 的成员', () => {
+  const group = {
+    members: [
+      { puuid: 'p1' },
+      { puuid: '' },
+      { puuid: null },
+      { puuid: 'p2' },
+      {},
+    ],
+  };
+  // 空 puuid / null / 缺字段都应被剔除，避免污染 key
+  assert.equal(partyGroupStableKey(group), 'p1|p2');
+});
+
+// --- 凝聚力 fallback（修复 "4-黑 打了 2 场被拆成 2+2"）---
+
+// 4 个真实黑友只同队了 2 次：size-based 默认门槛 size=4≥4 走不过，
+// 但 6 对 PUUID 都各同队 2 场 → 凝聚力 fallback 应让 size=4 保留。
+test('T8: 4-黑 只同队 2 场，凝聚力 fallback 让 size=4 保留', () => {
+  const nowMs = Date.now();
+  const fourBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const games = [
+    fixtures.makeHexAramTeam({
+      gameId: 3001,
+      gameCreation: nowMs - 0,
+      ownPuuids: fourBlack,
+    }),
+    fixtures.makeHexAramTeam({
+      gameId: 3002,
+      gameCreation: nowMs - 30 * 60 * 1000,
+      ownPuuids: fourBlack,
+    }),
+  ];
+  const players = fourBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `member-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const groups = structures.map((s) =>
+    analytics.applyPartyGroupOverlay(s, new Map(), Date.now()),
+  );
+  const size4 = groups.find((g) => g.members.length === 4);
+  assert.ok(size4, '4-黑 打了 2 场也应识别为 size=4 组');
+  assert.equal(size4.historicalGames, 2);
+  // 用户视角：通过 selectPrimaryPartyGroups 后仍是 1 个 4 人 chip，
+  // 不是 2 个 2 人 chip。
+  const { selectPrimaryPartyGroups } = createLoader()(
+    'src/recentMatch/utils/partyPresentation.ts',
+  );
+  const primary = selectPrimaryPartyGroups(groups, 2);
+  assert.equal(primary.length, 1, '4-黑不应该被拆成 2+2');
+  assert.equal(primary[0].members.length, 4);
+  assert.equal(primary[0].relationKind, 'historical');
+});
+
+// 控制组：4 名玩家两两只在随机场次相遇 1 次 → 凝聚力拒绝，不会
+// 误识别为 4-黑。
+test('T9: 4 人随机各只同队 1 次不会被误判为 4-黑', () => {
+  const nowMs = Date.now();
+  const playerPu = fixtures.CORE_PUUIDS.player;
+  const uziPu = fixtures.CORE_PUUIDS.uzi;
+  const soloPu = fixtures.CORE_PUUIDS.solo;
+  const yisiPu = fixtures.CORE_PUUIDS.yisi;
+  // 单场 4 人同队一次，但四人后续再也没有一起。
+  const singleGame = fixtures.makeHexAramTeam({
+    gameId: 4001,
+    gameCreation: nowMs - 0,
+    ownPuuids: [playerPu, uziPu, soloPu, yisiPu],
+  });
+  // 另外两场分别只有 player+uzi 和 solo+yisi，避免 player+solo 等其他对
+  // 反复刷出 2+ 场。
+  const onlyUzi = fixtures.makeHexAramTeam({
+    gameId: 4002,
+    gameCreation: nowMs - 30 * 60 * 1000,
+    ownPuuids: [playerPu, uziPu],
+  });
+  const onlySoloYisi = fixtures.makeHexAramTeam({
+    gameId: 4003,
+    gameCreation: nowMs - 60 * 60 * 1000,
+    ownPuuids: [soloPu, yisiPu],
+  });
+  const players = [
+    playerPu,
+    uziPu,
+    soloPu,
+    yisiPu,
+  ].map((puuid, i) => fixtures.playerFromPuuid(puuid, `m-${i}`));
+  const snapshots = new Map(
+    players.map((p) => [
+      p.puuid,
+      fixtures.snapshot([singleGame, onlyUzi, onlySoloYisi]),
+    ]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const size4 = structures.find((s) => s.members.length === 4);
+  assert.equal(size4, undefined, '单场 4 人同队 1 次不构成 4-黑');
+});
+
+// 关闭凝聚 fallback（cohesionPairThreshold=Infinity）应回到原行为：
+// 4-黑 只打了 2 场 size=4 走不过 size 门槛 → 不输出。
+test('T10: cohesionPairThreshold=Infinity 关闭 fallback，回到 size-based 门槛', () => {
+  const nowMs = Date.now();
+  const fourBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const games = [
+    fixtures.makeHexAramTeam({
+      gameId: 5001,
+      gameCreation: nowMs - 0,
+      ownPuuids: fourBlack,
+    }),
+    fixtures.makeHexAramTeam({
+      gameId: 5002,
+      gameCreation: nowMs - 30 * 60 * 1000,
+      ownPuuids: fourBlack,
+    }),
+  ];
+  const players = fourBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots, {
+    cohesionPairThreshold: Infinity,
+  });
+  const size4 = structures.find((s) => s.members.length === 4);
+  assert.equal(size4, undefined, '关闭 fallback 后 size=4 不应输出');
+  const size2 = structures.filter((s) => s.members.length === 2);
+  assert.equal(size2.length, 6, '保留 6 个 size=2 子组合');
+});
+
+// 用户实际场景：玩家+Uzi 有额外的双黑历史，但本局的真实队伍是 4-黑
+// (玩家+Uzi+solo+1is)。修复前的算法把 size=2 AB 的高 stabilityScore
+// 排到 size=4 ABCD 之前 → 显示 2-黑；修复后 size-first 让 size=4 胜出。
+test('T11: 含额外 AB-2黑历史的 4-黑，仍识别为完整 size=4', () => {
+  const nowMs = Date.now();
+  const fourBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const players = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '玩家'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+  ];
+  const games = [];
+  // 5 局 4-黑：构成 4-黑主体
+  for (let i = 0; i < 5; i += 1) {
+    games.push(fixtures.makeHexAramTeam({
+      gameId: 6000 + i,
+      gameCreation: nowMs - i * 30 * 60 * 1000,
+      ownPuuids: fourBlack,
+    }));
+  }
+  // 5 局 AB 2-黑：玩家+Uzi 还有额外双人局，让 AB 的 stabilityScore 高过 ABCD
+  for (let i = 0; i < 5; i += 1) {
+    games.push(fixtures.makeHexAramTeam({
+      gameId: 6100 + i,
+      gameCreation: nowMs - (5 + i) * 30 * 60 * 1000,
+      ownPuuids: [fixtures.CORE_PUUIDS.player, fixtures.CORE_PUUIDS.uzi],
+    }));
+  }
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  const structures = analytics.buildPartyGroupsStructure(players, snapshots);
+  const groups = structures.map((s) =>
+    analytics.applyPartyGroupOverlay(s, new Map(), Date.now()),
+  );
+  const { selectPrimaryPartyGroups } = createLoader()(
+    'src/recentMatch/utils/partyPresentation.ts',
+  );
+  const primary = selectPrimaryPartyGroups(groups, 2);
+  assert.equal(primary.length, 1, '4-黑不应被 AB 高稳定性挤掉');
+  assert.equal(primary[0].members.length, 4, 'primary 必须是 size=4');
+  const key = primary[0].members.map((m) => m.puuid).sort().join('|');
+  assert.equal(
+    key,
+    [
+      fixtures.CORE_PUUIDS.player,
+      fixtures.CORE_PUUIDS.uzi,
+      fixtures.CORE_PUUIDS.solo,
+      fixtures.CORE_PUUIDS.yisi,
+    ].sort().join('|'),
+    'primary 必须是玩家+Uzi+solo+1is 这个 4-黑',
+  );
+});

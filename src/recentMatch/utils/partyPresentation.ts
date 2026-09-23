@@ -13,9 +13,15 @@ export const comparePartyGroups = (
   if (mode === "frequency" && left.historicalGames !== right.historicalGames) {
     return (right.historicalGames ?? right.games) - (left.historicalGames ?? left.games);
   }
+  // 关键修复 —— 把 members.length 提到 stabilityScore 之前：
+  // stabilityScore 的 cap 随 size 缩放（size=2 cap=4，size=4 cap=8），
+  // 这会让 size=2 AB 的加权项总是先封顶在 40，从而把 size=4 ABCD 挤掉，
+  // 把"4-黑打了 11 场 + 5 局 AB-2黑"误判成两个 2-黑。
+  // 用户视角下本局的开黑小组是 ABCD，size 排序必须优先。
   return (right.recentWindowGames || 0) - (left.recentWindowGames || 0) ||
+    right.members.length - left.members.length ||
     right.stabilityScore - left.stabilityScore || right.confidence.score - left.confidence.score ||
-    right.members.length - left.members.length || right.games - left.games || key(left).localeCompare(key(right));
+    right.games - left.games || key(left).localeCompare(key(right));
 };
 
 /** 只折叠成员为真子集且证据完全相同的组合；有独立对局证据的子组保留。 */

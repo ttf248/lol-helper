@@ -1095,6 +1095,14 @@ interface PartyGroupStructureOptions {
   minimumGames?: number;
   /** 写入结果的门槛，当前对局初筛固定为 3。 */
   requiredGames?: number;
+  /**
+   * 凝聚力门槛：当 size-based 门槛（≥N 场同队）未达成时启用。任一 PUUID
+   * 对的同队次数低于此值即视为不凝聚，整组被剔除。
+   *
+   * 默认 2。传 `Infinity` 关闭凝聚力检查，回到严格 size-based 门槛
+   * （用于回归测试与关闭新逻辑）。
+   */
+  cohesionPairThreshold?: number;
 }
 
 /**
@@ -1123,6 +1131,30 @@ export const buildPartyGroupsStructure = (
   const allGames = new Map(evidenceIndex);
   if (current) allGames.set(current.gameId, current);
   const memberships = buildPartyMembership(players, allGames);
+  // 凝聚力检查：预计算"每对 PUUID 在 allGames 中同队的次数"。枚举
+  // 阶段若 size 门槛未达成，再用这个 map 判断整组是否凝聚。
+  // 计算时只把 `players` 里的人在 allGames 中命中的部分纳入，避免其
+  // 他 5 个陌生玩家把 pair count 撑高造成假凝聚。
+  const pairCounts = new Map<string, number>();
+  for (const game of allGames.values()) {
+    const teamMembers = new Map<number, string[]>();
+    for (const player of players) {
+      const participant = findPlayerParticipant(game, player);
+      if (!participant || participant.teamId <= 0) continue;
+      if (!teamMembers.has(participant.teamId)) {
+        teamMembers.set(participant.teamId, []);
+      }
+      teamMembers.get(participant.teamId)!.push(player.puuid);
+    }
+    for (const members of teamMembers.values()) {
+      for (let i = 0; i < members.length; i += 1) {
+        for (let j = i + 1; j < members.length; j += 1) {
+          const key = [members[i], members[j]].sort().join("|");
+          pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+  }
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
       if (
@@ -1183,10 +1215,33 @@ export const buildPartyGroupsStructure = (
       // 对局内的候选门槛由调用方明确传入：当前对局 + 最近 4 场中，
       // 同队次数至少 3 次。历史阶段只负责丰富近期候选；旧的完整历史
       // 通道由调用方另外执行并在最后合并。
-      const requiredGames =
-        options.requiredGames ?? Math.max(2, Math.min(group.length, 5));
+      const defaultRequiredGames = Math.max(2, Math.min(group.length, 5));
+      const requiredGames = options.requiredGames ?? defaultRequiredGames;
       const minimumGames = options.minimumGames ?? requiredGames;
-      if (games < minimumGames) continue;
+      if (games < minimumGames) {
+        // 凝聚力 fallback：size-based 门槛未达成时启用，每对 PUUID
+        // 都已至少同队 `cohesionPairThreshold` 次 → 视为真组队。
+        // 这是修复 "4-黑 只打了 2-3 场被拆成 2+2" 的关键：默认门槛
+        // size=4 ≥ 4 场，但 4-黑 只同队 2 次时 6 对都满足 2 ≥ 2。
+        //
+        // 仅在调用方没显式覆盖 requiredGames（用了 size-based 默认值）
+        // 时启用 fallback。近期窗口初筛传 requiredGames=3 是有意压
+        // 高门槛、不希望被 fallback 削弱。
+        if (requiredGames !== defaultRequiredGames) continue;
+        const cohesionThreshold = options.cohesionPairThreshold ?? 2;
+        if (cohesionThreshold === Infinity) continue;
+        let cohesive = true;
+        outer: for (let i = 0; i < group.length; i += 1) {
+          for (let j = i + 1; j < group.length; j += 1) {
+            const key = [group[i].puuid, group[j].puuid].sort().join("|");
+            if ((pairCounts.get(key) ?? 0) < cohesionThreshold) {
+              cohesive = false;
+              break outer;
+            }
+          }
+        }
+        if (!cohesive) continue;
+      }
       const winRate = roundRate(wins, historicalGames) ?? 0;
       // 每位成员作为同队成员在该组合 evidence 中出现的最少场次。
       // 当 size=5 队伍中混入"4 黑 + 路人"模式的低频路人时，路人的
