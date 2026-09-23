@@ -224,13 +224,7 @@ const teamInsight = computed(() => {
             风险 {{ teamInsight.risk.summonerName }} · {{ formatRate(teamInsight.risk.recentAnalysis?.winRate) }}
           </span>
           <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
-            已识别 {{ teamPartyGroups.length }} 个同队小组 ·
-            <template v-if="teamInsight.groups[0].recentWindowGames !== undefined">
-              当前模式最近5局 {{ teamInsight.groups[0].recentWindowGames }}次
-            </template>
-            <template v-else>
-              历史 {{ teamInsight.groups[0].historicalGames ?? teamInsight.groups[0].games }}场
-            </template>
+            已识别 {{ teamPartyGroups.length }} 个同队小组
           </span>
         </div>
       </div>
@@ -261,13 +255,7 @@ const teamInsight = computed(() => {
               >{{ member.summonerName }}</button>
             </div>
             <div class="team-party-evidence">
-              <template v-if="party.group.recentWindowGames !== undefined">
-                当前模式最近5局同队 {{ party.group.recentWindowGames }} 次（含本局）
-              </template>
-              <template v-else>
-                已加载历史共同同队 {{ party.group.historicalGames ?? party.group.games }} 场
-              </template>
-              · 最近 {{ party.group.lastActiveDays === null ? "未知" : party.group.lastActiveDays === 0 ? "今天" : `${party.group.lastActiveDays}天前` }}
+              依据本地历史共同同队记录推断
             </div>
           </article>
         </div>

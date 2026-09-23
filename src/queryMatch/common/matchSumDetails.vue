@@ -4,15 +4,13 @@ import { NAvatar, NEllipsis, NPopover, NTag } from "naive-ui";
 import { SummonerDetailInfo } from "@/queryMatch/utils/MatchDetail";
 import type { PartyGroupAnalysis } from "@/recentMatch/utils/queryTypes";
 import {
-  formatRate,
-  partyEvidenceTime,
   partyGroupKindLabel,
   partyGroupNames,
   partyGroupTeammates,
   winRateTagType,
 } from "@/recentMatch/utils/partyDisplay";
 
-const { summoner, summonerId, isOne, itemWidth, partyGroup, selfPuuid } = defineProps<{
+const { summoner, summonerId, isOne, itemWidth, partyGroup, selfPuuid, partyColor, partyOrdinal } = defineProps<{
     summoner: SummonerDetailInfo;
     summonerId?: number;
     isOne?: boolean;
@@ -21,18 +19,28 @@ const { summoner, summonerId, isOne, itemWidth, partyGroup, selfPuuid } = define
     partyGroup?: PartyGroupAnalysis | null;
     /** 用于将 chip 上的自己替换为"我"。 */
     selfPuuid?: string;
+    /** 同组队视觉联动颜色（CSS 颜色值，例如 "#f97316"）。由 matchDetails 派生。 */
+    partyColor?: string;
+    /** 该组在 selectPrimaryPartyGroups 里的序号（从 1 起），用于 popover 显示 "本场第 N 组"。 */
+    partyOrdinal?: number;
 }>();
 
-const partyTagType = () =>
-    partyGroup && partyGroup.highWinRateAlert
-        ? "warning"
-        : winRateTagType(partyGroup?.winRate ?? 0);
+const partyTagType = () => {
+    if (!partyGroup) return "default";
+    if (partyGroup.highWinRateAlert) return "warning";
+    // 若调用方传了 party-color，chip 由 CSS 变量上色，n-tag type 降级为 default
+    if (partyColor) return "default";
+    return winRateTagType(partyGroup.winRate ?? 0);
+};
 
-const partyTagText = () => {
+const partyTagText = () =>
+    partyGroup ? partyGroupKindLabel(partyGroup) : "";
+
+const partyOrdinalLabel = () => {
     if (!partyGroup) return "";
-    const members = partyGroupKindLabel(partyGroup);
-    const games = partyGroup.historicalGames ?? partyGroup.games;
-    return `${members} · ${games}场`;
+    const ordinal = partyOrdinal ?? 0;
+    const size = partyGroup.members.length;
+    return `本场第 ${ordinal} 组 · 共 ${size} 人`;
 };
 </script>
 
@@ -103,6 +111,8 @@ const partyTagText = () => {
                             :type="partyTagType()"
                             :bordered="false"
                             class="party-chip"
+                            :class="{ 'party-chip-colored': !!partyColor }"
+                            :style="partyColor ? { '--party-color': partyColor } : undefined"
                         >
                             开黑 {{ partyTagText() }}
                         </n-tag>
@@ -115,16 +125,7 @@ const partyTagText = () => {
                             同组 {{ partyGroupTeammates(partyGroup, summoner.puuid) }}
                         </div>
                         <div class="text-xs text-gray-500 mt-1">
-                            胜率 {{ formatRate(partyGroup.winRate) }} ·
-                            关系强度 {{ partyGroup.stabilityScore }}
-                        </div>
-                        <div
-                            v-for="evidence in partyGroup.evidence.slice(0, 3)"
-                            :key="evidence.gameId"
-                            class="text-xs text-gray-400"
-                        >
-                            {{ partyEvidenceTime(evidence.gameCreation) }} ·
-                            对局 {{ evidence.gameId }}
+                            {{ partyOrdinalLabel() }}
                         </div>
                     </div>
                 </n-popover>
@@ -144,6 +145,15 @@ const partyTagText = () => {
     font-size: 11px;
     line-height: 14px;
     cursor: default;
+}
+
+/* 同组队视觉联动：调用方传入 --party-color 时，由该 CSS 变量给 chip
+ * 上色，避免每次重渲染颜色抖动。颜色与 matchDetails 行左侧色条一致，
+ * 让"谁是同组"在整列一眼可见。 */
+.party-chip-colored {
+    background-color: color-mix(in srgb, var(--party-color) 18%, transparent);
+    color: var(--party-color);
+    border: 1px solid color-mix(in srgb, var(--party-color) 40%, transparent);
 }
 
 .party-chip-popover {

@@ -6,6 +6,7 @@ import { getspellImgUrl } from "@/lcu/utils";
 import MatchSumDetails from "@/queryMatch/common/matchSumDetails.vue";
 import { getIconImg } from "@/queryMatch/utils/tools";
 import type { PartyGroupAnalysis } from "@/recentMatch/utils/queryTypes";
+import { partyGroupStableKey } from "@/recentMatch/utils/partyDisplay";
 
 const { summonerList, summonerId, isOne, showMode, partyGroups } = defineProps<{
     summonerList: SummonerDetailInfo[];
@@ -29,38 +30,85 @@ const getMetricWidth = (summoner: SummonerDetailInfo, key: string) =>
     (summoner.showDataDict as unknown as Record<string, string>)[key] ?? "0%";
 
 /**
- * 把 `partyGroups` 摊平成 `Map<puuid, PartyGroupAnalysis>`，按
+ * 同组视觉联动调色板：6 色 Tailwind 默认色系，亮色背景对比度通过。
+ * 用 stableKey 哈希取模，让同一组的所有成员行始终拿到同一种色。
+ */
+const PARTY_PALETTE = [
+    "#f97316", // orange
+    "#22c55e", // green
+    "#06b6d4", // cyan
+    "#a855f7", // purple
+    "#ec4899", // pink
+    "#eab308", // yellow
+];
+
+/** 简单字符串哈希（djb2），只用于取模到调色板，无需密码学强度。 */
+const hashStableKey = (key: string): number => {
+    let hash = 5381;
+    for (let i = 0; i < key.length; i += 1) {
+        hash = ((hash << 5) + hash + key.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+};
+
+interface PartyMeta {
+    group: PartyGroupAnalysis;
+    ordinal: number;
+    color: string;
+}
+
+/**
+ * 把 `partyGroups` 摊平成 `Map<puuid, PartyMeta>`，按
  * `selectPrimaryPartyGroups` 的语义保证一个 puuid 最多出现在一个组里。
+ * 每个组按数组下标派生 ordinal 与稳定颜色，让 chip 文本与左侧色条
+ * 在整列保持一致。
  * 当 `partyGroups` 缺失或为空时返回空 Map。
  */
-const partyGroupByPuuid = computed<Map<string, PartyGroupAnalysis>>(() => {
-    const map = new Map<string, PartyGroupAnalysis>();
+const partyMetaByPuuid = computed<Map<string, PartyMeta>>(() => {
+    const map = new Map<string, PartyMeta>();
     if (!partyGroups || partyGroups.length === 0) return map;
-    for (const group of partyGroups) {
+    partyGroups.forEach((group, index) => {
+        const ordinal = index + 1;
+        const stableKey = partyGroupStableKey(group);
+        const color = PARTY_PALETTE[hashStableKey(stableKey) % PARTY_PALETTE.length];
         for (const member of group.members) {
             if (!member.puuid) continue;
             // selectPrimaryPartyGroups 在主程侧已保证不重复；这里再做一次兜底
             // 防御，避免传入脏数据时同一个 puuid 出现在多个 chip 里。
             if (map.has(member.puuid)) continue;
-            map.set(member.puuid, group);
+            map.set(member.puuid, { group, ordinal, color });
         }
-    }
+    });
     return map;
 });
+
+const partyMetaFor = (puuid: string): PartyMeta | null =>
+    partyMetaByPuuid.value.get(puuid) ?? null;
 </script>
 
 <template>
     <div class="match-details-column">
         <!--    每一个英雄数据-->
         <n-space v-for="summoner in summonerList" vertical>
+            <div
+                class="party-row"
+                :class="{ 'party-row--grouped': !!partyMetaFor(summoner.puuid) }"
+                :style="
+                    partyMetaFor(summoner.puuid)
+                        ? { '--party-color': partyMetaFor(summoner.puuid)!.color }
+                        : undefined
+                "
+            >
             <match-sum-details
                 :item-width="290"
                 @click="showSumDetails(summoner.accountId)"
                 :summoner="summoner"
                 :summoner-id="summonerId"
                 :is-one="isOne"
-                :party-group="partyGroupByPuuid.get(summoner.puuid) ?? null"
+                :party-group="partyMetaFor(summoner.puuid)?.group ?? null"
                 :self-puuid="summoner.puuid"
+                :party-color="partyMetaFor(summoner.puuid)?.color"
+                :party-ordinal="partyMetaFor(summoner.puuid)?.ordinal"
             />
             <!--        数据显示-->
             <div class="progressDivP">
@@ -111,6 +159,7 @@ const partyGroupByPuuid = computed<Map<string, PartyGroupAnalysis>>(() => {
                     />
                 </div>
             </div>
+            </div>
         </n-space>
     </div>
 </template>
@@ -150,6 +199,21 @@ const partyGroupByPuuid = computed<Map<string, PartyGroupAnalysis>>(() => {
     gap: 12px;
     align-items: flex-end;
     position: relative;
+}
+
+/* 同组队视觉联动：被识别为开黑的玩家行加 4px 实心左侧 border + 8%
+ * 透明度的同色背景，颜色由调用方通过 CSS 变量 --party-color 派生。
+ * 同一组的成员行共享同一颜色，让"谁是同组"在整列一眼可见。 */
+.party-row {
+    border-left: 4px solid transparent;
+    border-radius: 3px;
+    padding-left: 6px;
+    transition: background-color 120ms ease;
+}
+
+.party-row--grouped {
+    border-left-color: var(--party-color);
+    background-color: color-mix(in srgb, var(--party-color) 8%, transparent);
 }
 
 .itemClassSecond {
