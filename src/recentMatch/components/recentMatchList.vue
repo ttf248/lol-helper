@@ -158,6 +158,17 @@ const teamGroupByPuuid = computed(() => {
 });
 
 const groupForPlayer = (puuid: string) => teamGroupByPuuid.value.get(puuid);
+
+/**
+ * 4-黑 + 路人判定：当组员数 ≥ 5 且「每位成员实际参与的同队场次」明显低于
+ * 总场次时，组里至少有 1 名"低出勤路人"。比如 size=5 共 10 局同队，
+ * 但 minMemberFrequency 只有 6（即有一位只参与了 6 局）。
+ */
+const partyIsFourPlusOne = (group: PartyGroupAnalysis): boolean => {
+  if (group.members.length < 5) return false;
+  const minFreq = group.minMemberFrequency ?? 0;
+  return group.games > 0 && minFreq / group.games <= 0.6;
+};
 const selectedPlayerGroup = computed(() =>
   selectedPlayer.value ? groupForPlayer(selectedPlayer.value.puuid) : undefined,
 );
@@ -173,6 +184,32 @@ const teamInsight = computed(() => {
     0,
   );
   const ranked = rankedPlayers.value;
+  const risk = ranked[ranked.length - 1] || null;
+  // 跨对局预警：基于已分析数据派生可操作提示。
+  // 当前实现两条：对方 4-黑+路人 / 我方单人近期胜率过低。
+  // 注意：本派生只在 team-panel 里渲染一次，避免重复。
+  const warnings = [] as { level: "warn" | "danger"; text: string }[];
+  for (const group of teamGroups.value) {
+    if (partyIsFourPlusOne(group)) {
+      warnings.push({
+        level: "warn",
+        text: `${isFri ? "友方" : "敌方"}含 4-黑 + 路人，路人可能成为突破口`,
+      });
+    }
+  }
+  if (
+    risk &&
+    risk.recentAnalysis?.actualGames &&
+    risk.recentAnalysis.actualGames >= 5 &&
+    (risk.recentAnalysis.winRate ?? 100) < 35
+  ) {
+    warnings.push({
+      level: "danger",
+      text: `${risk.summonerName} 近期 ${
+        risk.recentAnalysis.actualGames
+      } 局胜率仅 ${(risk.recentAnalysis.winRate ?? 0).toFixed(1)}%，建议关注`,
+    });
+  }
   return {
     analyzed: analyzed.length,
     total: sumList.length,
@@ -180,8 +217,9 @@ const teamInsight = computed(() => {
     totalWins,
     winRate: totalGames > 0 ? (totalWins / totalGames) * 100 : null,
     best: ranked[0] || null,
-    risk: ranked[ranked.length - 1] || null,
+    risk,
     groups: teamGroups.value,
+    warnings,
   };
 });
 
@@ -226,6 +264,15 @@ const teamInsight = computed(() => {
           <span v-if="teamInsight.groups.length" class="insight-pill insight-pill-party">
             已识别 {{ teamPartyGroups.length }} 个同队小组
           </span>
+          <span
+            v-for="(warning, index) in teamInsight.warnings"
+            :key="`${warning.level}-${index}`"
+            class="insight-pill"
+            :class="warning.level === 'danger' ? 'insight-pill-danger' : 'insight-pill-warn'"
+            :title="warning.text"
+          >
+            ⚠ {{ warning.text }}
+          </span>
         </div>
       </div>
       <section v-if="teamPartyGroups.length" class="team-party-summary" :aria-label="`${isFri ? '友方' : '敌方'}同队小组`">
@@ -242,6 +289,15 @@ const teamInsight = computed(() => {
               <strong>{{ party.title }}</strong>
               <n-tag size="tiny" :bordered="false" :type="party.group.relationKind === 'recent' ? 'success' : 'default'">
                 {{ party.kind }}
+              </n-tag>
+              <n-tag
+                v-if="partyIsFourPlusOne(party.group)"
+                size="tiny"
+                :bordered="false"
+                type="warning"
+                :title="`${party.group.members.length - 4} 名成员在 ${party.group.games} 局里只参与了 ${party.group.minMemberFrequency} 局，路人场占比偏高`"
+              >
+                4黑+1路人
               </n-tag>
             </div>
             <div class="team-party-members" :aria-label="`${party.title}成员`">
@@ -721,6 +777,19 @@ const teamInsight = computed(() => {
 .insight-pill-party {
 	color: #4338ca;
 	background: rgba(224, 231, 255, 0.9);
+}
+
+.insight-pill-warn {
+	color: #92400e;
+	background: rgba(254, 215, 170, 0.95);
+	border: 1px solid rgba(217, 119, 6, 0.5);
+}
+
+.insight-pill-danger {
+	color: #991b1b;
+	background: rgba(254, 202, 202, 0.95);
+	border: 1px solid rgba(220, 38, 38, 0.6);
+	font-weight: 500;
 }
 
 .team-insight-detail b {

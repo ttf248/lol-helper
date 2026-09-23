@@ -303,6 +303,84 @@ const analysisKey = (puuid: string, modeKey: MatchModeKey) =>
 const databaseKey = (puuid: string, modeKey: MatchModeKey) =>
   `${puuid}::${modeKey}`;
 
+/**
+ * 开黑关系趋势：取 size≥3 的 Top 5 主组，把每个组的 evidence 按 7
+ * 天分桶，输出 (bucket × group) 矩阵。柱状条按时间段累加。
+ */
+const PARTY_TREND_PALETTE = [
+  "#f97316", "#22c55e", "#06b6d4", "#a855f7", "#ec4899",
+];
+const PARTY_TREND_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const PARTY_TREND_BUCKET_MS = 7 * 24 * 60 * 60 * 1000;
+const PARTY_TREND_BUCKETS = Math.round(
+  PARTY_TREND_WINDOW_MS / PARTY_TREND_BUCKET_MS,
+);
+
+const topPartyTrends = computed(() => {
+  const list = selectPartyGroups(analysis.value?.partyGroups || [], {
+    showSubgroups: false, mode: "frequency",
+  });
+  return list
+    .filter((group) => group.members.length >= 3)
+    .sort((a, b) => (b.historicalGames ?? b.games) - (a.historicalGames ?? a.games))
+    .slice(0, PARTY_TREND_PALETTE.length)
+    .map((group) => {
+      const key = group.members
+        .map((m) => m.puuid)
+        .sort()
+        .join("|");
+      const selfPuuid = props.player.puuid;
+      const label =
+        group.members.length === 1
+          ? group.members[0]?.summonerName ?? "未知"
+          : group.members
+              .map((m) => (m.puuid === selfPuuid ? "我" : m.summonerName ?? "?"))
+              .filter(Boolean)
+              .join(" + ");
+      return { key, label, evidence: group.evidence ?? [] };
+    });
+});
+
+const partyTrendBuckets = computed(() => {
+  const now = Date.now();
+  const bucketStarts: number[] = [];
+  for (let i = PARTY_TREND_BUCKETS - 1; i >= 0; i -= 1) {
+    bucketStarts.push(now - i * PARTY_TREND_BUCKET_MS);
+  }
+  return bucketStarts.map((bucketStart, index) => {
+    const bucketEnd = bucketStart + PARTY_TREND_BUCKET_MS;
+    const nextStart =
+      index < bucketStarts.length - 1 ? bucketStarts[index + 1] : Infinity;
+    const segments = topPartyTrends.value.map((trend, groupIndex) => {
+      const count = trend.evidence.filter((evidence) => {
+        if (evidence.isCurrentMatch) return false;
+        return (
+          evidence.gameCreation >= bucketStart &&
+          evidence.gameCreation < bucketEnd &&
+          evidence.gameCreation < nextStart
+        );
+      }).length;
+      return { count, groupIndex, label: trend.label };
+    });
+    const total = segments.reduce((sum, seg) => sum + seg.count, 0);
+    const label = `${formatBucketLabel(bucketStart)} → ${formatBucketLabel(bucketEnd)}`;
+    return { total, segments, label, shortLabel: formatBucketLabel(bucketStart) };
+  });
+});
+
+const partyTrendSpan = computed(() => {
+  const totalGames = topPartyTrends.value.reduce(
+    (sum, trend) => sum + trend.evidence.length,
+    0,
+  );
+  return Math.min(totalGames, 30);
+});
+
+const formatBucketLabel = (timestamp: number) => {
+  const date = new Date(timestamp);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+};
+
 const loadSnapshot = async () => {
   const currentRequest = ++snapshotRequestId;
   snapshotLoading.value = true;
@@ -888,6 +966,45 @@ onMounted(() => {
           </div>
         </n-card>
 
+        <n-card v-if="topPartyTrends.length && selectedResult === 'all'" size="small" title="开黑关系趋势 · 近30场" :bordered="false">
+          <div class="party-trend-caption">
+            横轴：近 {{ partyTrendSpan }} 场对局时间；纵轴：每周同队场次。柱状按周分桶。
+          </div>
+          <div class="party-trend-legend">
+            <span
+              v-for="(trend, idx) in topPartyTrends"
+              :key="trend.key"
+              class="party-trend-legend-item"
+            >
+              <span class="party-trend-swatch" :style="{ background: PARTY_TREND_PALETTE[idx % PARTY_TREND_PALETTE.length] }"></span>
+              <text>{{ trend.label }}</text>
+            </span>
+          </div>
+          <div class="party-trend-chart">
+            <div
+              v-for="(bucket, idx) in partyTrendBuckets"
+              :key="idx"
+              class="party-trend-bucket"
+              :style="{ height: `${bucket.total * 18 + 8}px` }"
+              :title="bucket.label"
+            >
+              <div class="party-trend-stack">
+                <div
+                  v-for="(seg, segIdx) in bucket.segments"
+                  :key="segIdx"
+                  class="party-trend-segment"
+                  :style="{
+                    height: `${seg.count * 18}px`,
+                    background: PARTY_TREND_PALETTE[seg.groupIndex % PARTY_TREND_PALETTE.length],
+                  }"
+                  :title="`${seg.label} · ${seg.count} 场`"
+                ></div>
+              </div>
+              <div class="party-trend-axis">{{ bucket.shortLabel }}</div>
+            </div>
+          </div>
+        </n-card>
+
         <n-card v-if="analysis && selectedResult === 'all'" size="small" title="历史对局关系图" :bordered="false">
           <recent-network-graph
             :analysis="analysis.network || null"
@@ -1346,6 +1463,81 @@ onMounted(() => {
 
 .party-ranking-caption {
   margin-bottom: 0.45rem;
+}
+
+.party-trend-caption {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 0.45rem;
+}
+
+.party-trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  font-size: 11px;
+  color: #4b5563;
+  margin-bottom: 0.5rem;
+}
+
+.party-trend-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.party-trend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.party-trend-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 220px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  position: relative;
+}
+
+.party-trend-bucket {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  position: relative;
+  min-width: 28px;
+}
+
+.party-trend-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+}
+
+.party-trend-segment {
+  width: 100%;
+  border-radius: 2px;
+  transition: filter 0.12s ease;
+}
+
+.party-trend-segment:hover {
+  filter: brightness(1.08);
+}
+
+.party-trend-axis {
+  position: absolute;
+  bottom: -18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 10px;
+  color: #9ca3af;
 }
 
 .party-ranking-toolbar {
