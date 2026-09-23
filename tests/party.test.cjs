@@ -944,3 +944,52 @@ test('T15: 4-黑 2 场成员中途打过别的对局（非连续）→ 连续松
   // 凝聚力 fallback：6 对 PUUID 各有 2 场 ≥ 2 → 凝聚力通过
   assert.ok(size4, '非连续时凝聚力兜底（连续松弛失败但凝聚力通过）');
 });
+
+// 增量更新：传入预计算的 pairCounts 与自计算结果一致
+test('T16: 预计算 pairCounts 与算法内自计算结果一致', () => {
+  const nowMs = Date.now();
+  const fiveBlack = [
+    fixtures.CORE_PUUIDS.player,
+    fixtures.CORE_PUUIDS.zhongyi,
+    fixtures.CORE_PUUIDS.uzi,
+    fixtures.CORE_PUUIDS.solo,
+    fixtures.CORE_PUUIDS.yisi,
+  ];
+  const games = [];
+  for (let i = 0; i < 9; i += 1) {
+    games.push(fixtures.makeHexAramTeam({
+      gameId: 13000 + i,
+      gameCreation: nowMs - i * 30 * 60 * 1000,
+      ownPuuids: fiveBlack,
+    }));
+  }
+  const players = fiveBlack.map((puuid, i) =>
+    fixtures.playerFromPuuid(puuid, `m-${i}`),
+  );
+  const snapshots = new Map(
+    players.map((p) => [p.puuid, fixtures.snapshot(games)]),
+  );
+  // 自计算
+  const structuresAuto = analytics.buildPartyGroupsStructure(players, snapshots);
+  // 预计算（导出函数）后传入
+  const allGames = new Map();
+  for (const snap of snapshots.values()) {
+    for (const [gid, g] of snap.games.entries()) allGames.set(gid, g);
+  }
+  const precomputed = analytics.computePairCounts(players, allGames);
+  const structuresCached = analytics.buildPartyGroupsStructure(players, snapshots, {
+    precomputedPairCounts: precomputed,
+  });
+  // 两组输出应包含相同的 member key 与 games / stabilityScore
+  const autoKey = (s) => s.members.map((m) => m.puuid).sort().join('|');
+  const autoMap = new Map(structuresAuto.map((s) => [autoKey(s), s]));
+  for (const s of structuresCached) {
+    const k = autoKey(s);
+    assert.ok(autoMap.has(k), `预计算结果含算法内未生成的组合 ${k}`);
+    const a = autoMap.get(k);
+    assert.equal(s.games, a.games);
+    assert.equal(s.historicalGames, a.historicalGames);
+    assert.equal(s.stabilityScore, a.stabilityScore);
+    assert.equal(s.confidenceScore, a.confidenceScore);
+  }
+});

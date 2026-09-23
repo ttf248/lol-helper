@@ -1110,6 +1110,21 @@ interface PartyGroupStructureOptions {
    * 默认 2。设 `Infinity` 关闭连续松弛（用于回归测试）。
    */
   consecutiveRelaxationThreshold?: number;
+  /**
+   * 连通分量剪枝（Louvain 简化版）：枚举 size≥2 子集前先检查每对
+   * PUUID 是否至少同队过 1 次，否则整组直接跳过。
+   *
+   * 默认 true。设 false 关闭剪枝，等价于原算法。
+   */
+  enableGroupPruning?: boolean;
+  /**
+   * 预计算的 pair-count 矩阵（key = sorted puuid pair, value = 同队次数）。
+   * 调用方已计算过时可传入，跳过函数内重新计算，让增量更新场景
+   * （同组玩家共享已计算好的 pairCounts）受益。
+   *
+   * 传 undefined 时函数内自计算。
+   */
+  precomputedPairCounts?: Map<string, number>;
 }
 
 /**
@@ -1124,24 +1139,18 @@ const partyGroupKey = (members: RecentSumInfo[]): string =>
     .sort()
     .join("|");
 
-export const buildPartyGroupsStructure = (
+/**
+ * 计算 `players` 列表中所有 PUUID 对在 `allGames` 里的同队次数。
+ * 抽出来作为 export 让 `useMatchPartyAnalysis` 等调用方缓存复用，
+ * 同一组玩家在不同 gameId 下的多次分析只算一次 pairCounts。
+ *
+ * 计算时只把 `players` 里的人在 allGames 中命中的部分纳入，避免其
+ * 他 5 个陌生玩家把 pair count 撑高造成假凝聚。
+ */
+export const computePairCounts = (
   players: RecentSumInfo[],
-  snapshots: Map<string, PlayerHistorySnapshot>,
-  options: PartyGroupStructureOptions = {},
-): StructuralPartyGroup[] => {
-  const structures: StructuralPartyGroup[] = [];
-  const now = Date.now();
-  const evidenceIndex = options.evidence || buildHistoryEvidence(snapshots);
-  // 当前局仅供显式近期窗口使用，不进入共享历史证据。
-  const current = Array.from(snapshots.values()).flatMap((s) => Array.from(s.games.values()))
-    .find((game) => game.source === CURRENT_MATCH_SOURCE);
-  const allGames = new Map(evidenceIndex);
-  if (current) allGames.set(current.gameId, current);
-  const memberships = buildPartyMembership(players, allGames);
-  // 凝聚力检查：预计算"每对 PUUID 在 allGames 中同队的次数"。枚举
-  // 阶段若 size 门槛未达成，再用这个 map 判断整组是否凝聚。
-  // 计算时只把 `players` 里的人在 allGames 中命中的部分纳入，避免其
-  // 他 5 个陌生玩家把 pair count 撑高造成假凝聚。
+  allGames: ReadonlyMap<number, NormalizedHistoryGame>,
+): Map<string, number> => {
   const pairCounts = new Map<string, number>();
   for (const game of allGames.values()) {
     const teamMembers = new Map<number, string[]>();
@@ -1162,6 +1171,32 @@ export const buildPartyGroupsStructure = (
       }
     }
   }
+  return pairCounts;
+};
+
+export const buildPartyGroupsStructure = (
+  players: RecentSumInfo[],
+  snapshots: Map<string, PlayerHistorySnapshot>,
+  options: PartyGroupStructureOptions = {},
+): StructuralPartyGroup[] => {
+  const structures: StructuralPartyGroup[] = [];
+  const now = Date.now();
+  const evidenceIndex = options.evidence || buildHistoryEvidence(snapshots);
+  // 当前局仅供显式近期窗口使用，不进入共享历史证据。
+  const current = Array.from(snapshots.values()).flatMap((s) => Array.from(s.games.values()))
+    .find((game) => game.source === CURRENT_MATCH_SOURCE);
+  const allGames = new Map(evidenceIndex);
+  if (current) allGames.set(current.gameId, current);
+  const memberships = buildPartyMembership(players, allGames);
+  // 凝聚力检查：预计算"每对 PUUID 在 allGames 中同队的次数"。枚举
+  // 阶段若 size 门槛未达成，再用这个 map 判断整组是否凝聚。
+  // 计算时只把 `players` 里的人在 allGames 中命中的部分纳入，避免其
+  // 他 5 个陌生玩家把 pair count 撑高造成假凝聚。
+  //
+  // 调用方已计算时（precomputedPairCounts）跳过此步骤，让跨调用场景
+  // （同一组玩家的多次开黑分析）复用 pairCounts。
+  const pairCounts =
+    options.precomputedPairCounts ?? computePairCounts(players, allGames);
   for (let size = 2; size <= players.length; size++) {
     for (const group of combinations(players, size)) {
       if (
@@ -1169,6 +1204,23 @@ export const buildPartyGroupsStructure = (
         !options.allowedGroupKeys.has(partyGroupKey(group))
       ) {
         continue;
+      }
+      // 连通分量剪枝（Louvain 简化）：若子集里有任何一对 PUUID 的同队
+      // 次数为 0，整组一定没共队记录，直接跳过；这对大量"陌生人"互
+      // 相混在 players 列表里的场景（跨 rank 玩家复盘）尤其有效。
+      // 关闭开关：cohesionPairThreshold 与 enabledGroupPruning 配合。
+      if (options.enableGroupPruning !== false) {
+        let connected = true;
+        for (let i = 0; i < group.length && connected; i += 1) {
+          for (let j = i + 1; j < group.length; j += 1) {
+            const key = [group[i].puuid, group[j].puuid].sort().join("|");
+            if (!pairCounts.has(key)) {
+              connected = false;
+              break;
+            }
+          }
+        }
+        if (!connected) continue;
       }
       const commonGameIds = (memberships.get(partyGroupKey(group)) || []).filter((gameId) =>
         !options.requireWindowMembership || group.every((player) =>

@@ -10,11 +10,13 @@
  * 未命中的玩家自动从 chip 集合中排除。
  */
 import type { PartyGroupAnalysis, RecentSumInfo } from "@/recentMatch/utils/queryTypes";
+import type { NormalizedHistoryGame } from "@/recentMatch/utils/recentAnalytics";
 import { modeForQueue } from "@/recentMatch/utils/matchMode";
 import { getCachedHistory, getCachedPlayerSummary } from "@/recentMatch/utils/databaseCache";
 import {
   buildPartyGroupsStructure,
   applyPartyGroupOverlay,
+  computePairCounts,
 } from "@/recentMatch/utils/recentAnalytics";
 import { selectPrimaryPartyGroups } from "@/recentMatch/utils/partyPresentation";
 import { logger } from "@/utils/logger";
@@ -67,13 +69,64 @@ const buildSnapshot = (
 const matchPartyCache = new Map<number, PartyGroupAnalysis[]>();
 
 /**
+ * 快照身份缓存：把"每名玩家引用了哪些 gameId"作为身份 key，缓存
+ * `loadMatchPartyAnalysis` 的中间结果（pairCounts + primary groups）。
+ *
+ * 关键收益：同一组玩家在 N 局不同 gameId 上的分析共享同一份 pairCounts
+ * 计算结果（10 人 × 500 场 × N² 枚举中的 pair 阶段最耗）。如果玩家
+ * 阵容不变，新 cacheHistory 写入了新一场对局也只是 pairCounts 增量更新，
+ * 整个 party analysis 的 enumeration 阶段几乎不变。
+ */
+interface AnalysisSnapshot {
+  /** 玩家按 puuid 排序后的所有 (puuid, gameId) 集合的有序签名。 */
+  identity: string;
+  pairCounts: Map<string, number>;
+}
+const analysisSnapshotCache = new Map<string, AnalysisSnapshot>();
+const analysisResultCache = new Map<string, PartyGroupAnalysis[]>();
+
+/**
+ * 计算玩家阵容的快照身份：sorted（puuid, gameId）扁平化后 hash。
+ * 同一组玩家同一份历史 → 同一身份 → 缓存命中。
+ */
+const computeSnapshotIdentity = (
+  snapshots: Map<string, MatchPlayerHistorySnapshot>,
+): string => {
+  const parts: string[] = [];
+  const sortedPuuids = Array.from(snapshots.keys()).sort();
+  for (const puuid of sortedPuuids) {
+    const gameIds = Array.from(snapshots.get(puuid)?.games.keys() ?? []).sort();
+    parts.push(`${puuid}:${gameIds.join(",")}`);
+  }
+  return parts.join(";");
+};
+
+/**
+ * 把 `snapshots` 里所有玩家的所有对局合并成一个 Map（按 gameId 去重）。
+ * 用于计算 pairCounts 时把所有玩家共有的对局都纳入。
+ */
+const buildAllGamesForPairCounts = (
+  snapshots: Map<string, MatchPlayerHistorySnapshot>,
+): Map<number, NormalizedHistoryGame> => {
+  const allGames = new Map<number, NormalizedHistoryGame>();
+  for (const snapshot of snapshots.values()) {
+    for (const [gameId, game] of snapshot.games.entries()) {
+      if (!allGames.has(gameId)) allGames.set(gameId, game);
+    }
+  }
+  return allGames;
+};
+
+/**
  * 清空缓存（用户强制同步 PG、账号切换、UI 显式刷新场景）。
  */
 export const clearMatchPartyCache = (reason?: string): void => {
   matchPartyCache.clear();
+  analysisSnapshotCache.clear();
+  analysisResultCache.clear();
   logger.info({
     tag: "query.match.party",
-    message: "首页开黑分析缓存清空",
+    message: "首页开黑分析缓存清空（含快照身份缓存）",
     context: { reason: reason ?? "unspecified" },
   });
 };
@@ -141,21 +194,50 @@ export const loadMatchPartyAnalysis = async (
   }
 
   try {
-    const structures = buildPartyGroupsStructure(summoners, snapshots);
+    // 快照身份缓存：同一组玩家同一份历史 → 复用 pairCounts 与结果
+    const snapshotIdentity = computeSnapshotIdentity(snapshots);
+    let pairCounts = analysisSnapshotCache.get(snapshotIdentity)?.pairCounts;
+    if (!pairCounts) {
+      // 新对局进入缓存时，整份 pairCounts 第一次算（或重算），
+      // 后续同阵容的多次分析直接复用。
+      pairCounts = computePairCounts(
+        summoners,
+        buildAllGamesForPairCounts(snapshots),
+      );
+      analysisSnapshotCache.set(snapshotIdentity, {
+        identity: snapshotIdentity,
+        pairCounts,
+      });
+    }
+
+    const structures = buildPartyGroupsStructure(summoners, snapshots, {
+      precomputedPairCounts: pairCounts,
+    });
     const now = Date.now();
     const groups = structures
       .map((structure) => applyPartyGroupOverlay(structure, new Map(), now))
       .sort((a, b) => b.stabilityScore - a.stabilityScore);
-    const primary = selectPrimaryPartyGroups(groups, PRIMARY_GROUP_LIMIT);
+
+    // 最终结果按 (gameId, snapshotIdentity) 缓存。
+    // 同 gameId 但不同阵容 → 重算（matchPartyCache 已覆盖）。
+    // 不同 gameId 但同阵容 → 直接复用 analysisResultCache。
+    let primary = analysisResultCache.get(snapshotIdentity);
+    if (!primary) {
+      primary = selectPrimaryPartyGroups(groups, PRIMARY_GROUP_LIMIT);
+      analysisResultCache.set(snapshotIdentity, primary);
+    }
     matchPartyCache.set(gameId, primary);
+
     logger.info({
       tag: "query.match.party",
       message: "首页开黑分析完成",
       context: {
         game_id: gameId,
+        snapshot_identity: snapshotIdentity.slice(0, 32),
         players_with_cache: snapshots.size,
         total_groups: groups.length,
         primary_groups: primary.length,
+        pair_counts_cached: pairCounts !== analysisSnapshotCache.get(snapshotIdentity)?.pairCounts,
         duration_ms: Date.now() - startedAt,
       },
     });
