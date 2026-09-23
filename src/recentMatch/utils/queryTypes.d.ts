@@ -414,6 +414,13 @@ export interface PartyGroupAnalysis {
   reportedMembers: PartyMember[];
   /** 实际参与判定的共同对局，按最近时间优先。 */
   evidence: PartyEvidence[];
+  /**
+   * 组合内每个成员作为同队成员出现的最少场次。用于识别"4 黑 + 路人"
+   * 模式：size=5 组合若成员中混入只同队 1-2 场的路人，该值会远低于
+   * size=4 子组合的对应值，UI 自然倾向于展示稳定的子组合。
+   * 未提供时按 historicalGames 回退。
+   */
+  minMemberFrequency?: number;
 }
 
 export interface TeammateSynergyStats {

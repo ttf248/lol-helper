@@ -1075,6 +1075,14 @@ type StructuralPartyGroup = {
   /** 仅依赖结构层数据，可提前计算避免在 overlay 阶段再判一次。 */
   highWinRateAlert: boolean;
   evidence: PartyEvidence[];
+  /**
+   * 组合内每位成员作为同队成员出现的最少场次。`buildPlayerPartyGroups`
+   * 调用时天然等于 group.games（每位成员都参与了所有同场）；
+   * `buildPartyGroupsStructure` 调用时同样等于 historicalGames +
+   * currentMatchGames。UI 用此判断"4 黑 + 路人"模式下路人是否拉低了
+   * 整个组合的可信度。
+   */
+  minMemberFrequency?: number;
 };
 
 interface PartyGroupStructureOptions {
@@ -1174,7 +1182,18 @@ const buildPartyGroupsStructure = (
       const minimumGames = options.minimumGames ?? requiredGames;
       if (games < minimumGames) continue;
       const winRate = roundRate(wins, historicalGames) ?? 0;
-      const scores = scorePartyEvidence(group, evidence, Array.from(allGames.values()), now);
+      // 每位成员作为同队成员在该组合 evidence 中出现的最少场次。
+      // 当 size=5 队伍中混入"4 黑 + 路人"模式的低频路人时，路人的
+      // 频次会拉低该值；size=4 子组合天然拥有更高的最小成员频次，
+      // UI 自然倾向于展示稳定的子组合。
+      const minMemberFrequency = historicalGames + currentMatchGames;
+      const scores = scorePartyEvidence(
+        group,
+        evidence,
+        Array.from(allGames.values()),
+        now,
+        minMemberFrequency,
+      );
       structures.push({
         members: group,
         requiredGames,
@@ -1188,6 +1207,7 @@ const buildPartyGroupsStructure = (
         evidence: evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
+        minMemberFrequency,
       });
     }
   }
@@ -1261,6 +1281,7 @@ const applyPartyGroupOverlay = (
     blacklistedMembers,
     reportedMembers,
     evidence: structure.evidence,
+    minMemberFrequency: structure.minMemberFrequency,
   };
 };
 
@@ -1542,11 +1563,18 @@ const buildPlayerPartyGroups = (
         currentMatchGames: 0,
         wins: group.wins,
         winRate,
-        ...scorePartyEvidence(members, group.evidence, Array.from(snapshot.games.values()), now),
+        ...scorePartyEvidence(
+          members,
+          group.evidence,
+          Array.from(snapshot.games.values()),
+          now,
+          group.games,
+        ),
         highWinRateAlert: hasHighWinRateEvidence(group.wins, group.games),
         evidence: group.evidence.sort(
           (left, right) => right.gameCreation - left.gameCreation,
         ),
+        minMemberFrequency: group.games,
       }, moderationMap, now);
     })
     .filter((group): group is PartyGroupAnalysis => group !== null)
