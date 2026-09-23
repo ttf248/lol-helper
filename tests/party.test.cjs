@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createLoader } = require('./load-ts.cjs');
+const fixtures = require('./party.fixtures.cjs');
 const load = createLoader();
 const { participantMatchesPlayer, findPlayerParticipant, findParticipant } = load('src/recentMatch/utils/participantLookup.ts');
 const a = { puuid: 'a', summonerId: 1, summonerName: 'Same#A' };
@@ -224,7 +225,9 @@ test('old relationships decay and current match cannot refresh historical activi
     analytics.buildCurrentMatchGame(team, [], 420, 99), new Map())[0];
   assert.equal(result.lastActiveDays, 179);
   assert.equal(result.recentGames, 0);
-  assert.equal(result.stabilityScore, 0);
+  // 180 天前的旧对局经过 30 天半衰期后衰减到接近 0；新公式允许至多 1 分噪声，
+  // 旧公式严格 0。两者语义一致：非常久远的关系不应被渲染为稳定组队。
+  assert.ok(result.stabilityScore < 2, `expected < 2, got ${result.stabilityScore}`);
   assert.equal(scoring.hasHighWinRateEvidence(5, 5), false);
   assert.equal(scoring.hasHighWinRateEvidence(8, 10), false);
   assert.equal(scoring.hasHighWinRateEvidence(9, 10), true);
@@ -338,4 +341,167 @@ test('legacy nickname-only self is never counted as a teammate', () => {
   assert.equal(result.some(g => g.teammate.puuid === 'summoner-name:legacy'), false);
   const groups = analytics.buildPlayerPartyGroups(self, snapshot(games), new Map());
   assert.equal(groups.some(g => g.members.some(p => p.puuid === 'summoner-name:legacy')), false);
+});
+
+// ── 真实数据回归测试 ─────────────────────────────────────────────
+// 以下用例基于 PostgreSQL 中 puuid 8d7b0b53-410e-51df-86b7-905eee83b581（鼠标加键盘）
+// 的真实阵容：最近 5 场 hex-aram 中 4 场是「玩家+中意+Uzi+solo+1is」5 黑，
+// 1 场是「玩家+Uzi+solo+1is+可劲得瑟吧提莫」4 黑 + 1 路人。
+
+test('T1: 单场路人不再把 consecutive 归零（窗口内 evidence 占比生效）', () => {
+  // 使用 10 场历史让 size=5 组合同样过 required=5 门槛。
+  const nowMs = Date.now();
+  const games = fixtures.buildPlayerHistoricalTenGames(nowMs);
+  const player = fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '鼠标加键盘');
+  const teammates = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.zhongyi, '中意不如介意'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.stray, '可劲得瑟吧提莫'),
+  ];
+  const allPlayers = [player, ...teammates];
+  const snapshots = new Map(allPlayers.map(p => [p.puuid, fixtures.snapshot(games)]));
+  const structures = analytics.buildPartyGroupsStructure(
+    allPlayers,
+    snapshots,
+    { evidence: new Map(games.map(g => [g.gameId, g])) },
+  );
+  // size=5「玩家+中意+Uzi+solo+1is」应在历史 evidence 中出现 9 次（不含路人场）
+  const fullFive = structures.find(s =>
+    s.members.length === 5 &&
+    s.members.every(m => m.puuid !== fixtures.CORE_PUUIDS.stray),
+  );
+  assert.ok(fullFive, 'should have a size=5 group without the stray player');
+  assert.equal(fullFive.games, 9);
+  assert.equal(fullFive.historicalGames, 9);
+  // 新公式：即使夹了一次路人（游戏 0 是路人场），
+  // 最近窗口内 evidence 占比 0.8 + 连续 8 场仍让 stabilityScore 保持高位。
+  assert.ok(fullFive.stabilityScore >= 70,
+    `expected >= 70, got ${fullFive.stabilityScore}`);
+  assert.equal(fullFive.minMemberFrequency, 9);
+});
+
+test('T2: size=5 队伍夹路人时 size=4 子组合胜出', () => {
+  const nowMs = Date.now();
+  const games = fixtures.buildPlayerHistoricalTenGames(nowMs);
+  const player = fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '鼠标加键盘');
+  const teammates = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.zhongyi, '中意不如介意'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.stray, '可劲得瑟吧提莫'),
+  ];
+  const allPlayers = [player, ...teammates];
+  const snapshots = new Map(allPlayers.map(p => [p.puuid, fixtures.snapshot(games)]));
+  const groups = analytics.buildPlayerPartyGroups(player, snapshots.get(player.puuid), new Map());
+  const size4 = groups.find(g => g.members.length === 4);
+  const size5 = groups.find(g => g.members.length === 5);
+  assert.ok(size4, 'should have a size=4 group (player+Uzi+solo+1is)');
+  assert.ok(size5, 'should have a size=5 group (player+中意+Uzi+solo+1is)');
+  // size=4 子组合应当胜出：历史 10 场 vs size=5 的 9 场
+  assert.ok(size4.stabilityScore > size5.stabilityScore,
+    `expected size=4 (${size4.stabilityScore}) > size=5 (${size5.stabilityScore})`);
+  assert.equal(size4.historicalGames, 10);
+  assert.equal(size5.historicalGames, 9);
+  assert.equal(size4.minMemberFrequency, 10);
+  assert.equal(size5.minMemberFrequency, 9);
+});
+
+test('T3: size=5 历史统计不受单场路人影响', () => {
+  const nowMs = Date.now();
+  const games = fixtures.buildPlayerHistoricalTenGames(nowMs);
+  const player = fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.player, '鼠标加键盘');
+  const teammates = [
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.zhongyi, '中意不如介意'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.uzi, 'Uzi'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.solo, 'solo'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.yisi, '1is'),
+    fixtures.playerFromPuuid(fixtures.CORE_PUUIDS.stray, '可劲得瑟吧提莫'),
+  ];
+  const allPlayers = [player, ...teammates];
+  const snapshots = new Map(allPlayers.map(p => [p.puuid, fixtures.snapshot(games)]));
+  const structures = analytics.buildPartyGroupsStructure(
+    allPlayers,
+    snapshots,
+    { evidence: new Map(games.map(g => [g.gameId, g])) },
+  );
+  const fullFive = structures.find(s =>
+    s.members.length === 5 &&
+    s.members.every(m => m.puuid !== fixtures.CORE_PUUIDS.stray),
+  );
+  assert.ok(fullFive, 'should have a size=5 group without stray');
+  assert.equal(fullFive.historicalGames, 9,
+    'size=5「玩家+中意+Uzi+solo+1is」9 场历史，不应被路人场污染');
+  const strayGroup = structures.find(s =>
+    s.members.length === 5 &&
+    s.members.some(m => m.puuid === fixtures.CORE_PUUIDS.stray),
+  );
+  assert.equal(strayGroup, undefined,
+    '「玩家+Uzi+solo+1is+可劲」路人组 historicalGames=1 < required=5，应被过滤');
+});
+
+test('T4: stabilityScore 封顶随 size 缩放', () => {
+  // size=2 4 场（cap=4，满分）；size=5 5 场（cap=10，0.5 即满分 50%）
+  const nowMs = Date.now();
+  const sixGames = Array.from({ length: 6 }, (_, i) => {
+    const g = fullGame(i + 1, nowMs - i * 60000);
+    return g;
+  });
+  const p0 = player(0);
+  const p1 = player(1);
+  const p2 = player(2);
+  const p3 = player(3);
+  const p4 = player(4);
+
+  // 2 人组合：6 场同队
+  const snapshotsSize2 = new Map([
+    [p0.puuid, snapshot(sixGames)],
+    [p1.puuid, snapshot(sixGames)],
+  ]);
+  const size2Result = analytics.buildPartyGroupsStructure(
+    [p0, p1], snapshotsSize2,
+    { evidence: new Map(sixGames.map(g => [g.gameId, g])) },
+  )[0];
+  // 5 人组合：6 场同队（p0..p4 全在 100 队）
+  const snapshotsSize5 = new Map(
+    [p0, p1, p2, p3, p4].map(p => [p.puuid, snapshot(sixGames)]),
+  );
+  const size5Result = analytics.buildPartyGroupsStructure(
+    [p0, p1, p2, p3, p4], snapshotsSize5,
+    { evidence: new Map(sixGames.map(g => [g.gameId, g])) },
+  ).find(s => s.members.length === 5);
+  assert.ok(size2Result && size5Result, 'both groups should exist');
+  assert.equal(size2Result.games, 6);
+  assert.equal(size5Result.games, 6);
+  // 同样 6 场 evidence：
+  //   size=2 第一项 40 * min(6/4, 1) = 40 (封顶)
+  //   size=5 第一项 40 * min(6/10, 1) = 24
+  // size=2 在第一项明显高于 size=5。
+  // 第二项（ratio*decay）相同；第三项（consecutive/windowRatio）相同；
+  // 第四项（minMemberFrequency）：size=2 cap=3, size=5 cap=7.5，都满。
+  // 因此 size=2 stabilityScore 应严格高于 size=5。
+  assert.ok(size2Result.stabilityScore > size5Result.stabilityScore,
+    `size=2 (${size2Result.stabilityScore}) should be > size=5 (${size5Result.stabilityScore})`);
+  // 第一项贡献差距约 16 分（40 - 24）
+  const scoreDiff = size2Result.stabilityScore - size5Result.stabilityScore;
+  assert.ok(scoreDiff >= 10,
+    `expected score diff >= 10, got ${scoreDiff}`);
+});
+
+test('T5: 现有稳定性不依赖胜负与举报（回归保护）', () => {
+  // 与既有 "party strength is independent of wins" 一致；新公式下仍如此。
+  const games = Array.from({ length: 5 }, (_, i) => fullGame(i + 1));
+  const team = [player(0), player(1)];
+  const snapshots = new Map([['p0', snapshot(games)], ['p1', snapshot(games)]]);
+  const structure = analytics.buildPartyGroupsStructure(team, snapshots)[0];
+  const losses = games.map(g => ({
+    ...g,
+    participants: g.participants.map(p => ({ ...p, win: false })),
+  }));
+  const lossStructure = analytics.buildPartyGroupsStructure(
+    team, new Map([['p0', snapshot(losses)]]),
+  )[0];
+  assert.equal(structure.stabilityScore, lossStructure.stabilityScore);
 });
